@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# GPL-3.0 because it links Slint under GPL-3.0 (NeoSymbian decision 2026-11-06), like neoui's apps.
+[package]
+name = "files-ui"
+description = "The Files app's screens in Slint (no_std): drives, folders, the text viewer, the name forms"
+version.workspace = true
+edition.workspace = true
+license = "GPL-3.0-only"
+
+[dependencies]
+slint = { workspace = true }
+
+[build-dependencies]
+# the neoui kit (@neoui/kit.slint): theme, fonts, glyphs and components
+neoui-kit = { workspace = true }
+
+[dev-dependencies]
+png = { workspace = true }
+# the snapshot tests make their rows with the model, as the app does
+files-core = { workspace = true }

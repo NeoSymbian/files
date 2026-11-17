@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# For NeoSymbian/build rust/exes.txt: copy this line and target/armv5te-none-eabi/release/libneofiles.a into build's
+# rust/ (neoui's Syborg CI does it). The UID block 0xE0006xxx is this repo's.
+NEOFILES.EXE   0xE0006001  libneofiles.a

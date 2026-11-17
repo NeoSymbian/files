@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0
+# The host workspace of Files: the model (files-core, Apache-2.0) and the Slint UI (files-ui, GPL-3.0: it links Slint),
+# tested on the host. The app EXE is the separate symbian/ workspace (armv5te, nightly build-std).
+[workspace]
+resolver = "3"
+members = ["crates/files-core", "crates/files-ui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+files-core = { path = "crates/files-core" }
+files-ui = { path = "crates/files-ui" }
+# NeoSymbian/neoui: the kit (the shared theme, fonts and components, as a build helper); the same rev as symbian/
+neoui-kit = { git = "https://github.com/NeoSymbian/neoui", rev = "e6aa05e6eca2970380519b1ba000460bbc576572" }
+# the same Slint as neoui (one copy in the ROM, no_std)
+slint = { version = "=1.18.1", default-features = false, features = ["compat-1-2", "unsafe-single-threaded", "libm", "renderer-software"] }
+png = "=0.18.1"
