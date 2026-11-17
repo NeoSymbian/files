@@ -8,8 +8,8 @@ members = ["app"]
 
 [workspace.dependencies]
 e32 = { git = "https://github.com/NeoSymbian/e32-rs", rev = "e97e2ebcb242f5365d1b3f9d520646603e1e9056", features = ["critical-section"] }
-neoui-proto = { git = "https://github.com/NeoSymbian/neoui", rev = "e6aa05e6eca2970380519b1ba000460bbc576572" }
-neoapp = { git = "https://github.com/NeoSymbian/neoui", rev = "e6aa05e6eca2970380519b1ba000460bbc576572" }
+neoui-proto = { git = "https://github.com/NeoSymbian/neoui", rev = "737babd9c4d3da1a20ec1d2260c7b2f356de9771" }
+neoapp = { git = "https://github.com/NeoSymbian/neoui", rev = "737babd9c4d3da1a20ec1d2260c7b2f356de9771" }
 slint = { version = "=1.18.1", default-features = false, features = ["compat-1-2", "unsafe-single-threaded", "libm", "renderer-software"] }
 files-core = { path = "../crates/files-core" }
 files-ui = { path = "../crates/files-ui" }
