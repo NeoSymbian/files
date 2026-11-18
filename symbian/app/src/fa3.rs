@@ -317,6 +317,17 @@ fn writable(st: &State) -> Vec<(char, u64, u64)> {
         .unwrap_or_default()
 }
 
+/// What Browse calls drive `d` ("Mass memory", "Memory card"): the same attributes [`crate::show_drives`] passes.
+fn label_of(st: &State, d: char) -> &'static str {
+    let removable = st
+        .fs
+        .drives()
+        .ok()
+        .and_then(|v| v.into_iter().find(|x| x.letter == d))
+        .is_some_and(|x| x.removable);
+    model::drive_label(d, if removable { 0x20 } else { 0 }, 0)
+}
+
 pub fn show_types(ui: &FilesApp, st: &mut State) {
     let g = st.index.groups();
     ui.set_types(model_of(
@@ -365,10 +376,7 @@ pub fn show_type(ui: &FilesApp, st: &mut State) {
     let drives: Vec<char> = writable(st).iter().map(|d| d.0).collect();
     let mut chips = alloc::vec![String::from("All drives")];
     for d in &drives {
-        chips.push(format!(
-            "{d}: {}",
-            model::drive_label(*d, if *d == 'C' { 0 } else { 0x20 }, 0)
-        ));
+        chips.push(format!("{d}: {}", label_of(st, *d)));
     }
     let drive = st
         .type_drive
@@ -724,7 +732,7 @@ pub fn show_cleanup(ui: &FilesApp, st: &mut State) {
         .rev()
         .map(|&(d, size, free)| {
             let kind = if d == 'C' { "phone" } else { "mass" };
-            let label = model::drive_label(d, if d == 'C' { 0 } else { 0x20 }, 0);
+            let label = label_of(st, d);
             files_ui::space_row(d, label, kind, size, free)
         })
         .collect();
