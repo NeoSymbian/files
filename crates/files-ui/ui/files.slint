@@ -3,7 +3,8 @@
 // the Browse tab (drives), folders as a list or a grid with a breadcrumb, the folder and selection menus, the Sort
 // sheet, the read-only banner, New folder / New file / Rename forms, the paste bar, a copy's progress toast and the
 // name-clash dialog; FA3: Favourites and the Recent strip, the Recent and Types tabs, search with filters, the Recycle
-// bin, Free up space and Details. The shell draws QUERY dialogs, toasts with Undo and the shade entry.
+// bin, Free up space and Details; FA4: the text viewer and the editors (code with colours, find and replace, Markdown
+// Preview, the CSV table), New file's types. The shell draws QUERY dialogs, toasts with Undo and the shade entry.
 // The Rust side owns the state; this file draws it and reports taps as callbacks.
 import "@neoui/fonts/NeoSans-Regular.ttf";
 import "@neoui/fonts/NeoSans-Medium.ttf";
@@ -18,6 +19,9 @@ import {
 } from "@neoui/kit.slint";
 import { FTile, FolderTile, DriveTile } from "tiles.slint";
 import { TypeTile, Seg, CleanCard, Detail, Pick, UsedCard, GroupTile, CleanItem, InfoCard, DetailRow } from "fa3.slint";
+import { TSpan, TRow, Mark, TextPane, TextMetrics } from "text.slint";
+import { MdSpan, MdRow, CellRow, Col, CodeKeys, StatusLine, FindBar, Segments, MdView, TableGrid, CellBar, TypeChips } from "editor.slint";
+export { TSpan, TRow, Mark, MdSpan, MdRow, CellRow, Col, TextMetrics }
 
 export { Theme, Scroll, Kit, KeyboardFocus }
 
@@ -556,7 +560,6 @@ export component FilesApp inherits Window {
     in property <bool> grid;
     in property <bool> read-only;
     in property <bool> show-hidden;
-    in property <string> text;
     // rows picked (selection mode, K03): how many
     in property <int> selected;
     // the Sort sheet
@@ -639,6 +642,45 @@ export component FilesApp inherits Window {
     in property <bool> d-hidden;
     in property <bool> d-system;
 
+    // FA4: the text surface's window of rows (Rust lays out and colours them), the viewer and the editors
+    in property <[TRow]> text-rows;
+    in property <int> text-total;
+    in property <int> text-gutter;
+    in property <bool> text-cursor;
+    in property <int> cursor-row;
+    in property <int> cursor-x;
+    in property <[Mark]> text-marks;
+    in property <bool> text-handles;
+    in property <int> a-row;
+    in property <int> a-x;
+    in property <int> b-row;
+    in property <int> b-x;
+    out property <int> text-cols: pane.cols;
+    out property <int> text-visible: pane.visible-rows;
+    in property <bool> wrap;
+    // the viewer's bottom line ("Lines 1–14 of 1,204 · 64 KB · UTF-8"), the editor's ("Ln 13, Col 18 · UTF-8 · LF")
+    in property <string> text-info;
+    in property <string> status;
+    in property <bool> editable;
+    in property <bool> dirty;
+    in property <bool> can-undo;
+    // "code", "md" or "table"
+    in property <string> edit-kind;
+    in property <int> md-mode;
+    in property <[MdRow]> md-lines;
+    in-out property <bool> find-open;
+    in-out property <string> find-text;
+    in-out property <string> replace-text;
+    in property <string> find-info;
+    in property <[string]> table-heads;
+    in property <[Col]> table-cols;
+    in property <[CellRow]> table-cells;
+    in property <int> sel-r: -1;
+    in property <int> sel-c: -1;
+    in-out property <string> cell-text;
+    in property <string> cell-name;
+    in property <int> new-type;
+
     callback drive(int);
     callback open-row(int);
     callback toggle(int);
@@ -679,6 +721,34 @@ export component FilesApp inherits Window {
     callback review(int);
     callback details-read-only(bool);
     callback details-hidden(bool);
+    callback text-scrolled(int);
+    callback text-tapped(int, int);
+    callback text-held(int, int);
+    callback handle-moved(int, int, int);
+    callback handle-done();
+    callback edit();
+    callback undo();
+    callback save();
+    callback code-key(string);
+    callback wrap-toggled();
+    callback find-edited(string);
+    callback find-next();
+    callback find-prev();
+    callback replace-one();
+    callback replace-all();
+    callback md-picked(int);
+    callback task-toggled(int);
+    callback cell-picked(int, int);
+    callback cell-done();
+    callback new-type-picked(int);
+
+    // keep a row in view (the cursor after a key, a find match)
+    public function text-show-row(r: int) {
+        pane.show-row(r);
+    }
+    public function text-top() {
+        pane.to-top();
+    }
 
     property <[string]> root-menu: ["Recycle bin", "Free up space", root.show-hidden ? "Hide hidden files" : "Show hidden files"];
     property <[string]> folder-menu: root.read-only ? [
@@ -750,12 +820,50 @@ export component FilesApp inherits Window {
                 folder-list.to-top();
             }
         }
+        // files2-view-text: [← name · edit · ⋮]
         if root.view == "text": SubHeader {
             title: root.name;
             title-font: "DejaVu Sans";
             search: false;
+            actions: root.editable ? [{ icon: @image-url("@neoui/icons/sys/edit.svg"), label: "Edit" }] : [];
+            menu: [root.wrap ? "No wrap" : "Wrap lines", "Details"];
             back => {
                 root.up();
+            }
+            action(i) => {
+                root.edit();
+            }
+            menu-picked(i) => {
+                root.menu([root.wrap ? "No wrap" : "Wrap lines", "Details"][i]);
+            }
+            top => {
+                pane.to-top();
+            }
+        }
+        // files2-edit-code: [← name ● · undo · save · ⋮]
+        if root.view == "edit": SubHeader {
+            title: root.dirty ? root.name + " ●" : root.name;
+            title-font: "DejaVu Sans";
+            search: false;
+            actions: [
+                { icon: @image-url("icons/undo.svg"), label: "Undo", disabled: !root.can-undo },
+                { icon: @image-url("icons/save.svg"), label: "Save", disabled: !root.dirty },
+            ];
+            menu: root.edit-kind == "table" ? ["Add row", "Add column", "Delete row", "Details"]
+                : ["Find and replace", root.wrap ? "No wrap" : "Wrap lines", "Details"];
+            back => {
+                root.up();
+            }
+            action(i) => {
+                if i == 0 {
+                    root.undo();
+                } else {
+                    root.save();
+                }
+            }
+            menu-picked(i) => {
+                root.menu(root.edit-kind == "table" ? ["Add row", "Add column", "Delete row", "Details"][i]
+                    : ["Find and replace", root.wrap ? "No wrap" : "Wrap lines", "Details"][i]);
             }
         }
         if root.view == "type": SubHeader {
@@ -814,7 +922,7 @@ export component FilesApp inherits Window {
         }
 
         // the breadcrumb (F05): the drive, then each folder; the last is where you are
-        if root.view == "folder" || root.view == "text": HorizontalLayout {
+        if root.view == "folder": HorizontalLayout {
             height: 40 * Theme.dp;
             padding-left: 12 * Theme.dp;
             padding-right: 12 * Theme.dp;
@@ -1496,18 +1604,138 @@ export component FilesApp inherits Window {
                 }
             }
 
-            NeoList {
-                visible: root.view == "text";
-                VerticalLayout {
+            // the viewer and the editors (FA4): one text surface, with Preview or the table over it
+            VerticalLayout {
+                visible: root.view == "text" || root.view == "edit";
+                if root.view == "text": HorizontalLayout {
+                    padding: 10 * Theme.dp;
+                    padding-left: 12 * Theme.dp;
                     alignment: start;
-                    padding: Theme.margin;
-                    Text {
-                        text: root.text;
-                        wrap: char-wrap;
-                        font-family: "DejaVu Sans Mono";
-                        font-size: 13.5 * Theme.dp;
-                        color: #d7dde5;
+                    Pick {
+                        text: "Wrap";
+                        on: root.wrap;
+                        check: false;
+                        has-icon: true;
+                        icon: @image-url("@neoui/icons/sys/sort.svg");
+                        clicked => {
+                            root.wrap-toggled();
+                        }
                     }
+                }
+                if root.view == "edit" && root.find-open: FindBar {
+                    find <=> root.find-text;
+                    replace <=> root.replace-text;
+                    info: root.find-info;
+                    find-edited(t) => {
+                        root.find-edited(t);
+                    }
+                    next => {
+                        root.find-next();
+                    }
+                    prev => {
+                        root.find-prev();
+                    }
+                    replace-one => {
+                        root.replace-one();
+                    }
+                    replace-all => {
+                        root.replace-all();
+                    }
+                }
+                if root.view == "edit" && root.edit-kind == "md": Segments {
+                    items: ["Edit", "Preview"];
+                    current: root.md-mode;
+                    picked(i) => {
+                        root.md-picked(i);
+                    }
+                }
+                Rectangle {
+                    vertical-stretch: 1;
+                    pane := TextPane {
+                        width: parent.width;
+                        height: parent.height;
+                        rows: root.text-rows;
+                        total-rows: root.text-total;
+                        gutter: root.text-gutter;
+                        show-cursor: root.text-cursor;
+                        cursor-row: root.cursor-row;
+                        cursor-x: root.cursor-x;
+                        marks: root.text-marks;
+                        handles: root.text-handles;
+                        a-row: root.a-row;
+                        a-x: root.a-x;
+                        b-row: root.b-row;
+                        b-x: root.b-x;
+                        scrolled(r) => {
+                            root.text-scrolled(r);
+                        }
+                        tapped(r, x) => {
+                            root.text-tapped(r, x);
+                        }
+                        held(r, x) => {
+                            root.text-held(r, x);
+                        }
+                        handle-moved(w, r, x) => {
+                            root.handle-moved(w, r, x);
+                        }
+                        handle-done => {
+                            root.handle-done();
+                        }
+                    }
+
+                    if root.view == "edit" && root.edit-kind == "md" && root.md-mode == 1: Rectangle {
+                        background: Theme.bg;
+                        MdView {
+                            lines: root.md-lines;
+                            task-toggled(i) => {
+                                root.task-toggled(i);
+                            }
+                        }
+                    }
+                    if root.view == "edit" && root.edit-kind == "table": TableGrid {
+                        heads: root.table-heads;
+                        cols: root.table-cols;
+                        cells: root.table-cells;
+                        sel-r: root.sel-r;
+                        sel-c: root.sel-c;
+                        picked(r, c) => {
+                            root.cell-picked(r, c);
+                        }
+                    }
+                }
+
+                if root.view == "text": Rectangle {
+                    height: 36 * Theme.dp;
+                    background: Theme.bg;
+                    Text {
+                        x: 16 * Theme.dp;
+                        text: root.text-info;
+                        color: Theme.text-dim;
+                        font-size: 12.5 * Theme.dp;
+                    }
+                }
+                if root.view == "edit" && root.kb-h > 0 && root.edit-kind == "table" && root.sel-r >= 0: CellBar {
+                    name: root.cell-name;
+                    value <=> root.cell-text;
+                    done => {
+                        root.cell-done();
+                    }
+                }
+                if root.view == "edit" && root.kb-h > 0 && root.edit-kind != "table" && !root.find-open: CodeKeys {
+                    key(k) => {
+                        root.code-key(k);
+                    }
+                }
+                if root.view == "edit" && root.kb-h == 0 && root.edit-kind != "table": StatusLine {
+                    text: root.status;
+                    wrap: root.wrap;
+                    wrap-toggled => {
+                        root.wrap-toggled();
+                    }
+                }
+                // the system keyboard lies over the bottom of the surface
+                if root.view == "edit": Rectangle {
+                    height: root.kb-h;
                 }
             }
 
@@ -1812,6 +2040,29 @@ export component FilesApp inherits Window {
 
                 Text {
                     text: root.form == "rename" && root.name-suffix != "" ? "The extension stays " + root.name-suffix : "Up to 256 characters. Not allowed: \\ / : * ? \" < > |";
+                    color: Theme.text-dim;
+                    font-size: 12.5 * Theme.dp;
+                    wrap: word-wrap;
+                }
+            }
+
+            // files2-new-file: what kind of file
+            if root.form == "file": VerticalLayout {
+                padding: 16 * Theme.dp;
+                spacing: 10 * Theme.dp;
+                SectionLabel {
+                    text: "TYPE";
+                }
+
+                TypeChips {
+                    current: root.new-type;
+                    picked(i) => {
+                        root.new-type-picked(i);
+                    }
+                }
+
+                Text {
+                    text: "Code… asks for the extension (.rs, .py, .sh, .toml …) and opens the code editor.";
                     color: Theme.text-dim;
                     font-size: 12.5 * Theme.dp;
                     wrap: word-wrap;

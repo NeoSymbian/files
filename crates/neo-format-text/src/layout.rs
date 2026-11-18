@@ -30,39 +30,51 @@ pub struct Layout {
     starts: Vec<usize>,
 }
 
-/// Where each row of a line starts (char indexes), wrapping at `cols` display columns.
+/// Where each row of a line starts (char indexes), wrapping at `cols` display columns: after the last space that
+/// fits (files2-view-text wraps by word), or mid-word when a word is longer than a row.
 pub fn breaks(text: &str, cols: usize) -> Vec<usize> {
     let mut out = alloc::vec![0];
     if cols == 0 {
         return out;
     }
-    let mut w = 0;
-    for (i, c) in text.chars().enumerate() {
-        let cw = width(c);
-        if w + cw > cols && w > 0 {
-            out.push(i);
-            w = 0;
+    let cs: Vec<char> = text.chars().collect();
+    let mut start = 0;
+    while start < cs.len() {
+        let mut w = 0;
+        let mut end = start;
+        while end < cs.len() && (w + width(cs[end]) <= cols || end == start) {
+            w += width(cs[end]);
+            end += 1;
         }
-        w += cw;
+        if end >= cs.len() {
+            break;
+        }
+        // back to just after the last space in this row, unless that would leave it empty
+        if let Some(sp) = (start + 1..end)
+            .rev()
+            .find(|&i| cs[i - 1] == ' ' && cs[i] != ' ')
+        {
+            end = sp;
+        } else if cs[end] == ' ' {
+            // the row ends at a word's end: the spaces after it stay on this row
+            while end < cs.len() && cs[end] == ' ' {
+                end += 1;
+            }
+            if end >= cs.len() {
+                break;
+            }
+        }
+        out.push(end);
+        start = end;
     }
     out
 }
 
 fn rows_of(text: &str, cols: usize) -> usize {
-    if cols == 0 {
+    if cols == 0 || (text.len() <= cols && !text.contains('\t')) {
         return 1;
     }
-    let mut rows = 1;
-    let mut w = 0;
-    for c in text.chars() {
-        let cw = width(c);
-        if w + cw > cols && w > 0 {
-            rows += 1;
-            w = 0;
-        }
-        w += cw;
-    }
-    rows
+    breaks(text, cols).len()
 }
 
 /// Display columns of `text[..col chars]`.

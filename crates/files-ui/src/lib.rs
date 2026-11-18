@@ -11,6 +11,8 @@ use files_core::{self as model, Item};
 
 slint::include_modules!();
 
+pub mod text;
+
 /// `0xRRGGBB` as an opaque colour.
 pub fn colour(rgb: u32) -> slint::Color {
     slint::Color::from_argb_encoded(0xff00_0000 | rgb)

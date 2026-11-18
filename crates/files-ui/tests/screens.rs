@@ -185,14 +185,6 @@ fn boards() {
     ui.set_form_colour(colour(neo_view_audio()));
     s.shoot("files2-rename");
     ui.set_form("".into());
-
-    // the text viewer (R8, until FA4's)
-    ui.set_view("text".into());
-    ui.set_name("estart.txt".into());
-    ui.set_crumbs(strings(&["Z:", "sys", "data", "estart.txt"]));
-    let txt = b"# estart.txt: the drives to mount\r\nC: 0 ELOCAL FAT 0 FS_FORMAT_CORRUPT,FS_SYNC_DRIVE\r\nE: 1 ELOCAL FAT 0\r\n";
-    ui.set_text(model::text_preview(txt).into());
-    s.shoot("files2-text");
 }
 
 /// The audio family's badge colour (neo-view), as a FLAC row shows it.

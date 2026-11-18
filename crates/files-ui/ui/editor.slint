@@ -1,0 +1,510 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// The editors' pieces (files2-edit-code, -edit-find, -edit-md, -edit-csv, -new-file): the find bar, the code-key row
+// over the keyboard, the status line, Markdown Preview rows, the table grid and its cell bar, and New file's type
+// chips. Rust does the work (neo-format-text); these draw it.
+import { Theme, Glyph, TextField } from "@neoui/kit.slint";
+import { FTile } from "tiles.slint";
+
+// a Preview line: kind 0 text, 1 heading 1, 2 heading 2, 3 heading 3+, 4 code, 5 rule, 6 quote, 7 the gap between
+// blocks; task -1 none, 0 open,
+// 1 done (on an item's first line); bullet on an item's first line
+// gap: a space before the span (Slint drops a span's leading space)
+export struct MdSpan { text: string, colour: color, bold: bool, italic: bool, mono: bool, gap: bool }
+export struct MdRow { kind: int, indent: int, task: int, bullet: bool, first: bool, spans: [MdSpan] }
+export struct CellRow { no: string, cells: [string] }
+// a table column: where it starts and how wide (from its content)
+export struct Col { x: length, w: length }
+
+component Key inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+    height: 34 * Theme.dp;
+    width: max(34 * Theme.dp, t.preferred-width + 16 * Theme.dp);
+    border-radius: 7 * Theme.dp;
+    background: touch.pressed ? Theme.pressed : #2a2e35;
+    t := Text {
+        text: root.label;
+        font-family: "DejaVu Sans Mono";
+        color: Theme.text;
+        font-size: 14 * Theme.dp;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// files2-edit-code: the keys the system keyboard lacks, above it
+export component CodeKeys inherits Rectangle {
+    callback key(string);
+    height: 44 * Theme.dp;
+    background: #16191e;
+    Flickable {
+        content-width: row.preferred-width;
+        row := HorizontalLayout {
+            padding: 5 * Theme.dp;
+            spacing: 5 * Theme.dp;
+            for k in ["Tab", "{", "}", "(", ")", "<", ">", ";", "←", "→", "[", "]", "\"", "=", "|", "!", "?", "&", "$", "~"]: Key {
+                label: k;
+                clicked => {
+                    root.key(k);
+                }
+            }
+        }
+    }
+}
+
+// "Ln 13, Col 18 · UTF-8 · LF" and Wrap (files2-edit-unsaved's bottom line)
+export component StatusLine inherits Rectangle {
+    in property <string> text;
+    in property <bool> wrap;
+    callback wrap-toggled();
+    height: 36 * Theme.dp;
+    background: #0d1117;
+    Rectangle {
+        y: 0;
+        height: max(1px, Theme.dp / 2);
+        background: #ffffff12;
+    }
+
+    HorizontalLayout {
+        padding-left: 14 * Theme.dp;
+        padding-right: 8 * Theme.dp;
+        Text {
+            text: root.text;
+            color: Theme.text-dim;
+            font-size: 12.5 * Theme.dp;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                height: 26 * Theme.dp;
+                width: wl.preferred-width + 20 * Theme.dp;
+                border-radius: self.height / 2;
+                background: root.wrap ? Theme.tab-pill : wt.pressed ? Theme.pressed : #1b1e23;
+                wl := Text {
+                    text: "Wrap";
+                    color: root.wrap ? Theme.text : Theme.text-secondary;
+                    font-size: 12.5 * Theme.dp;
+                }
+
+                wt := TouchArea {
+                    clicked => {
+                        root.wrap-toggled();
+                    }
+                }
+            }
+        }
+    }
+}
+
+// files2-edit-find: find with "2 of 5" and ↑ ↓, replace with Replace and All
+export component FindBar inherits Rectangle {
+    in-out property <string> find;
+    in-out property <string> replace;
+    in property <string> info;
+    in property <bool> can-replace: true;
+    callback find-edited(string);
+    callback next();
+    callback prev();
+    callback replace-one();
+    callback replace-all();
+    height: lay.preferred-height;
+    background: Theme.bg;
+    changed find => {
+        root.find-edited(root.find);
+    }
+    lay := VerticalLayout {
+        padding: 10 * Theme.dp;
+        spacing: 8 * Theme.dp;
+        HorizontalLayout {
+            spacing: 6 * Theme.dp;
+            TextField {
+                horizontal-stretch: 1;
+                text <=> root.find;
+                placeholder: "Find";
+                autofocus: true;
+                accepted(t) => {
+                    root.next();
+                }
+            }
+
+            Text {
+                text: root.info;
+                color: Theme.text-dim;
+                font-size: 13 * Theme.dp;
+                vertical-alignment: center;
+            }
+
+            for d[i] in [@image-url("icons/chevron_up.svg"), @image-url("@neoui/icons/sys/chevron_down.svg")]: Rectangle {
+                width: 36 * Theme.dp;
+                border-radius: self.width / 2;
+                background: arrow.pressed ? Theme.pressed : transparent;
+                Glyph {
+                    source: d;
+                    size: 22 * Theme.dp;
+                    colorize: Theme.text-secondary;
+                }
+
+                arrow := TouchArea {
+                    clicked => {
+                        if i == 0 {
+                            root.prev();
+                        } else {
+                            root.next();
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.can-replace: HorizontalLayout {
+            spacing: 8 * Theme.dp;
+            TextField {
+                horizontal-stretch: 1;
+                text <=> root.replace;
+                placeholder: "Replace with";
+            }
+
+            for b[i] in ["Replace", "All"]: Rectangle {
+                width: bt.preferred-width + 28 * Theme.dp;
+                border-radius: self.height / 2;
+                background: i == 1 ? (bta.pressed ? #2f6fd0 : Theme.accent) : (bta.pressed ? Theme.pressed : #2a2e35);
+                bt := Text {
+                    text: b;
+                    color: Theme.text;
+                    font-size: 14.5 * Theme.dp;
+                    font-weight: 600;
+                }
+
+                bta := TouchArea {
+                    clicked => {
+                        if i == 0 {
+                            root.replace-one();
+                        } else {
+                            root.replace-all();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// files2-edit-md: Edit | Preview
+export component Segments inherits Rectangle {
+    in property <[string]> items;
+    in property <int> current;
+    callback picked(int);
+    height: 44 * Theme.dp;
+    HorizontalLayout {
+        padding-left: 12 * Theme.dp;
+        padding-right: 12 * Theme.dp;
+        padding-bottom: 6 * Theme.dp;
+        Rectangle {
+            border-radius: 19 * Theme.dp;
+            background: #1b1e23;
+            HorizontalLayout {
+                padding: 3 * Theme.dp;
+                for s[i] in root.items: Rectangle {
+                    border-radius: 16 * Theme.dp;
+                    background: i == root.current ? Theme.accent : transparent;
+                    Text {
+                        text: s;
+                        color: i == root.current ? white : Theme.text-secondary;
+                        font-size: 14.5 * Theme.dp;
+                        font-weight: 600;
+                    }
+
+                    TouchArea {
+                        clicked => {
+                            root.picked(i);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component MdLine inherits Rectangle {
+    in property <MdRow> line;
+    callback toggled();
+    property <length> size: line.kind == 1 ? 24 * Theme.dp : line.kind == 2 ? 19 * Theme.dp : line.kind == 3 ? 16.5 * Theme.dp : 15 * Theme.dp;
+    height: line.kind == 7 ? 10 * Theme.dp : line.kind == 5 ? 17 * Theme.dp : line.kind == 4 ? 20 * Theme.dp : self.size * 1.45;
+    background: line.kind == 4 ? #161b22 : transparent;
+    if line.kind == 5: Rectangle {
+        y: parent.height / 2;
+        height: max(1px, Theme.dp / 2);
+        background: #ffffff26;
+    }
+    if line.kind == 6: Rectangle {
+        x: 0;
+        width: 3 * Theme.dp;
+        background: #3d8bfd88;
+    }
+    if line.task >= 0 && line.first: Rectangle {
+        x: line.indent * 18 * Theme.dp;
+        y: (parent.height - self.height) / 2;
+        width: 16 * Theme.dp;
+        height: self.width;
+        border-radius: 3 * Theme.dp;
+        border-width: line.task == 1 ? 0 : 1.5 * Theme.dp;
+        border-color: Theme.text-secondary;
+        background: line.task == 1 ? Theme.accent : transparent;
+        if line.task == 1: Glyph {
+            source: @image-url("@neoui/icons/sys/check.svg");
+            size: 12 * Theme.dp;
+            colorize: white;
+        }
+        TouchArea {
+            clicked => {
+                root.toggled();
+            }
+        }
+    }
+    if line.bullet && line.first && line.task < 0: Rectangle {
+        x: line.indent * 18 * Theme.dp + 5 * Theme.dp;
+        y: (parent.height - self.height) / 2;
+        width: 5 * Theme.dp;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: Theme.text-secondary;
+    }
+    HorizontalLayout {
+        x: line.kind == 4 ? 12 * Theme.dp : line.kind == 6 ? 12 * Theme.dp : (line.indent * 18 + (line.bullet || line.task >= 0 ? 26 : 0)) * Theme.dp;
+        alignment: start;
+        for s in line.spans: Rectangle {
+            property <length> gap: s.gap ? root.size * 0.3 : 0;
+            width: self.gap + t.preferred-width + (s.mono && line.kind != 4 ? 8 * Theme.dp : 0);
+            Rectangle {
+                x: parent.gap;
+                width: parent.width - parent.gap;
+                background: s.mono && line.kind != 4 ? #2a2e35 : transparent;
+                border-radius: 4 * Theme.dp;
+            }
+            t := Text {
+                x: parent.gap + (s.mono && line.kind != 4 ? 4 * Theme.dp : 0);
+                text: s.text;
+                color: s.colour;
+                font-size: s.mono ? root.size * 0.87 : root.size;
+                font-weight: s.bold || line.kind == 1 || line.kind == 2 || line.kind == 3 ? 700 : 400;
+                font-italic: s.italic;
+                // the kit's face has real bold weights; DejaVu Sans Mono for code
+                font-family: s.mono ? "DejaVu Sans Mono" : "NeoSans";
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+// files2-edit-md's Preview: lines wrapped by Rust
+export component MdView inherits Flickable {
+    in property <[MdRow]> lines;
+    callback task-toggled(int);
+    content-height: col.preferred-height;
+    col := VerticalLayout {
+        padding: 16 * Theme.dp;
+        alignment: start;
+        for l[i] in root.lines: MdLine {
+            line: l;
+            toggled => {
+                root.task-toggled(i);
+            }
+        }
+    }
+}
+
+// files2-edit-csv: column letters, row numbers, the cells; the picked one outlined
+export component TableGrid inherits Rectangle {
+    in property <[string]> heads;
+    in property <[Col]> cols;
+    in property <[CellRow]> cells;
+    in property <int> sel-r: -1;
+    in property <int> sel-c: -1;
+    callback picked(int, int);
+    property <length> no-w: 26 * Theme.dp;
+    property <length> row-h: 29 * Theme.dp;
+    background: #0d1117;
+    Flickable {
+    content-width: root.no-w + (root.cols.length > 0 ? root.cols[root.cols.length - 1].x + root.cols[root.cols.length - 1].w : 0);
+    content-height: (root.cells.length + 1) * root.row-h;
+    for h[c] in root.heads: Rectangle {
+        x: root.no-w + root.cols[c].x;
+        y: 0;
+        width: root.cols[c].w;
+        height: root.row-h;
+        background: #1b1e23;
+        border-width: max(1px, Theme.dp / 3);
+        border-color: #ffffff14;
+        Text {
+            text: h;
+            color: Theme.text-dim;
+            font-size: 12.5 * Theme.dp;
+        }
+    }
+    for r[i] in root.cells: Rectangle {
+        y: (i + 1) * root.row-h;
+        height: root.row-h;
+        width: parent.viewport-width;
+        Rectangle {
+            x: 0;
+            width: root.no-w;
+            background: #1b1e23;
+            Text {
+                text: r.no;
+                color: Theme.text-dim;
+                font-size: 12.5 * Theme.dp;
+            }
+        }
+
+        for v[c] in r.cells: Rectangle {
+            x: root.no-w + root.cols[c].x;
+            width: root.cols[c].w;
+            border-width: i == root.sel-r && c == root.sel-c ? 2 * Theme.dp : max(1px, Theme.dp / 3);
+            border-color: i == root.sel-r && c == root.sel-c ? Theme.accent : #ffffff14;
+            background: i == root.sel-r && c == root.sel-c ? #3d8bfd1f : transparent;
+            Text {
+                x: 6 * Theme.dp;
+                width: parent.width - 12 * Theme.dp;
+                text: v;
+                color: i == 0 ? Theme.text : #d7dde5;
+                font-weight: i == 0 ? 700 : 400;
+                font-size: 13.5 * Theme.dp;
+                font-family: "DejaVu Sans";
+                overflow: elide;
+                horizontal-alignment: (v.to-float() != 0 || v == "0") && i > 0 ? right : left;
+            }
+
+            TouchArea {
+                clicked => {
+                    root.picked(i, c);
+                }
+            }
+        }
+    }
+}
+}
+
+// files2-edit-csv: "D7 · value ✓" above the keyboard
+export component CellBar inherits Rectangle {
+    in property <string> name;
+    in-out property <string> value;
+    callback done();
+    height: 62 * Theme.dp;
+    background: Theme.bg;
+    HorizontalLayout {
+        padding: 9 * Theme.dp;
+        spacing: 8 * Theme.dp;
+        Rectangle {
+            border-radius: 12 * Theme.dp;
+            border-width: 1.5 * Theme.dp;
+            border-color: Theme.accent;
+            background: #11141a;
+            HorizontalLayout {
+                padding-left: 8 * Theme.dp;
+                spacing: 8 * Theme.dp;
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: nt.preferred-width + 12 * Theme.dp;
+                        height: 24 * Theme.dp;
+                        border-radius: 6 * Theme.dp;
+                        background: #2a2e35;
+                        nt := Text {
+                            text: root.name;
+                            color: Theme.text-secondary;
+                            font-size: 12 * Theme.dp;
+                            font-weight: 700;
+                        }
+                    }
+                }
+                TextField {
+                    horizontal-stretch: 1;
+                    text <=> root.value;
+                    autofocus: true;
+                    accepted(t) => {
+                        root.done();
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            width: 44 * Theme.dp;
+            border-radius: self.width / 2;
+            background: ok.pressed ? #2f6fd0 : Theme.accent;
+            Glyph {
+                source: @image-url("@neoui/icons/sys/check.svg");
+                size: 22 * Theme.dp;
+                colorize: white;
+            }
+
+            ok := TouchArea {
+                clicked => {
+                    root.done();
+                }
+            }
+        }
+    }
+}
+
+// files2-new-file: Text .txt · Markdown .md · Table .csv · JSON .json · Code…
+export component TypeChips inherits VerticalLayout {
+    in property <int> current;
+    callback picked(int);
+    property <[string]> labels: ["Text", "Markdown", "Table", "JSON", "Code…"];
+    property <[string]> exts: [".txt", ".md", ".csv", ".json", ""];
+    property <[string]> badges: ["TXT", "MD", "CSV", "JSON", "RS"];
+    property <[color]> colours: [#8a93a0, #8a93a0, #22b46a, #e8a23d, #e8743d];
+    spacing: 8 * Theme.dp;
+    for row in [[0, 1], [2, 3], [4]]: HorizontalLayout {
+        spacing: 8 * Theme.dp;
+        alignment: start;
+        for i in row: Rectangle {
+            height: 42 * Theme.dp;
+            width: chip.preferred-width + 24 * Theme.dp;
+            border-radius: self.height / 2;
+            background: i == root.current ? Theme.tab-pill : ct.pressed ? Theme.pressed : Theme.field;
+            border-width: max(1px, Theme.dp);
+            border-color: i == root.current ? Theme.accent : #ffffff14;
+            chip := HorizontalLayout {
+                alignment: center;
+                spacing: 8 * Theme.dp;
+                FTile {
+                    size: 22 * Theme.dp;
+                    badge: root.badges[i];
+                    colour: root.colours[i];
+                }
+
+                Text {
+                    text: root.labels[i];
+                    color: Theme.text;
+                    font-size: 14.5 * Theme.dp;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: root.exts[i];
+                    font-family: "DejaVu Sans Mono";
+                    color: Theme.text-dim;
+                    font-size: 13 * Theme.dp;
+                    vertical-alignment: center;
+                }
+            }
+
+            ct := TouchArea {
+                clicked => {
+                    root.picked(i);
+                }
+            }
+        }
+    }
+}

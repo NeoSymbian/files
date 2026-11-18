@@ -5,6 +5,8 @@ use neo_format_text::{Doc, Editor, Pos};
 #[test]
 fn wraps_by_display_columns_with_tabs_as_four() {
     assert_eq!(breaks("abcdefghij", 4), vec![0, 4, 8]);
+    assert_eq!(breaks("41.8 GB, label", 8), vec![0, 5, 9]);
+    assert_eq!(breaks("ab   cd", 4), vec![0, 5]);
     assert_eq!(breaks("\tab\tc", 4), vec![0, 1, 3, 4]);
     assert_eq!(breaks("anything", 0), vec![0]);
     assert_eq!(x_of("\tab", 2), 5);

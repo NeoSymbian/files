@@ -1,0 +1,219 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// The text surface for the viewer and the editors (files2-view-text, -edit-code, -edit-find): a monospace page drawn
+// a window at a time. Rust lays the text out (neo-format-text's soft wrap) and hands over only the rows on screen,
+// each as coloured spans; this draws them at `row × line-h`, with the line numbers, the cursor, the selection and
+// find marks, and the two selection handles, and reports taps, long presses, handle drags and scrolling in rows and
+// columns.
+import { Theme } from "@neoui/kit.slint";
+
+// x: the column the span starts at (spans are placed by column: a span of spaces has no width of its own in Slint)
+export struct TSpan { text: string, colour: color, x: int }
+// row: the visual row; no: the line number on a line's first row, else ""
+export struct TRow { row: int, no: string, spans: [TSpan] }
+// a highlight over columns x..x+w of a row; kind 0 selection, 1 a find match, 2 the current match
+export struct Mark { row: int, x: int, w: int, kind: int }
+
+export global TextMetrics {
+    // DejaVu Sans Mono's advance, 1233/2048 em (as Terminal measures it)
+    out property <length> font-size: 13.5 * Theme.dp;
+    out property <length> line-h: 21 * Theme.dp;
+}
+
+component Handle inherits Rectangle {
+    in property <bool> left;
+    callback dragged(length, length);
+    callback released();
+    width: 22 * Theme.dp;
+    height: 30 * Theme.dp;
+    Rectangle {
+        x: root.left ? parent.width - self.width : 0;
+        y: 8 * Theme.dp;
+        width: 18 * Theme.dp;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: Theme.accent;
+    }
+
+    Rectangle {
+        x: root.left ? parent.width - 2 * Theme.dp : 0;
+        y: 0;
+        width: 2 * Theme.dp;
+        height: 14 * Theme.dp;
+        background: Theme.accent;
+    }
+
+    touch := TouchArea {
+        moved => {
+            root.dragged(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+        }
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.up {
+                root.released();
+            }
+        }
+    }
+}
+
+export component TextPane inherits Rectangle {
+    in property <[TRow]> rows;
+    in property <int> total-rows;
+    // digits of the largest line number (the gutter's width); 0 = no gutter
+    in property <int> gutter;
+    in property <bool> show-cursor;
+    in property <int> cursor-row;
+    in property <int> cursor-x;
+    in property <[Mark]> marks;
+    in property <bool> handles;
+    in property <int> a-row;
+    in property <int> a-x;
+    in property <int> b-row;
+    in property <int> b-x;
+    // columns that fit (Rust wraps at this)
+    // the advance as the renderer draws it (a hidden run of ten zeros), not the font's nominal 0.602 em
+    out property <length> cell-w: probe.preferred-width / 10;
+    out property <int> cols: max(8, floor((self.width - root.text-x - 6 * Theme.dp) / root.cell-w));
+    out property <int> visible-rows: ceil(self.height / TextMetrics.line-h) + 1;
+    out property <int> first-row: max(0, floor(-flick.viewport-y / TextMetrics.line-h));
+    callback scrolled(int);
+    callback tapped(int, int);
+    callback held(int, int);
+    callback handle-moved(int, int, int);
+    callback handle-done();
+    background: #0d1117;
+    clip: true;
+
+    property <length> gutter-w: root.gutter > 0 ? (root.gutter + 1.5) * root.cell-w : 0;
+    property <length> text-x: root.gutter-w + 6 * Theme.dp;
+
+    probe := Text {
+        visible: false;
+        text: "0000000000";
+        font-family: "DejaVu Sans Mono";
+        font-size: TextMetrics.font-size;
+    }
+
+    // bring a row into view (the cursor after a key, a find match)
+    public function show-row(r: int) {
+        if r * TextMetrics.line-h < -flick.viewport-y {
+            flick.viewport-y = -r * TextMetrics.line-h;
+        } else if (r + 1) * TextMetrics.line-h > -flick.viewport-y + flick.height {
+            flick.viewport-y = min(0, -((r + 1) * TextMetrics.line-h - flick.height));
+        }
+    }
+    public function to-top() {
+        flick.viewport-y = 0;
+    }
+
+    function row-at(y: length) -> int {
+        floor(y / TextMetrics.line-h)
+    }
+    function col-at(x: length) -> int {
+        max(0, round((x - root.text-x) / root.cell-w))
+    }
+
+    flick := Flickable {
+        content-height: max(self.height, (root.total-rows + 1) * TextMetrics.line-h);
+        changed viewport-y => {
+            root.scrolled(root.first-row);
+        }
+
+        if root.gutter > 0: Rectangle {
+            x: 0;
+            width: root.gutter-w;
+            height: parent.viewport-height;
+            background: #0d1117;
+        }
+
+        for m in root.marks: Rectangle {
+            x: root.text-x + m.x * root.cell-w;
+            y: m.row * TextMetrics.line-h + 1px;
+            width: max(2px, m.w * root.cell-w);
+            height: TextMetrics.line-h - 2px;
+            background: m.kind == 0 ? #3d8bfd55 : m.kind == 2 ? #f59e0b : #f59e0b44;
+            border-radius: 2px;
+        }
+
+        for r in root.rows: Rectangle {
+            y: r.row * TextMetrics.line-h;
+            height: TextMetrics.line-h;
+            width: parent.width;
+            if r.no != "": Text {
+                x: 0;
+                width: root.gutter-w;
+                height: parent.height;
+                text: r.no;
+                font-family: "DejaVu Sans Mono";
+                font-size: TextMetrics.font-size;
+                color: r.row == root.cursor-row && root.show-cursor ? #b9bec7 : #4a4f57;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+            for s in r.spans: Text {
+                    x: root.text-x + s.x * root.cell-w;
+                    height: parent.height;
+                    text: s.text;
+                    font-family: "DejaVu Sans Mono";
+                    font-size: TextMetrics.font-size;
+                    color: s.colour;
+                    vertical-alignment: center;
+                }
+        }
+
+        if root.show-cursor: Rectangle {
+            x: root.text-x + root.cursor-x * root.cell-w - 1px;
+            y: root.cursor-row * TextMetrics.line-h + 2px;
+            width: max(2px, 2 * Theme.dp / 1.5);
+            height: TextMetrics.line-h - 4px;
+            background: Theme.accent;
+        }
+
+        touch := TouchArea {
+            property <bool> long;
+            clicked => {
+                if !self.long {
+                    root.tapped(root.row-at(self.pressed-y), root.col-at(self.pressed-x));
+                }
+            }
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down {
+                    self.long = false;
+                }
+            }
+            hold := Timer {
+                interval: 500ms;
+                running: touch.pressed && !touch.long;
+                triggered => {
+                    if abs(touch.mouse-x - touch.pressed-x) < 8 * Theme.dp
+                        && abs(touch.mouse-y - touch.pressed-y) < 8 * Theme.dp {
+                        touch.long = true;
+                        root.held(root.row-at(touch.pressed-y), root.col-at(touch.pressed-x));
+                    }
+                }
+            }
+        }
+
+        if root.handles: Handle {
+            left: true;
+            x: root.text-x + root.a-x * root.cell-w - self.width;
+            y: (root.a-row + 1) * TextMetrics.line-h - 4px;
+            dragged(dx, dy) => {
+                root.handle-moved(0, root.row-at(self.y - TextMetrics.line-h / 2 + dy),
+                    root.col-at(self.x + self.width + dx));
+            }
+            released => {
+                root.handle-done();
+            }
+        }
+        if root.handles: Handle {
+            left: false;
+            x: root.text-x + root.b-x * root.cell-w;
+            y: (root.b-row + 1) * TextMetrics.line-h - 4px;
+            dragged(dx, dy) => {
+                root.handle-moved(1, root.row-at(self.y - TextMetrics.line-h / 2 + dy), root.col-at(self.x + dx));
+            }
+            released => {
+                root.handle-done();
+            }
+        }
+    }
+}
