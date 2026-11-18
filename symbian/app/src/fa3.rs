@@ -293,6 +293,8 @@ pub fn show_recent(ui: &FilesApp, st: &mut State) {
         })
         .collect();
     st.view = View::Recent;
+    let listed: Vec<Listed> = listed;
+    dprintln!("files: recent {}", listed.len());
     set_listed(ui, st, listed, "Files you open show here.");
     ui.set_view("recent".into());
 }
@@ -590,6 +592,7 @@ pub fn show_bin(ui: &FilesApp, st: &mut State) {
         })
         .collect();
     let n = listed.len();
+    dprintln!("files: bin {}", n);
     ui.set_name("Recycle bin".into());
     ui.set_info_title(if n > 0 {
         "Kept for 30 days".into()

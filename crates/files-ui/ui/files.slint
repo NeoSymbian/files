@@ -13,13 +13,13 @@ import "@neoui/fonts/NeoSans-Bold.ttf";
 import "@neoui/fonts/DejaVuSans.ttf";
 import "@neoui/fonts/DejaVuSansMono.ttf";
 import {
-    Theme, Kit, Scroll, Alphabets, Glyph, NeoList, Header, SubHeader, FormHeader, TextField, Act, Tab, Footer,
+    Theme, Kit, KeyboardFocus, Scroll, Alphabets, Glyph, NeoList, Header, SubHeader, FormHeader, TextField, Act, Tab, Footer,
     Sheet, Switch, Button, ProgressBar
 } from "@neoui/kit.slint";
 import { FTile, FolderTile, DriveTile } from "tiles.slint";
 import { TypeTile, Seg, CleanCard, Detail, Pick, UsedCard, GroupTile, CleanItem, InfoCard, DetailRow } from "fa3.slint";
 
-export { Theme, Scroll, Kit }
+export { Theme, Scroll, Kit, KeyboardFocus }
 
 // kind: "phone", "mass", "card", "rom", "ram"
 export struct DriveRow { title: string, size: string, detail: string, used: float, kind: string, read-only: bool }

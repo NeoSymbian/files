@@ -38,7 +38,7 @@ use neoui_proto::page::Notification;
 use neoui_proto::settings::Value;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
-use files_ui::{FileRow, FilesApp, Kit, Scroll, Theme};
+use files_ui::{FileRow, FilesApp, KeyboardFocus, Kit, Scroll, Theme};
 
 e32::main!(main);
 
@@ -202,6 +202,8 @@ struct State {
     search: fa3::Search,
     /// What Details shows.
     details: String,
+    /// The keyboard last asked of the UI server: (open, KeyboardFocus.seq, mode), as Contacts keeps it.
+    kb: (bool, i32, i32),
 }
 
 fn run() -> Result<(), i32> {
@@ -253,6 +255,7 @@ fn run() -> Result<(), i32> {
         bin_from: View::Browse,
         search: fa3::Search::default(),
         details: String::new(),
+        kb: (false, 0, 0),
     };
     load_settings(&app, &ui, &mut st);
     fa3::load(&mut st);
@@ -319,6 +322,7 @@ fn run() -> Result<(), i32> {
                         }
                     }
                     describe(&app, &ui, &mut st)?;
+                    sync_keyboard(&app, &ui, &mut st);
                     app.redraw()?;
                 }
             };
@@ -332,7 +336,13 @@ fn run() -> Result<(), i32> {
                 AppEvent::Back if neoapp::kit_back!(ui) => {}
                 AppEvent::Back => back(&app, &ui, &mut st),
                 AppEvent::Answer { i } => answer(&app, &ui, &mut st, i == 0),
-                AppEvent::Keyboard { h } => ui.set_kb_h(h as f32),
+                AppEvent::Keyboard { h } => {
+                    // 0 while a field keeps the focus: the user put it away; a tap on the field asks again
+                    let kf = ui.global::<KeyboardFocus>();
+                    kf.set_dismissed(h == 0 && kf.get_open());
+                    kf.set_text_h(h as f32);
+                    ui.set_kb_h(h as f32);
+                }
                 AppEvent::NoteAction => undo(&app, &ui, &mut st),
                 AppEvent::Notified {
                     id: JOB_NOTE,
@@ -348,6 +358,7 @@ fn run() -> Result<(), i32> {
                 }
             }
             describe(&app, &ui, &mut st)?;
+            sync_keyboard(&app, &ui, &mut st);
             app.redraw()?;
         }
         Ok::<(), i32>(())
@@ -440,6 +451,25 @@ fn describe(app: &App, ui: &FilesApp, st: &mut State) -> Result<(), i32> {
         st.page = page;
     }
     Ok(())
+}
+
+/// A field took the focus (the search header, a form's name) or lost it: ask the UI server for its keyboard, or hide
+/// it (the kit's KeyboardFocus, as Contacts does).
+fn sync_keyboard(app: &App, ui: &FilesApp, st: &mut State) {
+    let kf = ui.global::<KeyboardFocus>();
+    let want = (kf.get_open(), kf.get_seq(), kf.get_mode());
+    let had = st.kb;
+    if want.0 != had.0 || (want.0 && (want.1, want.2) != (had.1, had.2)) {
+        st.kb = want;
+        let mode = if want.0 {
+            want.2.max(1)
+        } else {
+            proto::KEYBOARD_HIDDEN
+        };
+        let h = app.keyboard(mode).unwrap_or(0);
+        kf.set_text_h(h as f32);
+        ui.set_kb_h(h as f32);
+    }
 }
 
 /// What the lists scrolled since the last frame (smooth-ui S2d), cleared for the next.
@@ -1528,6 +1558,9 @@ fn cancel_form(app: &App, ui: &FilesApp, st: &mut State) {
 fn close_form(app: &App, ui: &FilesApp, st: &mut State) {
     st.form = None;
     let _ = app.keyboard(proto::KEYBOARD_HIDDEN);
+    // the name field goes with its `if` and never reports losing the focus
+    ui.global::<KeyboardFocus>().invoke_close();
+    st.kb = (false, 0, 0);
     ui.set_kb_h(0.0);
     ui.set_form(SharedString::new());
 }
