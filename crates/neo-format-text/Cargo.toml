@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "neo-format-text"
+description = "Text, code, Markdown and CSV for Files: a byte-exact model, editing, find, highlighting, layout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+logos = { version = "0.15", default-features = false, features = ["export_derive"] }
+csv-core = { version = "0.1", default-features = false }
