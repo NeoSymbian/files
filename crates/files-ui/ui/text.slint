@@ -111,18 +111,21 @@ export component TextPane inherits Rectangle {
         max(0, round((x - root.text-x) / root.cell-w))
     }
 
+    // the gutter's ground, the pane's height (a filled rectangle as tall as the content would pass the software
+    // renderer's 16-bit physical sizes on a long file)
+    if root.gutter > 0: Rectangle {
+        x: 0;
+        width: root.gutter-w;
+        background: #0d1117;
+    }
+
     flick := Flickable {
         content-height: max(self.height, (root.total-rows + 1) * TextMetrics.line-h);
         changed content-y => {
             root.scrolled(root.first-row);
         }
 
-        if root.gutter > 0: Rectangle {
-            x: 0;
-            width: root.gutter-w;
-            height: parent.content-height;
-            background: #0d1117;
-        }
+
 
         for m in root.marks: Rectangle {
             x: root.text-x + m.x * root.cell-w;
