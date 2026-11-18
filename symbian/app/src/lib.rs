@@ -291,6 +291,8 @@ fn run() -> Result<(), i32> {
     };
     load_settings(&app, &ui, &mut st);
     fa3::load(&mut st);
+    #[cfg(feature = "test-files")]
+    test_files(&st);
     show_drives(&app, &ui, &mut st);
     // a trash cut short by a power cut is finished or rolled back (files-ops' journal)
     for &(d, ro) in &st.drives {
@@ -1819,6 +1821,32 @@ fn save_open(app: &App, ui: &FilesApp, st: &mut State) {
         Err(-21) => note_with(app, "This file is read-only", ""),
         Err(e) => toast(app, "", e),
     }
+}
+
+/// Test images only (`--features test-files`): a 5 MB log to open on the phone (files-app.md FA4's gate).
+#[cfg(feature = "test-files")]
+fn test_files(st: &State) {
+    const BIG: &str = "C:\\Data\\big.log";
+    if st.fs.entry(BIG).is_ok() {
+        return;
+    }
+    let mut s = String::with_capacity(5 << 20);
+    let mut i = 0u32;
+    while s.len() < 5 << 20 {
+        s.push_str(&format!(
+            "10:{:02}:{:02}.{:03} EFILE line {i}: Mounted E: FAT32, 41.8 GB, label MASS\r\n",
+            (i / 3600) % 60,
+            (i / 60) % 60,
+            i % 1000
+        ));
+        i += 1;
+    }
+    let r = files_ops::store::write(&*st.fs, BIG, s.as_bytes());
+    dprintln!(
+        "files: test big.log {} lines {}",
+        i,
+        r.err().map_or(0, |e| e.code())
+    );
 }
 
 /// The editor wants the system keyboard: the text one, for its Select all · Copy · Paste bar.
