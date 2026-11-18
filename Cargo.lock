@@ -962,10 +962,18 @@ name = "files-core"
 version = "0.1.0"
 
 [[package]]
+name = "files-ops"
+version = "0.1.0"
+dependencies = [
+ "neo-fs",
+]
+
+[[package]]
 name = "files-ui"
 version = "0.1.0"
 dependencies = [
  "files-core",
+ "neo-view",
  "neoui-kit",
  "png",
  "slint",
@@ -2570,9 +2578,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "neo-fs"
+version = "0.1.0"
+
+[[package]]
+name = "neo-view"
+version = "0.1.0"
+
+[[package]]
 name = "neoui-kit"
 version = "0.1.0"
-source = "git+https://github.com/NeoSymbian/neoui?rev=737babd9c4d3da1a20ec1d2260c7b2f356de9771#737babd9c4d3da1a20ec1d2260c7b2f356de9771"
+source = "git+https://github.com/NeoSymbian/neoui?rev=a73ace8f2b9c8252c8bd63a0c39f1b9d92b6dc29#a73ace8f2b9c8252c8bd63a0c39f1b9d92b6dc29"
 dependencies = [
  "slint-build",
 ]

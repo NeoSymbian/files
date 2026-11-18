@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-only
+[package]
+name = "fs-e32"
+description = "neo-fs over Symbian's file server (e32::fs): what Files' engine runs on the phone"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+
+[dependencies]
+e32.workspace = true
+neo-fs.workspace = true

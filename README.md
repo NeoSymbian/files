@@ -2,16 +2,22 @@
 
 The file manager of [NeoSymbian](https://github.com/NeoSymbian): `NEOFILES.EXE`, a neoui app (its own process,
 drawn with Slint and the neoui kit into the surface neoui's UI server gives it) on Symbian's file server (`e32::fs`).
-Today it shows the drives with their free space, folders, and text files, and makes, renames and deletes; it came
-from neoui (`symbian/apps/files` and `crates/neoui-files`, R8) at neoui `e6aa05e`. The plan for the full app — every
-screen of the design canvas's Files page, viewers for 55 file types, editors, archives, search, a Recycle bin — is
-NeoSymbian/docs `files-app.md`, phases FA0–FA13.
+It has the v2 browsing and file operations (FA1, FA2): the Browse tab with the drives, folders as a list or a grid
+with a breadcrumb, sorting, hidden files, a read-only Z:, New folder / New file / Rename, copy and move through a paste
+bar on a worker thread (a progress toast and a shade entry with Cancel, name clashes asked), and Delete into each
+drive's Recycle bin (`X:\.trash\`) with Undo. It came from neoui (`symbian/apps/files`, `crates/neoui-files`, R8)
+at neoui `e6aa05e`. The plan for the full app (every screen of the design canvas's Files page, viewers for 55 file
+types, editors, archives, search) is NeoSymbian/docs `files-app.md`, phases FA0–FA13.
 
 | Path | What | Licence |
 |---|---|---|
-| `crates/files-core` | The model: Symbian paths, folder ordering, row texts (sizes, dates), drive labels, text previews, name checks, error messages | Apache-2.0 |
-| `crates/files-ui` | The screens in Slint (no_std), with the neoui kit imported as `@neoui/...` (built by `neoui_kit::compile`); host snapshot tests write `snapshots/*.png` | GPL-3.0 (links Slint) |
-| `symbian/app` | `NEOFILES.EXE` (UID 0xE0006001): the event loop, the file server calls, the shell's dialogs and toasts | GPL-3.0 (links Slint) |
+| `crates/files-core` | The model: Symbian paths, sorting, row texts (sizes, dates), breadcrumbs, names, drive labels, text previews, error messages | Apache-2.0 |
+| `crates/neo-view` | File types: the 55 extensions in their families (badge colour, viewer, editor) | Apache-2.0 |
+| `crates/neo-fs` | The file-system contract (`Fs`, `File`, typed errors, paths) and `MemFs`, a fake with full disks, pulled drives and power cuts | Apache-2.0 |
+| `crates/files-ops` | The job engine on `neo-fs`: copy and move in bounded steps (clashes, Cancel), the per-drive Recycle bin with its journal | Apache-2.0 |
+| `crates/files-ui` | The screens in Slint (no_std), with the neoui kit imported as `@neoui/...` (built by `neoui_kit::compile`); host snapshot tests write `snapshots/files2-*.png`, one per canvas board | GPL-3.0 (links Slint) |
+| `symbian/fs-e32` | `neo-fs` over Symbian's file server (`e32::fs`) | GPL-3.0 |
+| `symbian/app` | `NEOFILES.EXE` (UID 0xE0006001): the event loop, the worker, settings (`files.*`), the shell's dialogs, toasts and shade entry | GPL-3.0 (links Slint) |
 
 ## Build
 

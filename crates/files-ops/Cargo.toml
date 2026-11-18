@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "files-ops"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+neo-fs.workspace = true

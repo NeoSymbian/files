@@ -2,13 +2,16 @@
 # GPL-3.0 because it links Slint under GPL-3.0 (NeoSymbian decision 2026-11-06), like neoui's apps.
 [package]
 name = "files-ui"
-description = "The Files app's screens in Slint (no_std): drives, folders, the text viewer, the name forms"
+description = "The Files app's screens in Slint (no_std): drives, folders, selection, copy and move, forms, the text viewer"
 version.workspace = true
 edition.workspace = true
 license = "GPL-3.0-only"
 
 [dependencies]
 slint = { workspace = true }
+# a row from the model, as the app and the snapshot tests both make it
+files-core = { workspace = true }
+neo-view = { workspace = true }
 
 [build-dependencies]
 # the neoui kit (@neoui/kit.slint): theme, fonts, glyphs and components
@@ -16,5 +19,3 @@ neoui-kit = { workspace = true }
 
 [dev-dependencies]
 png = { workspace = true }
-# the snapshot tests make their rows with the model, as the app does
-files-core = { workspace = true }
