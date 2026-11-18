@@ -594,23 +594,24 @@ fn ask_trash(app: &App, st: &mut State) {
     if picked.is_empty() || st.read_only {
         return;
     }
-    let names = match picked.as_slice() {
-        [one] => one.name.clone(),
-        [a, b] => format!("{} and {}", a.name, b.name),
-        [a, b, rest @ ..] => format!("{}, {} and {} more", a.name, b.name, rest.len()),
-        [] => return,
-    };
-    let bytes: u64 = picked.iter().map(|i| i.size).sum();
     let drive = st.dir.chars().next().unwrap_or('C');
-    let title = if picked.len() == 1 {
-        "Move 1 item to Recycle bin?".to_string()
-    } else {
-        format!("Move {} items to Recycle bin?", picked.len())
+    // one line for one item (the shell's dialog keeps its size); the names and size for more (files2-delete)
+    let text = match picked.as_slice() {
+        [] => return,
+        [one] => format!("Move {} to Recycle bin?", one.name),
+        [a, b, rest @ ..] => {
+            let names = match rest.len() {
+                0 => format!("{} and {}", a.name, b.name),
+                n => format!("{}, {} and {n} more", a.name, b.name),
+            };
+            let bytes: u64 = picked.iter().map(|i| i.size).sum();
+            format!(
+                "Move {} items to Recycle bin?\n{names} ({}). Kept in {drive}:\\.trash\\.",
+                picked.len(),
+                model::size_text(bytes)
+            )
+        }
     };
-    let text = format!(
-        "{title}\n{names} ({}). Kept in {drive}:\\.trash\\.",
-        model::size_text(bytes)
-    );
     let paths = picked.iter().map(|i| path_of(st, i)).collect();
     ask(app, st, text, "Move to bin", Ask::Trash(paths));
 }
