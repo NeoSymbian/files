@@ -42,7 +42,7 @@ pub fn write(fs: &impl Fs, file: &str, bytes: &[u8]) -> Result<()> {
     }
 }
 
-fn mkdirs(fs: &impl Fs, dir: &str) -> Result<()> {
+pub(crate) fn mkdirs(fs: &impl Fs, dir: &str) -> Result<()> {
     if let Some(up) = path::parent(dir)
         && fs.entry(&up).is_err()
     {

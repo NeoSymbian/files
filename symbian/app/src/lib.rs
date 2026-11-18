@@ -189,6 +189,9 @@ struct State {
     dupes: Option<Vec<Vec<usize>>>,
     /// Another scan is wanted when this one ends (and with duplicates).
     scan_again: Option<bool>,
+    want_dupes: bool,
+    /// The view the text viewer was opened from (Back returns there).
+    text_from: View,
     recent: model::Recent,
     favs: Vec<String>,
     /// The rows of Recent, a type page, the bin or a review (`checked` is theirs there).
@@ -245,6 +248,8 @@ fn run() -> Result<(), i32> {
         index: files_ops::index::Index::default(),
         dupes: None,
         scan_again: None,
+        want_dupes: false,
+        text_from: View::Folder,
         recent: model::Recent::default(),
         favs: Vec::new(),
         listed: Vec::new(),
@@ -746,6 +751,10 @@ fn open_path(app: &App, ui: &FilesApp, st: &mut State, p: &str) {
     }
     let Some(dir) = model::parent(p) else { return };
     let name = neo_fs::path::name_of(p).to_string();
+    if !is_text(&name) {
+        // st.dir stays the open folder's: Delete, Paste and Rename build their paths from it
+        return note_with(app, &format!("No viewer for {name} yet"), "");
+    }
     st.dir = dir;
     view_file(
         app,
@@ -769,6 +778,9 @@ fn show_any(ui: &FilesApp, st: &State) {
 
 /// Walk the drives again on the worker (now, or when the running walk ends); `dupes` also looks for duplicates.
 fn rescan(st: &mut State, dupes: bool) {
+    // once Free up space has asked, every walk looks for duplicates (a walk without them would drop them)
+    st.want_dupes |= dupes;
+    let dupes = st.want_dupes;
     if st.scanner.running() {
         st.scan_again = Some(st.scan_again.unwrap_or(false) || dupes);
         return;
@@ -865,8 +877,19 @@ fn back(app: &App, ui: &FilesApp, st: &mut State) {
     } else if st.form.is_some() {
         cancel_form(app, ui, st);
     } else if st.view == View::Text {
-        let dir = st.dir.clone();
-        open_dir(app, ui, st, dir);
+        match st.text_from {
+            View::Recent => fa3::show_recent(ui, st),
+            View::Type => fa3::show_type(ui, st),
+            View::Review => {
+                let k = st.review;
+                fa3::show_review(ui, st, k);
+            }
+            View::Browse | View::Types => show_tab(app, ui, st, st.tab),
+            _ => {
+                let dir = st.dir.clone();
+                open_dir(app, ui, st, dir);
+            }
+        }
     } else if st.view == View::Review {
         fa3::show_cleanup(ui, st);
     } else if st.view == View::Bin && st.bin_from == View::Cleanup {
@@ -933,7 +956,9 @@ fn answer(app: &App, ui: &FilesApp, st: &mut State, yes: bool) {
             );
             if st.view == View::Review {
                 // the files are gone from the index too: walk again, then show the review without them
-                st.listed.retain(|l| !paths.contains(&l.path));
+                if r.is_ok() {
+                    st.listed.retain(|l| !paths.contains(&l.path));
+                }
                 st.checked = alloc::vec![false; st.listed.len()];
                 fa3::show_listed(ui, st);
             } else {
@@ -1093,7 +1118,26 @@ fn start_purge(app: &App, ui: &FilesApp, st: &mut State, items: Vec<String>, qui
         return;
     }
     dprintln!("files: purge {} items", items.len());
-    if let Err(e) = st.slot.start(job::Work::Purge(items)) {
+    // out of the bin's journal here, on the UI thread (the only one that writes it); the worker deletes what that
+    // leaves (`.~del`), one item at a time so a failure part-way still hands over what was taken out
+    let mut doomed = Vec::new();
+    for item in &items {
+        match trash::purge(&*st.fs, core::slice::from_ref(item)) {
+            Ok(d) => doomed.extend(d),
+            Err(e) => {
+                dprintln!("files: purge {} {}", item, e.code());
+                if !quiet {
+                    toast(app, "", e.code());
+                }
+                break;
+            }
+        }
+    }
+    if doomed.is_empty() {
+        return;
+    }
+    let n = doomed.len();
+    if let Err(e) = st.slot.start(job::Work::Purge(doomed, n)) {
         return toast(app, "", e);
     }
     st.running = Some(Running {
@@ -1317,7 +1361,7 @@ fn show_drives(app: &App, ui: &FilesApp, st: &mut State) {
 }
 
 fn relist(app: &App, ui: &FilesApp, st: &mut State) {
-    if !st.dir.is_empty() && st.view != View::Browse {
+    if !st.dir.is_empty() && matches!(st.view, View::Folder | View::Text) {
         let (dir, view) = (st.dir.clone(), st.view);
         open_dir(app, ui, st, dir);
         if view == View::Text {
@@ -1477,6 +1521,9 @@ fn view_file(app: &App, ui: &FilesApp, st: &mut State, item: &Item) {
     ui.set_name(item.name.as_str().into());
     ui.set_crumbs(crumbs(&st.dir, Some(&item.name)));
     st.file = path;
+    if st.view != View::Text {
+        st.text_from = st.view;
+    }
     st.view = View::Text;
     ui.set_view("text".into());
 }

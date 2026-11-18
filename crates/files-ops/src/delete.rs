@@ -51,6 +51,8 @@ impl DeleteTree {
                 self.removed += 1;
                 self.bytes += entry.size;
             } else if listed {
+                // a folder made read-only (Details) can't be removed until that is cleared
+                let _ = fs.set_att(&item, 0, att::READ_ONLY);
                 gone(fs.rmdir(&item))?;
                 self.removed += 1;
             } else {

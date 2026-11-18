@@ -376,3 +376,15 @@ fn items_expire_at_exactly_the_keep_time() {
     );
     assert!(trash::expired(&fs, 'C', 129, 30).unwrap().is_empty());
 }
+
+#[test]
+fn restore_makes_the_folder_it_came_from_when_that_is_gone() {
+    let fs = filesystem();
+    fs.add_file("E:\\Docs\\a.txt", b"a").unwrap();
+    fs.add_file("E:\\Docs\\b.txt", b"b").unwrap();
+    trash::trash(&fs, &["E:\\Docs\\a.txt".into()], 0).unwrap();
+    trash::trash(&fs, &["E:\\Docs\\".into()], 1).unwrap();
+    trash::restore(&fs, &["E:\\.trash\\1".into()]).unwrap();
+    assert_eq!(bytes(&fs, "E:\\Docs\\a.txt"), b"a");
+    assert_eq!(trash::list(&fs, 'E').unwrap().len(), 1);
+}

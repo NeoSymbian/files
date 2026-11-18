@@ -274,6 +274,13 @@ pub fn undo(fs: &impl Fs, batch: &Batch) -> Result<()> {
             return Err(Error::InUse);
         }
         let target = restore_name(fs, &journal[index].item.original)?;
+        // its folder may have gone to the bin too (or been deleted) since
+        if let Some(parent) = path::parent(&target)
+            && parent.len() > 3
+            && maybe_entry(fs, &parent)?.is_none()
+        {
+            crate::store::mkdirs(fs, &parent)?;
+        }
         fs.rename(source, &target)?;
         journal[index].state = State::Restored;
         write_records(fs, &root, &journal[index..=index], true)?;

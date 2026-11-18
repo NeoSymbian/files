@@ -2,14 +2,15 @@
 //! A copy or move on a worker thread (files-app.md "Threads"): `files-ops` steps it with the worker's own file-server
 //! session (a session belongs to its thread), and the UI polls [`Slot`] while it runs. A name clash parks the worker
 //! on the slot's semaphore until the UI answers; Cancel is a flag it checks between steps. Deleting from the Recycle
-//! bin for good (FA3) runs here too: `trash::purge` takes the items out, then a [`DeleteTree`] removes them.
+//! bin for good (FA3) runs here too: the UI thread takes the items out of the bin (`trash::purge`: the journal is
+//! only ever written there), and a [`DeleteTree`] here removes the `.~del` leftovers it hands over.
 
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use e32::sync::{Mutex, Semaphore};
 use files_ops::delete::DeleteTree;
-use files_ops::{Choice, Clash, Kind, Progress, Step, Summary, Transfer, trash};
+use files_ops::{Choice, Clash, Kind, Progress, Step, Summary, Transfer};
 use fs_e32::E32Fs;
 use neo_fs::Error;
 
@@ -22,8 +23,8 @@ const STACK: i32 = 64 * 1024;
 pub enum Work {
     /// Copy or move `sources` into a folder.
     Transfer(Kind, Vec<String>, String),
-    /// Delete these Recycle bin items for good (their bin paths).
-    Purge(Vec<String>),
+    /// Delete for good what `trash::purge` took out of the bin (its `.~del` paths); `items` is how many it was.
+    Purge(Vec<String>, usize),
 }
 
 /// What the worker and the UI share.
@@ -60,7 +61,7 @@ impl Slot {
         e32::thread::spawn_with_stack(STACK, move || {
             let result = match work {
                 Work::Transfer(kind, sources, dest) => run(self, kind, sources, &dest),
-                Work::Purge(items) => purge(self, &items),
+                Work::Purge(doomed, items) => purge(self, doomed, items),
             };
             let mut s = self.shared.lock();
             s.done = Some(result);
@@ -139,10 +140,11 @@ fn run(slot: &Slot, kind: Kind, sources: Vec<String>, dest: &str) -> Result<Summ
     }
 }
 
-/// Out of the bin for good; a Cancel stops between steps (what was taken out is gone, the rest stays in the bin).
-fn purge(slot: &Slot, items: &[String]) -> Result<Summary, Error> {
+/// Out of the bin for good. A Cancel stops between steps: the items are already out of the bin's list, and what is
+/// left of them (hidden `.~del` folders) goes when Files next starts (`trash::recover`).
+fn purge(slot: &Slot, doomed: Vec<String>, items: usize) -> Result<Summary, Error> {
     let fs = E32Fs::connect()?;
-    let mut tree = DeleteTree::new(trash::purge(&fs, items)?);
+    let mut tree = DeleteTree::new(doomed);
     loop {
         if slot.shared.lock().cancel {
             return Err(Error::Cancelled);
@@ -150,7 +152,7 @@ fn purge(slot: &Slot, items: &[String]) -> Result<Summary, Error> {
         let done = tree.step(&fs, 32)?;
         slot.shared.lock().progress = Some(Progress {
             files_done: tree.removed as usize,
-            files_total: items.len(),
+            files_total: items,
             bytes_done: tree.bytes,
             bytes_total: 0,
             current: String::new(),
@@ -159,7 +161,7 @@ fn purge(slot: &Slot, items: &[String]) -> Result<Summary, Error> {
         });
         if done {
             return Ok(Summary {
-                copied: items.len(),
+                copied: items,
                 skipped: 0,
                 bytes: tree.bytes,
             });

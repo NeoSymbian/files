@@ -61,7 +61,9 @@ impl Dupes {
         while budget > 0 && self.next_head < self.heads.len() {
             let (i, size, _) = self.heads[self.next_head];
             let mut h = Xxh3::new();
-            if hash_range(fs, &index.path(i), 0, size.min(HEAD) as usize, &mut h).is_some() {
+            let want = size.min(HEAD) as usize;
+            // a file that shrank since the walk drops out (a short read would hash as if whole)
+            if hash_range(fs, &index.path(i), 0, want, &mut h) == Some(want) {
                 self.heads[self.next_head].2 = Some(h.digest());
             }
             self.next_head += 1;

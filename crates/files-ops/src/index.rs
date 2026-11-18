@@ -266,12 +266,13 @@ impl Index {
         }
         let search_only = r.str()?.chars().collect();
         let n = r.u32()? as usize;
-        let mut dirs = Vec::with_capacity(n.min(b.len()));
+        // counts come from the file: reserve no more than its bytes can hold (2 per dir, 30 per item at least)
+        let mut dirs = Vec::with_capacity(n.min(b.len() / 2));
         for _ in 0..n {
             dirs.push(r.str()?);
         }
         let n = r.u32()? as usize;
-        let mut items = Vec::with_capacity(n.min(b.len()));
+        let mut items = Vec::with_capacity(n.min(b.len() / 30));
         for _ in 0..n {
             let dir = r.u32()?;
             if dir as usize >= dirs.len() {

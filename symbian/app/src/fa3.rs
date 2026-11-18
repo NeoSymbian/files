@@ -161,12 +161,17 @@ pub fn remove_fav(ui: &FilesApp, st: &mut State, i: usize) {
     show_favs(ui, st);
 }
 
-/// Favourites that still exist, with their item counts (`9 items`); `paths` puts the path in the detail instead.
+/// Favourites with their item counts (`9 items`): on Browse only those that exist; with `paths` (the Edit page)
+/// all of them, the path in the detail, so ✕ on row i removes `st.favs[i]` (a gone one too).
 fn fav_rows(st: &State, paths: bool) -> Vec<FileRow> {
     st.favs
         .iter()
         .filter_map(|f| {
-            let n = st.fs.read_dir(f).ok()?;
+            let n = match st.fs.read_dir(f) {
+                Ok(n) => n,
+                Err(_) if paths => Vec::new(),
+                Err(_) => return None,
+            };
             let item = Item {
                 name: model::folder_name(f).into(),
                 is_dir: true,
