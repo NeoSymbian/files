@@ -5,11 +5,15 @@
 //! file server says it changed. A long press picks rows: Copy and Move go through the paste bar and run on a worker
 //! ([`job`]) with a progress toast and a shade entry (Cancel); Delete moves into the drive's Recycle bin
 //! (`files_ops::trash`) with Undo; Rename keeps the extension. Z: and other read-only drives open and copy only.
+//! FA3 ([`fa3`]): Favourites and Recent, the Types tab and search over a file index kept by a worker ([`scan`]), the
+//! Recycle bin, Free up space and Details.
 #![no_std]
 
 extern crate alloc;
 
+mod fa3;
 mod job;
+mod scan;
 
 use alloc::collections::VecDeque;
 use alloc::format;
@@ -64,7 +68,7 @@ enum Action {
     Toggle(usize),
     Crumb(usize),
     Up,
-    Tab,
+    Tab(usize),
     Menu(String),
     Pick(usize),
     PickMenu(String),
@@ -81,6 +85,24 @@ enum Action {
     Clash(usize),
     FormCancel,
     FormSave,
+    Fav(usize),
+    FavRemove(usize),
+    FavsEdit,
+    RecentOpen(usize),
+    SeeAll,
+    TypeOpen(usize),
+    TypeDrive(usize),
+    TypeSub(usize),
+    Searched(String),
+    SearchScope(bool),
+    Hit(usize),
+    FilterType(usize),
+    FilterSize(usize),
+    FilterModified(usize),
+    FiltersReset,
+    Review(usize),
+    DetailsReadOnly(bool),
+    DetailsHidden(bool),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -88,6 +110,13 @@ enum View {
     Browse,
     Folder,
     Text,
+    Recent,
+    Types,
+    Type,
+    Bin,
+    Cleanup,
+    Review,
+    Favs,
 }
 
 /// The form page over the folder.
@@ -103,6 +132,8 @@ enum Ask {
     /// Leave the form without its name.
     Discard,
     Trash(Vec<String>),
+    /// Recycle bin items to delete for good.
+    Purge(Vec<String>),
 }
 
 /// Files picked for Copy or Move, waiting in the paste bar for a folder.
@@ -115,6 +146,9 @@ struct Clip {
 /// The job running on the worker, as the UI shows it.
 struct Running {
     kind: Kind,
+    /// Deleting from the bin for good; `quiet` for the 30-day clean-up at start (no toast).
+    purge: bool,
+    quiet: bool,
     dest: String,
     hidden: bool,
     asked: bool,
@@ -147,6 +181,27 @@ struct State {
     unwatched: String,
     /// The page last described to the shell.
     page: Page,
+    // FA3
+    /// The footer's tab (0 Browse, 1 Recent, 2 Types).
+    tab: usize,
+    scanner: &'static scan::Scanner,
+    index: files_ops::index::Index,
+    dupes: Option<Vec<Vec<usize>>>,
+    /// Another scan is wanted when this one ends (and with duplicates).
+    scan_again: Option<bool>,
+    recent: model::Recent,
+    favs: Vec<String>,
+    /// The rows of Recent, a type page, the bin or a review (`checked` is theirs there).
+    listed: Vec<fa3::Listed>,
+    group: usize,
+    type_drive: usize,
+    type_sub: usize,
+    review: fa3::Review,
+    /// Where the bin goes back to (the tab, or Free up space).
+    bin_from: View,
+    search: fa3::Search,
+    /// What Details shows.
+    details: String,
 }
 
 fn run() -> Result<(), i32> {
@@ -183,8 +238,24 @@ fn run() -> Result<(), i32> {
         undo: None,
         unwatched: String::new(),
         page: Page::default(),
+        tab: 0,
+        scanner: scan::Scanner::new()?,
+        index: files_ops::index::Index::default(),
+        dupes: None,
+        scan_again: None,
+        recent: model::Recent::default(),
+        favs: Vec::new(),
+        listed: Vec::new(),
+        group: 0,
+        type_drive: 0,
+        type_sub: 0,
+        review: fa3::Review::Large,
+        bin_from: View::Browse,
+        search: fa3::Search::default(),
+        details: String::new(),
     };
     load_settings(&app, &ui, &mut st);
+    fa3::load(&mut st);
     show_drives(&app, &ui, &mut st);
     // a trash cut short by a power cut is finished or rolled back (files-ops' journal)
     for &(d, ro) in &st.drives {
@@ -192,6 +263,12 @@ fn run() -> Result<(), i32> {
             let _ = trash::recover(&*st.fs, d);
         }
     }
+    // kept 30 days, then deleted for good, quietly
+    let expired = fa3::expired(&st);
+    if !expired.is_empty() {
+        start_purge(&app, &ui, &mut st, expired, true);
+    }
+    rescan(&mut st, false);
     describe(&app, &ui, &mut st)?;
     app.draw()?;
 
@@ -206,7 +283,7 @@ fn run() -> Result<(), i32> {
                 let mut next = pin!(app.server.send(proto::NEXT_EVENT, &args));
                 loop {
                     let mut wait = app.wake_us().unwrap_or(10_000_000).min(10_000_000) as i32;
-                    if st.running.is_some() {
+                    if st.running.is_some() || st.scanner.running() {
                         wait = wait.min(JOB_POLL_US);
                     }
                     let watch_dir =
@@ -236,7 +313,10 @@ fn run() -> Result<(), i32> {
                             dprintln!("files: no watch on {} ({})", st.dir, e);
                             st.unwatched = st.dir.clone();
                         }
-                        Either::Right(Either::Right(())) => poll_job(&app, &ui, &mut st),
+                        Either::Right(Either::Right(())) => {
+                            poll_job(&app, &ui, &mut st);
+                            poll_scan(&app, &ui, &mut st);
+                        }
                     }
                     describe(&app, &ui, &mut st)?;
                     app.redraw()?;
@@ -295,7 +375,18 @@ fn bind(ui: &FilesApp, actions: &Rc<RefCell<VecDeque<Action>>>) {
     ui.on_open_row(index(Action::Row));
     ui.on_toggle(index(Action::Toggle));
     ui.on_crumb(index(Action::Crumb));
-    ui.on_tab(index(|_| Action::Tab));
+    ui.on_tab(index(Action::Tab));
+    ui.on_fav(index(Action::Fav));
+    ui.on_fav_remove(index(Action::FavRemove));
+    ui.on_recent_open(index(Action::RecentOpen));
+    ui.on_type_open(index(Action::TypeOpen));
+    ui.on_type_drive_picked(index(Action::TypeDrive));
+    ui.on_type_sub_picked(index(Action::TypeSub));
+    ui.on_hit_open(index(Action::Hit));
+    ui.on_filter_type(index(Action::FilterType));
+    ui.on_filter_size(index(Action::FilterSize));
+    ui.on_filter_modified(index(Action::FilterModified));
+    ui.on_review(index(Action::Review));
     ui.on_selection_action(index(Action::Pick));
     ui.on_sort_chosen(index(Action::SortKey));
     ui.on_clash_answer(index(Action::Clash));
@@ -305,12 +396,16 @@ fn bind(ui: &FilesApp, actions: &Rc<RefCell<VecDeque<Action>>>) {
     };
     ui.on_menu(text(Action::Menu));
     ui.on_selection_menu(text(Action::PickMenu));
+    ui.on_searched(text(Action::Searched));
     let flag = |a: fn(bool) -> Action| {
         let q = actions.clone();
         move |v: bool| q.borrow_mut().push_back(a(v))
     };
     ui.on_ascending_changed(flag(Action::Ascending));
     ui.on_folders_first_changed(flag(Action::FoldersFirst));
+    ui.on_search_scope(flag(Action::SearchScope));
+    ui.on_details_read_only(flag(Action::DetailsReadOnly));
+    ui.on_details_hidden(flag(Action::DetailsHidden));
     let plain = |a: fn() -> Action| {
         let q = actions.clone();
         move || q.borrow_mut().push_back(a())
@@ -325,13 +420,16 @@ fn bind(ui: &FilesApp, actions: &Rc<RefCell<VecDeque<Action>>>) {
     ui.on_job_hide(plain(|| Action::JobHide));
     ui.on_form_cancel(plain(|| Action::FormCancel));
     ui.on_form_save(plain(|| Action::FormSave));
+    ui.on_favs_edit(plain(|| Action::FavsEdit));
+    ui.on_see_all(plain(|| Action::SeeAll));
+    ui.on_filters_reset(plain(|| Action::FiltersReset));
 }
 
 /// The page: Back stays in the app below the Browse tab, in a form, with a dialog, or with a kit layer open.
 fn describe(app: &App, ui: &FilesApp, st: &mut State) -> Result<(), i32> {
     let page = Page {
         title: "Files".into(),
-        can_back: st.view != View::Browse
+        can_back: !matches!(st.view, View::Browse | View::Recent | View::Types)
             || st.form.is_some()
             || ui.get_clash_open()
             || ui.global::<Kit>().get_layers() > 0,
@@ -406,7 +504,7 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
                 open_dir(app, ui, st, format!("{d}:\\"));
             }
         }
-        Action::Row(i) => {
+        Action::Row(i) if st.view == View::Folder => {
             let Some(item) = st.items.get(i).cloned() else {
                 return;
             };
@@ -416,10 +514,19 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
                 view_file(app, ui, st, &item);
             }
         }
+        Action::Row(i) => {
+            // the bin's rows are in the bin: they open after Restore
+            if st.view != View::Bin
+                && let Some(l) = st.listed.get(i)
+            {
+                let p = l.path.clone();
+                open_path(app, ui, st, &p);
+            }
+        }
         Action::Toggle(i) => {
             if let Some(c) = st.checked.get_mut(i) {
                 *c = !*c;
-                show_rows(ui, st);
+                show_any(ui, st);
             }
         }
         Action::Crumb(i) => {
@@ -431,20 +538,49 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
             }
         }
         Action::Up => back(app, ui, st),
-        Action::Tab => show_drives(app, ui, st),
+        Action::Tab(i) => show_tab(app, ui, st, i),
         Action::Menu(m) => menu(app, ui, st, &m),
+        Action::Pick(i) if st.view == View::Bin => {
+            if i == 0 {
+                fa3::restore(app, ui, st);
+            } else {
+                fa3::ask_purge(app, st);
+            }
+        }
+        Action::Pick(_) if st.view == View::Review => {
+            let paths = fa3::picked_paths(st);
+            ask_trash_paths(app, st, paths);
+        }
         Action::Pick(0) => pick_clip(ui, st, Kind::Copy),
         Action::Pick(_) => ask_trash(app, st),
         Action::PickMenu(m) => match m.as_str() {
             "Move" => pick_clip(ui, st, Kind::Move),
             "Rename" => start_rename(app, ui, st),
+            "Add to Favourites" => {
+                if let [one] = picked(st).as_slice()
+                    && one.is_dir
+                {
+                    let dir = model::join_dir(&st.dir, &one.name);
+                    clear_selection(ui, st);
+                    fa3::add_fav(app, st, dir);
+                }
+            }
+            "Details" => {
+                if let [one] = picked(st).as_slice() {
+                    let p = path_of(st, one);
+                    fa3::details(app, ui, st, &p);
+                }
+            }
             "Select all" => {
                 st.checked.iter_mut().for_each(|c| *c = true);
-                show_rows(ui, st);
+                show_any(ui, st);
             }
             _ => {}
         },
-        Action::ClearSelection => clear_selection(ui, st),
+        Action::ClearSelection => {
+            ui.set_picking(false);
+            clear_selection(ui, st);
+        }
         Action::NewFolder => open_form(app, ui, st, Form::NewFolder),
         Action::NewFile => open_form(app, ui, st, Form::NewFile),
         Action::Refresh => relist(app, ui, st),
@@ -485,7 +621,166 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
         }
         Action::FormCancel => cancel_form(app, ui, st),
         Action::FormSave => save_form(app, ui, st),
+        Action::Fav(i) => {
+            if let Some(d) = fa3::fav_path(st, i) {
+                open_dir(app, ui, st, d);
+            }
+        }
+        Action::FavRemove(i) => fa3::remove_fav(ui, st, i),
+        Action::FavsEdit => fa3::show_favs(ui, st),
+        Action::RecentOpen(i) => {
+            if let Some(p) = fa3::recent_path(st, i) {
+                open_path(app, ui, st, &p);
+            }
+        }
+        Action::SeeAll => show_tab(app, ui, st, 1),
+        Action::TypeOpen(i) => {
+            st.group = i;
+            st.type_drive = 0;
+            st.type_sub = 0;
+            fa3::show_type(ui, st);
+        }
+        Action::TypeDrive(i) => {
+            st.type_drive = i;
+            fa3::show_type(ui, st);
+        }
+        Action::TypeSub(i) => {
+            st.type_sub = i;
+            fa3::show_type(ui, st);
+        }
+        Action::Searched(t) => {
+            if st.search.text.is_empty() && !t.is_empty() {
+                // a new search: in a folder it starts there (files2-search: search in folder as built)
+                st.search.in_folder = st.view == View::Folder;
+            }
+            st.search.text = t;
+            fa3::search(ui, st);
+        }
+        Action::SearchScope(f) => {
+            st.search.in_folder = f;
+            fa3::search(ui, st);
+        }
+        Action::Hit(i) => {
+            if let Some((p, _)) = st.search.hits.get(i).cloned() {
+                ui.set_searching(false);
+                ui.set_query(SharedString::new());
+                st.search.text.clear();
+                open_path(app, ui, st, &p);
+            }
+        }
+        Action::FilterType(i) => {
+            st.search.kind = i;
+            fa3::search(ui, st);
+        }
+        Action::FilterSize(i) => {
+            st.search.size = i;
+            fa3::search(ui, st);
+        }
+        Action::FilterModified(i) => {
+            st.search.modified = i;
+            fa3::search(ui, st);
+        }
+        Action::FiltersReset => {
+            fa3::reset_filters(st);
+            fa3::search(ui, st);
+        }
+        Action::Review(i) => match i {
+            0 => fa3::show_review(ui, st, fa3::Review::Large),
+            1 => fa3::show_review(ui, st, fa3::Review::Old),
+            2 => fa3::show_review(ui, st, fa3::Review::Dupes),
+            _ => {
+                st.bin_from = View::Cleanup;
+                fa3::show_bin(ui, st);
+            }
+        },
+        Action::DetailsReadOnly(on) => fa3::set_attribute(app, ui, st, neo_fs::att::READ_ONLY, on),
+        Action::DetailsHidden(on) => fa3::set_attribute(app, ui, st, neo_fs::att::HIDDEN, on),
     }
+}
+
+/// A tab of the footer, at its root.
+fn show_tab(app: &App, ui: &FilesApp, st: &mut State, i: usize) {
+    st.tab = i.min(2);
+    ui.set_tab_index(st.tab as i32);
+    match st.tab {
+        1 => fa3::show_recent(ui, st),
+        2 => fa3::show_types(ui, st),
+        _ => show_drives(app, ui, st),
+    }
+}
+
+/// A file opens in the viewer, a folder (ends with `\`) as a folder.
+fn open_path(app: &App, ui: &FilesApp, st: &mut State, p: &str) {
+    if p.ends_with('\\') {
+        return open_dir(app, ui, st, p.to_string());
+    }
+    let Some(dir) = model::parent(p) else { return };
+    let name = neo_fs::path::name_of(p).to_string();
+    st.dir = dir;
+    view_file(
+        app,
+        ui,
+        st,
+        &Item {
+            name,
+            ..Item::default()
+        },
+    );
+}
+
+/// The rows of whichever list is showing.
+fn show_any(ui: &FilesApp, st: &State) {
+    if st.view == View::Folder {
+        show_rows(ui, st);
+    } else {
+        fa3::show_listed(ui, st);
+    }
+}
+
+/// Walk the drives again on the worker (now, or when the running walk ends); `dupes` also looks for duplicates.
+fn rescan(st: &mut State, dupes: bool) {
+    if st.scanner.running() {
+        st.scan_again = Some(st.scan_again.unwrap_or(false) || dupes);
+        return;
+    }
+    let drives = st.drives.clone();
+    if let Err(e) = st.scanner.start(drives, st.hidden, dupes) {
+        dprintln!("files: index failed {}", e);
+    }
+}
+
+/// A finished walk: the new index replaces the old, and the screen that shows it is drawn again.
+fn poll_scan(app: &App, ui: &FilesApp, st: &mut State) {
+    let (index, dupes, ms) = {
+        let mut f = st.scanner.found.lock();
+        if f.running {
+            return;
+        }
+        (f.index.take(), f.dupes.take(), f.ms)
+    };
+    let Some(index) = index else {
+        if let Some(d) = st.scan_again.take() {
+            rescan(st, d);
+        }
+        return;
+    };
+    dprintln!("files: index {} entries in {} ms", index.items.len(), ms);
+    st.index = index;
+    // groups point into the index they were found in; a later walk without them drops them
+    st.dupes = dupes;
+    match st.view {
+        View::Types => fa3::show_types(ui, st),
+        View::Type => fa3::show_type(ui, st),
+        View::Cleanup => fa3::show_cleanup(ui, st),
+        _ => {}
+    }
+    if ui.get_searching() {
+        fa3::search(ui, st);
+    }
+    if let Some(d) = st.scan_again.take() {
+        rescan(st, d);
+    }
+    let _ = app;
 }
 
 /// The ⋮ menus (files2-folder-menu, files2-spec-headers).
@@ -498,6 +793,26 @@ fn menu(app: &App, ui: &FilesApp, st: &mut State, m: &str) {
             st.grid = m == "Grid view";
             save(app, "files.grid", Value::Bool(st.grid));
             ui.set_grid(st.grid);
+        }
+        "Recycle bin" => {
+            st.bin_from = st.view;
+            fa3::show_bin(ui, st);
+        }
+        "Free up space" => {
+            fa3::show_cleanup(ui, st);
+            if st.dupes.is_none() {
+                rescan(st, true);
+            }
+        }
+        "Details" => {
+            let d = st.dir.clone();
+            fa3::details(app, ui, st, &d);
+        }
+        "Empty bin" => fa3::ask_empty(app, st),
+        "Select" => ui.set_picking(true),
+        "Select all" => {
+            st.checked.iter_mut().for_each(|c| *c = true);
+            show_any(ui, st);
         }
         "Show hidden" | "Hide hidden" | "Show hidden files" | "Hide hidden files" => {
             st.hidden = m.starts_with("Show");
@@ -522,10 +837,18 @@ fn back(app: &App, ui: &FilesApp, st: &mut State) {
     } else if st.view == View::Text {
         let dir = st.dir.clone();
         open_dir(app, ui, st, dir);
-    } else if let Some(up) = model::parent(&st.dir) {
+    } else if st.view == View::Review {
+        fa3::show_cleanup(ui, st);
+    } else if st.view == View::Bin && st.bin_from == View::Cleanup {
+        st.bin_from = View::Browse;
+        fa3::show_cleanup(ui, st);
+    } else if st.view == View::Folder
+        && let Some(up) = model::parent(&st.dir)
+    {
         open_dir(app, ui, st, up);
     } else {
-        show_drives(app, ui, st);
+        // Back order 6: the tab's root
+        show_tab(app, ui, st, st.tab);
     }
 }
 
@@ -548,7 +871,7 @@ fn path_of(st: &State, item: &Item) -> String {
 
 fn clear_selection(ui: &FilesApp, st: &mut State) {
     st.checked.iter_mut().for_each(|c| *c = false);
-    show_rows(ui, st);
+    show_any(ui, st);
 }
 
 fn ask(app: &App, st: &mut State, text: String, yes: &str, what: Ask) {
@@ -566,6 +889,10 @@ fn ask(app: &App, st: &mut State, text: String, yes: &str, what: Ask) {
 fn answer(app: &App, ui: &FilesApp, st: &mut State, yes: bool) {
     match st.asking.take() {
         Some(Ask::Discard) if yes => close_form(app, ui, st),
+        Some(Ask::Purge(items)) if yes => {
+            ui.set_picking(false);
+            start_purge(app, ui, st, items, false);
+        }
         Some(Ask::Trash(paths)) if yes => {
             clear_selection(ui, st);
             let r = trash::trash(&*st.fs, &paths, now());
@@ -574,7 +901,15 @@ fn answer(app: &App, ui: &FilesApp, st: &mut State, yes: bool) {
                 paths.first().map_or("", String::as_str),
                 r.as_ref().err().map_or(0, |e| e.code())
             );
-            relist(app, ui, st);
+            if st.view == View::Review {
+                // the files are gone from the index too: walk again, then show the review without them
+                st.listed.retain(|l| !paths.contains(&l.path));
+                st.checked = alloc::vec![false; st.listed.len()];
+                fa3::show_listed(ui, st);
+            } else {
+                relist(app, ui, st);
+            }
+            rescan(st, st.dupes.is_some());
             match r {
                 Ok(batch) => {
                     let n = batch.items.len();
@@ -591,6 +926,16 @@ fn answer(app: &App, ui: &FilesApp, st: &mut State, yes: bool) {
         }
         _ => {}
     }
+}
+
+/// Delete from a Free up space review: into the bin, after the shell's dialog.
+fn ask_trash_paths(app: &App, st: &mut State, paths: Vec<String>) {
+    let text = match paths.len() {
+        0 => return,
+        1 => format!("Move {} to Recycle bin?", neo_fs::path::name_of(&paths[0])),
+        n => format!("Move {n} items to Recycle bin?"),
+    };
+    ask(app, st, text, "Move to bin", Ask::Trash(paths));
 }
 
 /// Delete (files2-delete): into the drive's Recycle bin, after the shell's dialog.
@@ -633,6 +978,7 @@ fn undo(app: &App, ui: &FilesApp, st: &mut State) {
         r.as_ref().err().map_or(0, |e| e.code())
     );
     relist(app, ui, st);
+    rescan(st, st.dupes.is_some());
     if let Err(e) = r {
         toast(app, "", e.code());
     }
@@ -689,11 +1035,16 @@ fn paste(app: &App, ui: &FilesApp, st: &mut State) {
         clip.paths.len(),
         dest
     );
-    if let Err(e) = st.slot.start(clip.kind, clip.paths, dest.clone()) {
+    if let Err(e) = st
+        .slot
+        .start(job::Work::Transfer(clip.kind, clip.paths, dest.clone()))
+    {
         return toast(app, "", e);
     }
     st.running = Some(Running {
         kind: clip.kind,
+        purge: false,
+        quiet: false,
         dest,
         hidden: false,
         asked: false,
@@ -701,6 +1052,33 @@ fn paste(app: &App, ui: &FilesApp, st: &mut State) {
     });
     ui.set_job_text(format!("{} …", title_verb(clip.kind)).into());
     ui.set_job_progress(0.0);
+}
+
+/// Delete Recycle bin items for good on the worker (`quiet`: the 30-day clean-up, no toast).
+fn start_purge(app: &App, ui: &FilesApp, st: &mut State, items: Vec<String>, quiet: bool) {
+    if st.running.is_some() {
+        if !quiet {
+            note_with(app, "Wait for the copy to finish", "");
+        }
+        return;
+    }
+    dprintln!("files: purge {} items", items.len());
+    if let Err(e) = st.slot.start(job::Work::Purge(items)) {
+        return toast(app, "", e);
+    }
+    st.running = Some(Running {
+        kind: Kind::Move,
+        purge: true,
+        quiet,
+        dest: String::new(),
+        hidden: quiet,
+        asked: false,
+        noted_at: 0,
+    });
+    if !quiet {
+        ui.set_job_text("Deleting …".into());
+        ui.set_job_progress(0.0);
+    }
 }
 
 fn verb(kind: Kind) -> &'static str {
@@ -730,10 +1108,39 @@ fn poll_job(app: &App, ui: &FilesApp, st: &mut State) {
     if let Some(done) = done {
         let kind = r.kind;
         let dest = r.dest.clone();
+        let (purge, quiet) = (r.purge, r.quiet);
         st.running = None;
         ui.set_job_text(SharedString::new());
         ui.set_clash_open(false);
         let _ = app.cancel_notify(JOB_NOTE);
+        if purge {
+            let n = done.as_ref().map_or(0, |s| s.copied);
+            dprintln!(
+                "files: purge {} {}",
+                n,
+                done.as_ref().err().map_or(0, |e| e.code())
+            );
+            match done {
+                Ok(_) if !quiet => note_with(
+                    app,
+                    &if n == 1 {
+                        "1 item deleted for good".to_string()
+                    } else {
+                        format!("{n} items deleted for good")
+                    },
+                    "",
+                ),
+                Err(e) if e != neo_fs::Error::Cancelled => toast(app, "", e.code()),
+                _ => {}
+            }
+            match st.view {
+                View::Bin => fa3::show_bin(ui, st),
+                View::Cleanup => fa3::show_cleanup(ui, st),
+                _ => {}
+            }
+            return;
+        }
+        rescan(st, st.dupes.is_some());
         match done {
             Ok(s) => {
                 dprintln!(
@@ -797,6 +1204,12 @@ fn poll_job(app: &App, ui: &FilesApp, st: &mut State) {
         .saturating_mul(100)
         .checked_div(p.bytes_total)
         .map_or(0, |v| v.min(100) as u8);
+    if r.purge {
+        if !r.hidden {
+            ui.set_job_text(format!("Deleting · {} removed", p.files_done).into());
+        }
+        return;
+    }
     if !r.hidden {
         let files = if p.files_total == 1 {
             "1 file".to_string()
@@ -865,6 +1278,9 @@ fn show_drives(app: &App, ui: &FilesApp, st: &mut State) {
     }
     dprintln!("files: drives{}", log);
     ui.set_drives(ModelRc::from(Rc::new(VecModel::from(rows))));
+    fa3::browse_extras(ui, st);
+    st.tab = 0;
+    ui.set_tab_index(0);
     st.view = View::Browse;
     st.dir.clear();
     ui.set_view("browse".into());
@@ -978,12 +1394,21 @@ fn show_rows(ui: &FilesApp, st: &State) {
         .zip(&st.checked)
         .map(|(i, c)| files_ui::file_row(i, now, *c))
         .collect();
-    ui.set_selected(st.checked.iter().filter(|c| **c).count() as i32);
+    let picked: Vec<&Item> = st
+        .items
+        .iter()
+        .zip(&st.checked)
+        .filter(|(_, c)| **c)
+        .map(|(i, _)| i)
+        .collect();
+    ui.set_one_item(picked.len() == 1);
+    ui.set_one_folder(matches!(picked.as_slice(), [one] if one.is_dir));
+    ui.set_selected(picked.len() as i32);
     ui.set_rows(ModelRc::from(Rc::new(VecModel::from(rows))));
 }
 
 /// Text-like types open in the text viewer (FA4 brings the editors and the other viewers).
-fn is_text(name: &str) -> bool {
+pub(crate) fn is_text(name: &str) -> bool {
     use neo_view::{Editor, Family};
     neo_view::type_of(name).is_some_and(|t| {
         matches!(t.editor, Editor::Text | Editor::Markdown | Editor::Table)
@@ -1017,6 +1442,7 @@ fn view_file(app: &App, ui: &FilesApp, st: &mut State, item: &Item) {
         Err(e) => return toast(app, "", e.code()),
     };
     dprintln!("files: view {} {}", path, n);
+    fa3::opened(st, &path);
     ui.set_text(model::text_preview(&bytes[..n]).into());
     ui.set_name(item.name.as_str().into());
     ui.set_crumbs(crumbs(&st.dir, Some(&item.name)));

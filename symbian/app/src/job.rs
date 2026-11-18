@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! A copy or move on a worker thread (files-app.md "Threads"): `files-ops` steps it with the worker's own file-server
 //! session (a session belongs to its thread), and the UI polls [`Slot`] while it runs. A name clash parks the worker
-//! on the slot's semaphore until the UI answers; Cancel is a flag it checks between steps.
+//! on the slot's semaphore until the UI answers; Cancel is a flag it checks between steps. Deleting from the Recycle
+//! bin for good (FA3) runs here too: `trash::purge` takes the items out, then a [`DeleteTree`] removes them.
 
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use e32::sync::{Mutex, Semaphore};
-use files_ops::{Choice, Clash, Kind, Progress, Step, Summary, Transfer};
+use files_ops::delete::DeleteTree;
+use files_ops::{Choice, Clash, Kind, Progress, Step, Summary, Transfer, trash};
 use fs_e32::E32Fs;
 use neo_fs::Error;
 
@@ -15,6 +17,14 @@ use neo_fs::Error;
 const STEP: usize = 256 * 1024;
 /// The worker's stack: the engine's buffers are on the heap, its paths and the IPC frames on the stack.
 const STACK: i32 = 64 * 1024;
+
+/// What a job does.
+pub enum Work {
+    /// Copy or move `sources` into a folder.
+    Transfer(Kind, Vec<String>, String),
+    /// Delete these Recycle bin items for good (their bin paths).
+    Purge(Vec<String>),
+}
 
 /// What the worker and the UI share.
 #[derive(Default)]
@@ -44,11 +54,14 @@ impl Slot {
         })))
     }
 
-    /// Start `kind` of `sources` into `dest` on a new worker thread.
-    pub fn start(&'static self, kind: Kind, sources: Vec<String>, dest: String) -> Result<(), i32> {
+    /// Start `work` on a new worker thread.
+    pub fn start(&'static self, work: Work) -> Result<(), i32> {
         *self.shared.lock() = Shared::default();
         e32::thread::spawn_with_stack(STACK, move || {
-            let result = run(self, kind, sources, &dest);
+            let result = match work {
+                Work::Transfer(kind, sources, dest) => run(self, kind, sources, &dest),
+                Work::Purge(items) => purge(self, &items),
+            };
             let mut s = self.shared.lock();
             s.done = Some(result);
             s.ended = true;
@@ -122,6 +135,34 @@ fn run(slot: &Slot, kind: Kind, sources: Vec<String>, dest: &str) -> Result<Summ
             }
             Step::Done(s) => return Ok(s),
             Step::Failed(e) => return Err(e),
+        }
+    }
+}
+
+/// Out of the bin for good; a Cancel stops between steps (what was taken out is gone, the rest stays in the bin).
+fn purge(slot: &Slot, items: &[String]) -> Result<Summary, Error> {
+    let fs = E32Fs::connect()?;
+    let mut tree = DeleteTree::new(trash::purge(&fs, items)?);
+    loop {
+        if slot.shared.lock().cancel {
+            return Err(Error::Cancelled);
+        }
+        let done = tree.step(&fs, 32)?;
+        slot.shared.lock().progress = Some(Progress {
+            files_done: tree.removed as usize,
+            files_total: items.len(),
+            bytes_done: tree.bytes,
+            bytes_total: 0,
+            current: String::new(),
+            current_done: 0,
+            current_size: 0,
+        });
+        if done {
+            return Ok(Summary {
+                copied: items.len(),
+                skipped: 0,
+                bytes: tree.bytes,
+            });
         }
     }
 }

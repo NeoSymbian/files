@@ -128,23 +128,26 @@ fn cmp_ignore_case(a: &str, b: &str) -> core::cmp::Ordering {
         .cmp(y.flat_map(char::to_lowercase))
 }
 
+/// The order [`sort`] puts two items in.
+pub fn compare(a: &Item, b: &Item, how: Sort) -> core::cmp::Ordering {
+    let dirs = if how.folders_first {
+        b.is_dir.cmp(&a.is_dir)
+    } else {
+        core::cmp::Ordering::Equal
+    };
+    let by = match how.key {
+        SortKey::Name => cmp_ignore_case(&a.name, &b.name),
+        SortKey::Date => a.modified.cmp(&b.modified),
+        SortKey::Size => a.size.cmp(&b.size),
+        SortKey::Type => cmp_ignore_case(ext(&a.name), ext(&b.name)),
+    }
+    .then_with(|| cmp_ignore_case(&a.name, &b.name));
+    dirs.then(if how.ascending { by } else { by.reverse() })
+}
+
 /// Order a folder: folders first if asked, then by the key (ties by name), in either direction.
 pub fn sort(items: &mut [Item], how: Sort) {
-    items.sort_by(|a, b| {
-        let dirs = if how.folders_first {
-            b.is_dir.cmp(&a.is_dir)
-        } else {
-            core::cmp::Ordering::Equal
-        };
-        let by = match how.key {
-            SortKey::Name => cmp_ignore_case(&a.name, &b.name),
-            SortKey::Date => a.modified.cmp(&b.modified),
-            SortKey::Size => a.size.cmp(&b.size),
-            SortKey::Type => cmp_ignore_case(ext(&a.name), ext(&b.name)),
-        }
-        .then_with(|| cmp_ignore_case(&a.name, &b.name));
-        dirs.then(if how.ascending { by } else { by.reverse() })
-    });
+    items.sort_by(|a, b| compare(a, b, how));
 }
 
 /// The breadcrumb: (label, folder) per level, the drive first (`E:\Music\` → `E:`, `Music`).
