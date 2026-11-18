@@ -24,7 +24,8 @@ enum Undo {
         old: String,
         raw: Option<Vec<u8>>,
     },
-    RowAdded(usize),
+    /// The row added, and what the old last row was when the add gave it a line end.
+    RowAdded(usize, Option<(Option<Vec<u8>>, Vec<u8>)>),
     RowDeleted(usize, Row),
     ColAdded(Vec<(usize, Option<Vec<u8>>, usize)>),
 }
@@ -34,8 +35,10 @@ pub struct Table {
     rows: Vec<Row>,
     /// The line end new rows get.
     end: Vec<u8>,
-    undo: Vec<Undo>,
-    saved: usize,
+    /// Each step with its id; `saved` is the id on top at the last save (0 = none), as `Editor` keeps it.
+    undo: Vec<(u32, Undo)>,
+    next_id: u32,
+    saved: u32,
 }
 
 /// `A`, `B`, … `Z`, `AA` …
@@ -91,10 +94,6 @@ impl Table {
         loop {
             let (res, nin, nout, nend) =
                 rd.read_record(&b[at..], &mut out[outpos..], &mut ends[endpos..]);
-            // field ends are relative to the output slice this call was given
-            for e in &mut ends[endpos..endpos + nend] {
-                *e += outpos;
-            }
             at += nin;
             outpos += nout;
             endpos += nend;
@@ -173,6 +172,7 @@ impl Table {
             rows,
             end,
             undo: Vec::new(),
+            next_id: 1,
             saved: 0,
         })
     }
@@ -192,12 +192,21 @@ impl Table {
             .map_or("", String::as_str)
     }
 
+    fn top(&self) -> u32 {
+        self.undo.last().map_or(0, |u| u.0)
+    }
+
     pub fn dirty(&self) -> bool {
-        self.undo.len() != self.saved
+        self.top() != self.saved
     }
 
     pub fn saved(&mut self) {
-        self.saved = self.undo.len();
+        self.saved = self.top();
+    }
+
+    fn push(&mut self, u: Undo) {
+        self.undo.push((self.next_id, u));
+        self.next_id += 1;
     }
 
     pub fn set(&mut self, r: usize, c: usize, v: &str) {
@@ -212,19 +221,22 @@ impl Table {
         }
         let old = core::mem::replace(&mut row.cells[c], String::from(v));
         let raw = row.raw.take();
-        self.undo.push(Undo::Cell { r, c, old, raw });
+        self.push(Undo::Cell { r, c, old, raw });
     }
 
     /// A blank row before `r` (`r` = rows() adds at the end).
     pub fn add_row(&mut self, r: usize) {
         let r = r.min(self.rows.len());
-        // the row above the new last one needs a line end
+        // the row above the new last one needs a line end (kept for undo)
+        let mut before = None;
         if r == self.rows.len()
             && let Some(last) = self.rows.last_mut()
             && last.end.is_empty()
         {
-            last.raw = None;
-            last.end = self.end.clone();
+            before = Some((
+                last.raw.take(),
+                core::mem::replace(&mut last.end, self.end.clone()),
+            ));
         }
         let n = self.cols().max(1);
         self.rows.insert(
@@ -239,13 +251,13 @@ impl Table {
                 },
             },
         );
-        self.undo.push(Undo::RowAdded(r));
+        self.push(Undo::RowAdded(r, before));
     }
 
     pub fn delete_row(&mut self, r: usize) {
         if r < self.rows.len() {
             let row = self.rows.remove(r);
-            self.undo.push(Undo::RowDeleted(r, row));
+            self.push(Undo::RowDeleted(r, row));
         }
     }
 
@@ -259,11 +271,11 @@ impl Table {
                 row.cells.push(String::new());
             }
         }
-        self.undo.push(Undo::ColAdded(before));
+        self.push(Undo::ColAdded(before));
     }
 
     pub fn undo(&mut self) -> bool {
-        let Some(u) = self.undo.pop() else {
+        let Some((_, u)) = self.undo.pop() else {
             return false;
         };
         match u {
@@ -273,8 +285,12 @@ impl Table {
                     row.raw = raw;
                 }
             }
-            Undo::RowAdded(r) => {
+            Undo::RowAdded(r, before) => {
                 self.rows.remove(r);
+                if let (Some((raw, end)), Some(last)) = (before, self.rows.last_mut()) {
+                    last.raw = raw;
+                    last.end = end;
+                }
             }
             Undo::RowDeleted(r, row) => self.rows.insert(r, row),
             Undo::ColAdded(before) => {

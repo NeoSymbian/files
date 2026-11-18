@@ -51,6 +51,8 @@ pub struct Open {
     pub preview: bool,
     find: Vec<(Pos, Pos)>,
     find_at: usize,
+    /// What the find bar looks for ("" = closed or empty): an edit searches again.
+    needle: String,
     pub cell: Option<(usize, usize)>,
     /// 0x11 came: the next key is a Ctrl chord (the keyboard's edit bar).
     ctrl: bool,
@@ -126,6 +128,7 @@ impl Open {
             preview: false,
             find: Vec::new(),
             find_at: 0,
+            needle: String::new(),
             cell: None,
             ctrl: false,
             handles: false,
@@ -272,8 +275,27 @@ impl Open {
     /// After an edit at `line`: colours and rows from there down, then keep the cursor in view.
     fn edited_at(&mut self, ui: &FilesApp, line: usize) {
         self.hl.invalidate(line.saturating_sub(1));
-        self.layout.update(&self.ed.doc, line.saturating_sub(1));
-        self.find.clear();
+        if gutter(&self.ed.doc) != ui.get_text_gutter() {
+            // the line numbers grew a digit: fewer columns fit
+            self.relayout(ui);
+        } else {
+            self.layout.update(&self.ed.doc, line.saturating_sub(1));
+        }
+        self.find = if self.needle.is_empty() {
+            Vec::new()
+        } else {
+            find_all(&self.ed.doc, &self.needle, false)
+        };
+        self.find_at = self.find_at.min(self.find.len().saturating_sub(1));
+        if !self.needle.is_empty() {
+            ui.set_find_info(if self.find.is_empty() {
+                SharedString::from("0 of 0")
+            } else {
+                format!("{} of {}", self.find_at + 1, self.find.len())
+                    .as_str()
+                    .into()
+            });
+        }
         self.show(ui);
         let (r, _) = self.layout.place(&self.ed.doc, self.ed.cursor);
         ui.invoke_text_show_row(r as i32);
@@ -310,17 +332,36 @@ impl Open {
                 _ => Clip::None,
             };
         }
+        // Symbian's arrows: EKeyLeftArrow 0xF807, Right 0xF808, Up 0xF809, Down 0xF80A (neoui-proto KEYBOARD_TERMINAL)
+        let moved = match code {
+            0x11 => {
+                self.ctrl = true;
+                return Clip::None;
+            }
+            0xF807 => (-1, 0),
+            0xF808 => (1, 0),
+            0xF809 => (0, -1),
+            0xF80A => (0, 1),
+            _ => (0, 0),
+        };
+        if moved != (0, 0) {
+            // a move changes no text: the find matches stay
+            self.ed.move_by(moved.0, moved.1);
+            self.handles = false;
+            self.show(ui);
+            let (r, _) = self.layout.place(&self.ed.doc, self.ed.cursor);
+            ui.invoke_text_show_row(r as i32);
+            return Clip::None;
+        }
         match code {
-            0x11 => self.ctrl = true,
             8 => self.ed.backspace(),
             13 | 10 => self.ed.newline(),
             9 => self.ed.tab(),
-            0xF807 => self.ed.move_by(0, -1),
-            0xF808 => self.ed.move_by(0, 1),
-            0xF809 => self.ed.move_by(-1, 0),
-            0xF80A => self.ed.move_by(1, 0),
             c => match char::from_u32(c) {
-                Some(ch) if !ch.is_control() => self.ed.insert(ch.encode_utf8(&mut [0; 4])),
+                // other Symbian key codes (the private-use 0xF700–0xF8FF block) aren't text
+                Some(ch) if !ch.is_control() && !('\u{F700}'..='\u{F8FF}').contains(&ch) => {
+                    self.ed.insert(ch.encode_utf8(&mut [0; 4]))
+                }
                 _ => return Clip::None,
             },
         }
@@ -345,8 +386,8 @@ impl Open {
     pub fn code_key(&mut self, ui: &FilesApp, k: &str) {
         let code = match k {
             "Tab" => 9,
-            "←" => 0xF809,
-            "→" => 0xF80A,
+            "←" => 0xF807,
+            "→" => 0xF808,
             s => s.chars().next().map_or(0, |c| c as u32),
         };
         self.key(ui, code);
@@ -391,6 +432,7 @@ impl Open {
     // ── find and replace ─────────────────────────────────────────────────────────────────────────────────────────
 
     pub fn find(&mut self, ui: &FilesApp, needle: &str) {
+        self.needle = String::from(needle);
         self.find = find_all(&self.ed.doc, needle, false);
         self.find_at = next_from(&self.find, self.ed.cursor).unwrap_or(0);
         self.show_find(ui);
@@ -442,6 +484,10 @@ impl Open {
     // ── the table ────────────────────────────────────────────────────────────────────────────────────────────────
 
     pub fn cell_picked(&mut self, ui: &FilesApp, r: usize, c: usize) {
+        // what was typed in the last cell stays
+        if self.cell.is_some_and(|p| p != (r, c)) {
+            self.cell_done(ui);
+        }
         self.cell = Some((r, c));
         if let Some(t) = &self.table {
             ui.set_cell_text(t.cell(r, c).into());
@@ -490,28 +536,17 @@ impl Open {
         }
     }
 
-    /// A Markdown task box tapped in Preview: `[ ]` ⇄ `[x]` in the source.
-    pub fn toggle_task(&mut self, ui: &FilesApp, nth: usize) {
-        let mut k = 0;
-        let mut hit = None;
-        for (l, line) in self.ed.doc.lines.iter().enumerate() {
-            let t = line.text.trim_start();
-            let lead = line.text.chars().count() - t.chars().count();
-            for m in ["- [ ] ", "- [x] ", "- [X] ", "* [ ] ", "* [x] "] {
-                if t.starts_with(m) {
-                    if k == nth {
-                        hit = Some((l, lead + 3, m.as_bytes()[3] == b' '));
-                    }
-                    k += 1;
-                }
-            }
-        }
-        if let Some((l, col, open)) = hit {
+    /// A Markdown task box tapped in Preview (`line`: its source line): `[ ]` ⇄ `[x]` there.
+    pub fn toggle_task(&mut self, ui: &FilesApp, line: usize) {
+        let Some(text) = self.ed.doc.lines.get(line).map(|l| l.text.clone()) else {
+            return;
+        };
+        if let Some((col, done)) = neo_format_text::md::task_box(&text) {
             self.ed.replace_ranges(
-                &[(Pos::new(l, col), Pos::new(l, col + 1))],
-                if open { "x" } else { " " },
+                &[(Pos::new(line, col), Pos::new(line, col + 1))],
+                if done { " " } else { "x" },
             );
-            self.edited_at(ui, l);
+            self.edited_at(ui, line);
         }
     }
 

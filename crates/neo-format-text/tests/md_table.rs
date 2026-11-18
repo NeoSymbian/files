@@ -34,7 +34,8 @@ fn markdown_blocks_from_the_board() {
         Block::Item {
             depth: 0,
             task: Some(true),
-            spans: vec![s("Back up ", Style::Text), s("E:\\Projects", Style::Code)]
+            spans: vec![s("Back up ", Style::Text), s("E:\\Projects", Style::Code)],
+            line: 6
         }
     );
     assert!(matches!(
@@ -119,4 +120,38 @@ fn an_edit_rewrites_only_its_row_and_undo_restores() {
     assert_eq!(col_name(0), "A");
     assert_eq!(col_name(25), "Z");
     assert_eq!(col_name(26), "AA");
+}
+
+#[test]
+fn review_csv_last_row_without_newline_and_dirty_and_add_row_undo() {
+    let mut t = Table::parse(b"a,b\nc,d", false).unwrap();
+    t.set(1, 0, "c2");
+    assert_eq!(t.encode(), b"a,b\nc2,d");
+    let mut t = Table::parse(b"ab,cd\nef,gh", false).unwrap();
+    t.set(1, 1, "z");
+    assert_eq!(t.encode(), b"ab,cd\nef,z");
+    let mut t = Table::parse(b"a,b", false).unwrap();
+    t.add_row(1);
+    assert_eq!(t.encode(), b"a,b\n,");
+    t.undo();
+    assert_eq!(t.encode(), b"a,b");
+    assert!(!t.dirty());
+    // edit, save, undo, another edit: still dirty
+    let mut t = Table::parse(b"a,b\n", false).unwrap();
+    t.set(0, 0, "x");
+    t.saved();
+    t.undo();
+    t.set(0, 1, "y");
+    assert!(t.dirty());
+}
+
+#[test]
+fn task_boxes_are_found_as_blocks_finds_them() {
+    use neo_format_text::md::task_box;
+    assert_eq!(task_box("- [ ] a"), Some((3, false)));
+    assert_eq!(task_box("  * [X] b"), Some((5, true)));
+    assert_eq!(task_box("12. [x] c"), Some((5, true)));
+    assert_eq!(task_box("+ [ ] d"), Some((3, false)));
+    assert_eq!(task_box("- plain"), None);
+    assert_eq!(task_box("text"), None);
 }

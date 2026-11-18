@@ -239,6 +239,7 @@ pub fn md_rows(blocks: &[Block], width_dp: f32) -> Vec<MdRow> {
             task,
             bullet,
             first,
+            src: -1,
             spans: model(spans),
         };
     for (k, b) in blocks.iter().enumerate() {
@@ -272,12 +273,19 @@ pub fn md_rows(blocks: &[Block], width_dp: f32) -> Vec<MdRow> {
                     out.push(row(kind, 0, -1, false, i == 0, l));
                 }
             }
-            Block::Item { depth, task, spans } => {
+            Block::Item {
+                depth,
+                task,
+                spans,
+                line,
+            } => {
                 let indent = *depth as i32;
                 let w = (text_w - (indent as f32 * 18.0 + 26.0)) / 15.0;
                 let t = task.map_or(-1, |d| d as i32);
                 for (i, l) in wrap(spans, 0, w).into_iter().enumerate() {
-                    out.push(row(0, indent, t, true, i == 0, l));
+                    let mut r = row(0, indent, t, true, i == 0, l);
+                    r.src = *line as i32;
+                    out.push(r);
                 }
             }
             Block::Code(lines) => {

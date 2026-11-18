@@ -30,6 +30,8 @@ pub enum Block {
         depth: u8,
         task: Option<bool>,
         spans: Vec<Span>,
+        /// Its line in the source (Preview's task boxes toggle it there).
+        line: usize,
     },
     Quote(Vec<Span>),
     Code(Vec<String>),
@@ -92,6 +94,41 @@ pub fn inline(s: &str) -> Vec<Span> {
     out
 }
 
+/// A list item's text after its marker (`- `, `* `, `+ `, `1. `).
+fn list_item(trimmed: &str) -> Option<&str> {
+    let bullet = ["- ", "* ", "+ "]
+        .iter()
+        .find_map(|m| trimmed.strip_prefix(m));
+    let numbered = trimmed
+        .find(". ")
+        .filter(|&d| d > 0 && trimmed[..d].bytes().all(|c| c.is_ascii_digit()))
+        .map(|d| &trimmed[d + 2..]);
+    bullet.or(numbered)
+}
+
+fn task_of(item: &str) -> (Option<bool>, &str) {
+    if let Some(r) = item.strip_prefix("[ ] ") {
+        (Some(false), r)
+    } else if let Some(r) = item
+        .strip_prefix("[x] ")
+        .or_else(|| item.strip_prefix("[X] "))
+    {
+        (Some(true), r)
+    } else {
+        (None, item)
+    }
+}
+
+/// A task line's box: the char column of the ` `/`x` between its brackets, and whether it is done — parsed as
+/// [`blocks`] parses it.
+pub fn task_box(line: &str) -> Option<(usize, bool)> {
+    let trimmed = line.trim_start();
+    let item = list_item(trimmed)?;
+    let done = task_of(item).0?;
+    let before = line.len() - item.len();
+    Some((line[..before].chars().count() + 1, done))
+}
+
 pub fn blocks(doc: &Doc) -> Vec<Block> {
     let mut out = Vec::new();
     let mut para = String::new();
@@ -102,7 +139,7 @@ pub fn blocks(doc: &Doc) -> Vec<Block> {
             para.clear();
         }
     };
-    for line in &doc.lines {
+    for (n, line) in doc.lines.iter().enumerate() {
         let t = line.text.as_str();
         let trimmed = t.trim_start();
         if trimmed.starts_with("```") {
@@ -142,30 +179,15 @@ pub fn blocks(doc: &Doc) -> Vec<Block> {
             out.push(Block::Quote(inline(q.trim_start())));
             continue;
         }
-        let bullet = ["- ", "* ", "+ "]
-            .iter()
-            .find_map(|m| trimmed.strip_prefix(m));
-        let numbered = trimmed
-            .find(". ")
-            .filter(|&d| d > 0 && trimmed[..d].bytes().all(|c| c.is_ascii_digit()))
-            .map(|d| &trimmed[d + 2..]);
-        if let Some(item) = bullet.or(numbered) {
+        if let Some(item) = list_item(trimmed) {
             end_para(&mut para, &mut out);
             let depth = ((t.len() - trimmed.len()) / 2).min(4) as u8;
-            let (task, text) = if let Some(r) = item.strip_prefix("[ ] ") {
-                (Some(false), r)
-            } else if let Some(r) = item
-                .strip_prefix("[x] ")
-                .or_else(|| item.strip_prefix("[X] "))
-            {
-                (Some(true), r)
-            } else {
-                (None, item)
-            };
+            let (task, text) = task_of(item);
             out.push(Block::Item {
                 depth,
                 task,
                 spans: inline(text),
+                line: n,
             });
             continue;
         }

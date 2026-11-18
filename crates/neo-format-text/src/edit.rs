@@ -183,7 +183,7 @@ impl Editor {
 
     /// Lines touched since the last save, for "You edited 3 lines".
     pub fn edited_lines(&self) -> usize {
-        let mut lines: Vec<usize> = Vec::new();
+        let mut lines = alloc::collections::BTreeSet::new();
         let start = self
             .undo
             .iter()
@@ -192,11 +192,7 @@ impl Editor {
         for s in &self.undo[start..] {
             for op in &s.ops {
                 let (Op::Insert { at, frag } | Op::Delete { at, frag }) = op;
-                for l in at.line..at.line + frag.len() {
-                    if !lines.contains(&l) {
-                        lines.push(l);
-                    }
-                }
+                lines.extend(at.line..at.line + frag.len());
             }
         }
         lines.len()
@@ -231,7 +227,11 @@ impl Editor {
             cursor_before: before,
         });
         if self.undo.len() > UNDO_MAX {
-            self.undo.remove(0);
+            let gone = self.undo.remove(0);
+            // the saved state can't be reached by undo any more: it stays dirty
+            if self.saved_id == 0 || self.saved_id <= gone.id {
+                self.saved_id = u32::MAX;
+            }
         }
     }
 

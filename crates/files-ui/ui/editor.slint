@@ -10,7 +10,8 @@ import { FTile } from "tiles.slint";
 // 1 done (on an item's first line); bullet on an item's first line
 // gap: a space before the span (Slint drops a span's leading space)
 export struct MdSpan { text: string, colour: color, bold: bool, italic: bool, mono: bool, gap: bool }
-export struct MdRow { kind: int, indent: int, task: int, bullet: bool, first: bool, spans: [MdSpan] }
+// src: a task's line in the source (its box toggles it there), -1 otherwise
+export struct MdRow { kind: int, indent: int, task: int, bullet: bool, first: bool, src: int, spans: [MdSpan] }
 export struct CellRow { no: string, cells: [string] }
 // a table column: where it starts and how wide (from its content)
 export struct Col { x: length, w: length }
@@ -312,10 +313,10 @@ export component MdView inherits Flickable {
     col := VerticalLayout {
         padding: 16 * Theme.dp;
         alignment: start;
-        for l[i] in root.lines: MdLine {
+        for l in root.lines: MdLine {
             line: l;
             toggled => {
-                root.task-toggled(i);
+                root.task-toggled(l.src);
             }
         }
     }

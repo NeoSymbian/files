@@ -180,3 +180,15 @@ fn find_and_replace_all_is_one_undo_step() {
     let overlap = Doc::decode(b"aaaa").unwrap();
     assert_eq!(find_all(&overlap, "aa", true).len(), 2);
 }
+
+#[test]
+fn review_dirty_after_the_undo_history_overflows() {
+    let mut e = Editor::new(Doc::decode(b"").unwrap());
+    for _ in 0..201 {
+        e.insert("a");
+        e.insert(" ");
+    }
+    while e.undo() {}
+    assert!(!e.doc.encode().is_empty());
+    assert!(e.dirty());
+}

@@ -823,6 +823,11 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
             if let Some(o) = st.open.as_mut()
                 && st.view == View::Edit
             {
+                // a tap in the text leaves the find bar (its field had the keys)
+                if ui.get_find_open() {
+                    ui.set_find_open(false);
+                    o.find(ui, "");
+                }
                 o.tapped(ui, r, x);
                 editor_keyboard(ui);
             }
@@ -901,6 +906,8 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
         Action::CellPicked(r, c) => {
             if let Some(o) = st.open.as_mut() {
                 o.cell_picked(ui, r, c);
+                // the cell bar sits on the keyboard
+                editor_keyboard(ui);
             }
         }
         Action::CellDone => {
