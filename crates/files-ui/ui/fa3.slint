@@ -1,0 +1,348 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// FA3 ("find and tidy") pieces for files.slint: the Types tab's used card and tiles (files2-types), the filter and
+// scope chips (files2-search, -search-filters), the Free up space cards (files2-cleanup), the bin's header card
+// (files2-bin) and a Details row (files2-details).
+import { Theme, Glyph } from "@neoui/kit.slint";
+
+// one tile of the Types tab; kind = the files-ops Group index (0 Images … 7 Code & text)
+export struct TypeTile { label: string, size: string, files: string, colour: color, kind: int }
+// a run of the used bar: where it starts and its share of the whole (0..1), and its colour
+export struct Seg { start: float, part: float, colour: color }
+// a Free up space card; kind 0 large files, 1 old downloads, 2 duplicates, 3 the bin
+export struct CleanCard { title: string, size: string, sub: string, kind: int, enabled: bool }
+// a Details line: "Size" · "212 KB (217,088 bytes)"; mono for a path
+export struct Detail { key: string, value: string, mono: bool }
+
+export component KindGlyph inherits Glyph {
+    in property <int> kind;
+    source: root.kind == 0 ? @image-url("@neoui/icons/sys/image.svg")
+        : root.kind == 1 ? @image-url("@neoui/icons/sys/video.svg")
+        : root.kind == 2 ? @image-url("@neoui/icons/sys/note.svg")
+        : root.kind == 3 ? @image-url("@neoui/icons/sys/doc.svg")
+        : root.kind == 4 ? @image-url("@neoui/icons/sys/archive.svg")
+        : root.kind == 5 ? @image-url("@neoui/icons/sys/apps.svg")
+        : root.kind == 6 ? @image-url("icons/download.svg")
+        : @image-url("icons/code.svg");
+    colorize: white;
+}
+
+// a chip that shows what the app says (the kit's Chip keeps its own state): 32 high, ✓ when on
+export component Pick inherits Rectangle {
+    in property <string> text;
+    in property <bool> on;
+    in property <bool> check: true;
+    in property <image> icon;
+    in property <bool> has-icon;
+    in property <int> count;
+    callback clicked();
+    height: 32 * Theme.dp;
+    width: row.preferred-width + 26 * Theme.dp;
+    border-radius: self.height / 2;
+    background: root.on ? Theme.tab-pill : touch.pressed ? Theme.pressed : Theme.field;
+    border-width: max(1px, Theme.dp);
+    border-color: root.on ? Theme.accent : #ffffff14;
+    accessible-role: checkbox;
+    accessible-checked: root.on;
+    accessible-label: root.text;
+    row := HorizontalLayout {
+        alignment: center;
+        spacing: 6 * Theme.dp;
+        if root.on && root.check: VerticalLayout {
+            alignment: center;
+            Glyph {
+                source: @image-url("@neoui/icons/sys/check.svg");
+                size: 15 * Theme.dp;
+                colorize: Theme.text;
+            }
+        }
+        if root.has-icon: VerticalLayout {
+            alignment: center;
+            Glyph {
+                source: root.icon;
+                size: 16 * Theme.dp;
+                colorize: Theme.text-secondary;
+            }
+        }
+        Text {
+            text: root.text;
+            color: root.on ? Theme.text : Theme.text-secondary;
+            font-size: 13.5 * Theme.dp;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+
+        if root.count > 0: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 18 * Theme.dp;
+                height: self.width;
+                border-radius: self.width / 2;
+                background: Theme.accent;
+                Text {
+                    text: root.count;
+                    color: white;
+                    font-size: 11.5 * Theme.dp;
+                    font-weight: 700;
+                }
+            }
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// files2-types: "12.4 GB used of 41.8 GB on E:" and a bar in the groups' colours
+export component UsedCard inherits Rectangle {
+    in property <string> used;
+    in property <string> of;
+    in property <[Seg]> segs;
+    border-radius: Theme.radius;
+    background: Theme.card;
+    border-width: max(1px, Theme.dp / 2);
+    border-color: #ffffff14;
+    height: 72 * Theme.dp;
+    VerticalLayout {
+        padding: 16 * Theme.dp;
+        spacing: 10 * Theme.dp;
+        HorizontalLayout {
+            spacing: 8 * Theme.dp;
+            alignment: start;
+            Text {
+                text: root.used;
+                color: Theme.text;
+                font-size: 22 * Theme.dp;
+                font-weight: 700;
+            }
+
+            Text {
+                text: root.of;
+                color: Theme.text-secondary;
+                font-size: 13 * Theme.dp;
+                vertical-alignment: bottom;
+            }
+        }
+
+        Rectangle {
+            height: 7 * Theme.dp;
+            border-radius: self.height / 2;
+            background: #ffffff1a;
+            clip: true;
+            for s in root.segs: Rectangle {
+                x: parent.width * s.start;
+                width: parent.width * s.part;
+                background: s.colour;
+            }
+        }
+    }
+}
+
+// a tile of the Types tab: a colour square with the group glyph, the size top right, the name and the count
+export component GroupTile inherits Rectangle {
+    in property <TypeTile> tile;
+    callback tapped();
+    height: 100 * Theme.dp;
+    horizontal-stretch: 1;
+    border-radius: Theme.radius;
+    background: touch.pressed ? Theme.pressed : Theme.card;
+    border-width: max(1px, Theme.dp / 2);
+    border-color: #ffffff14;
+    touch := TouchArea {
+        clicked => {
+            root.tapped();
+        }
+    }
+
+    Rectangle {
+        x: 14 * Theme.dp;
+        y: 14 * Theme.dp;
+        width: 34 * Theme.dp;
+        height: self.width;
+        border-radius: 9 * Theme.dp;
+        background: root.tile.colour;
+        KindGlyph {
+            kind: root.tile.kind;
+            size: 20 * Theme.dp;
+        }
+    }
+
+    Text {
+        x: parent.width - self.width - 14 * Theme.dp;
+        y: 20 * Theme.dp;
+        text: root.tile.size;
+        color: Theme.text;
+        font-size: 13.5 * Theme.dp;
+        font-weight: 500;
+    }
+
+    Text {
+        x: 14 * Theme.dp;
+        y: 54 * Theme.dp;
+        text: root.tile.label;
+        color: Theme.text;
+        font-size: 15.5 * Theme.dp;
+        font-weight: 600;
+    }
+
+    Text {
+        x: 14 * Theme.dp;
+        y: 76 * Theme.dp;
+        text: root.tile.files;
+        color: Theme.text-dim;
+        font-size: 12.5 * Theme.dp;
+    }
+}
+
+// files2-cleanup: a card with a glyph, what it is, how much, and Review
+export component CleanItem inherits Rectangle {
+    in property <CleanCard> card;
+    callback review();
+    height: 64 * Theme.dp;
+    border-radius: Theme.radius;
+    background: Theme.card;
+    border-width: max(1px, Theme.dp / 2);
+    border-color: #ffffff14;
+    opacity: root.card.enabled ? 1 : 0.5;
+    HorizontalLayout {
+        padding-left: 14 * Theme.dp;
+        padding-right: 12 * Theme.dp;
+        spacing: 14 * Theme.dp;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 38 * Theme.dp;
+                height: self.width;
+                border-radius: 10 * Theme.dp;
+                background: root.card.kind == 0 ? #f0662a : root.card.kind == 1 ? #3d8bfd : root.card.kind == 2 ? #8b5cf6 : #5b6270;
+                Glyph {
+                    source: root.card.kind == 0 ? @image-url("icons/page.svg")
+                        : root.card.kind == 1 ? @image-url("icons/download.svg")
+                        : root.card.kind == 2 ? @image-url("icons/copy.svg")
+                        : @image-url("@neoui/icons/sys/delete.svg");
+                    size: 20 * Theme.dp;
+                    colorize: white;
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            spacing: 2 * Theme.dp;
+            Text {
+                text: root.card.title;
+                color: Theme.text;
+                font-size: Theme.font-body;
+                font-weight: 600;
+            }
+
+            HorizontalLayout {
+                spacing: 6 * Theme.dp;
+                alignment: start;
+                Text {
+                    text: root.card.size;
+                    color: Theme.text;
+                    font-size: 13 * Theme.dp;
+                    font-weight: 600;
+                }
+
+                Text {
+                    text: "· " + root.card.sub;
+                    color: Theme.text-dim;
+                    font-size: 13 * Theme.dp;
+                }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 80 * Theme.dp;
+                height: 36 * Theme.dp;
+                border-radius: self.height / 2;
+                background: touch.pressed ? Theme.pressed : #2a2e35;
+                Text {
+                    text: "Review";
+                    color: Theme.text;
+                    font-size: 14 * Theme.dp;
+                    font-weight: 600;
+                }
+
+                touch := TouchArea {
+                    enabled: root.card.enabled;
+                    clicked => {
+                        root.review();
+                    }
+                }
+            }
+        }
+    }
+}
+
+// files2-bin: the card above the bin's list
+export component InfoCard inherits Rectangle {
+    in property <string> title;
+    in property <string> text;
+    border-radius: Theme.radius;
+    background: Theme.card;
+    border-width: max(1px, Theme.dp / 2);
+    border-color: #ffffff14;
+    height: lay.preferred-height;
+    lay := HorizontalLayout {
+        padding: 14 * Theme.dp;
+        spacing: 12 * Theme.dp;
+        VerticalLayout {
+            alignment: start;
+            Glyph {
+                source: @image-url("@neoui/icons/sys/info.svg");
+                size: 18 * Theme.dp;
+                colorize: Theme.text-secondary;
+            }
+        }
+        VerticalLayout {
+            spacing: 3 * Theme.dp;
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: 15 * Theme.dp;
+                font-weight: 600;
+            }
+
+            Text {
+                text: root.text;
+                font-family: "DejaVu Sans";
+                color: Theme.text-dim;
+                font-size: 13 * Theme.dp;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
+// files2-details: a key and its value
+export component DetailRow inherits HorizontalLayout {
+    in property <Detail> d;
+    height: 34 * Theme.dp;
+    padding-left: 20 * Theme.dp;
+    padding-right: 20 * Theme.dp;
+    spacing: 12 * Theme.dp;
+    Text {
+        width: 96 * Theme.dp;
+        text: root.d.key;
+        color: Theme.text-dim;
+        font-size: 14 * Theme.dp;
+        vertical-alignment: center;
+    }
+
+    Text {
+        horizontal-stretch: 1;
+        text: root.d.value;
+        font-family: root.d.mono ? "DejaVu Sans Mono" : "DejaVu Sans";
+        color: Theme.text;
+        font-size: 14 * Theme.dp;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
