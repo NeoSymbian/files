@@ -443,6 +443,12 @@ fn bind(ui: &FilesApp, actions: &Rc<RefCell<VecDeque<Action>>>) {
 
 /// The page: Back stays in the app below the Browse tab, in a form, with a dialog, or with a kit layer open.
 fn describe(app: &App, ui: &FilesApp, st: &mut State) -> Result<(), i32> {
+    // search starts in the open folder (files2-search: in folder as built), all drives elsewhere
+    ui.set_can_search_folder(st.view == View::Folder);
+    if !ui.get_searching() {
+        st.search.in_folder = st.view == View::Folder;
+        ui.set_search_folder(st.search.in_folder);
+    }
     let page = Page {
         title: "Files".into(),
         can_back: !matches!(st.view, View::Browse | View::Recent | View::Types)
@@ -684,10 +690,6 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
             fa3::show_type(ui, st);
         }
         Action::Searched(t) => {
-            if st.search.text.is_empty() && !t.is_empty() {
-                // a new search: in a folder it starts there (files2-search: search in folder as built)
-                st.search.in_folder = st.view == View::Folder;
-            }
             st.search.text = t;
             fa3::search(ui, st);
         }
@@ -1418,7 +1420,13 @@ fn open_dir(app: &App, ui: &FilesApp, st: &mut State, dir: String) {
     }
     let letter = dir.chars().next().unwrap_or('C');
     st.read_only = st.drives.iter().any(|&(d, ro)| d == letter && ro);
-    st.checked = alloc::vec![false; items.len()];
+    // the same folder again (a change notification, a finished job): what was picked stays picked
+    let kept: Vec<String> = if dir == st.dir && st.view == View::Folder {
+        picked(st).into_iter().map(|i| i.name).collect()
+    } else {
+        Vec::new()
+    };
+    st.checked = items.iter().map(|i| kept.contains(&i.name)).collect();
     st.items = items;
     st.dir = dir;
     st.view = View::Folder;
