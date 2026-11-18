@@ -285,3 +285,94 @@ fn a_failed_trash_puts_back_what_it_moved() {
     assert_eq!(fs.entry("C:\\b.txt").map(|e| e.size), Ok(1));
     assert!(trash::list(&fs, 'C').unwrap().is_empty());
 }
+
+#[test]
+fn restore_puts_back_selected_items_with_free_names() {
+    let fs = filesystem();
+    fs.add_file("C:\\a.txt", b"a").unwrap();
+    fs.add_file("C:\\b.txt", b"b").unwrap();
+    trash::trash(&fs, &["C:\\a.txt".into(), "C:\\b.txt".into()], 0).unwrap();
+    fs.add_file("C:\\a.txt", b"new").unwrap();
+    let items = trash::list(&fs, 'C').unwrap();
+    assert_eq!(items[0].bin_path(), "C:\\.trash\\1");
+    trash::restore(&fs, &[items[0].bin_path()]).unwrap();
+    assert_eq!(bytes(&fs, "C:\\a (1).txt"), b"a");
+    assert_eq!(bytes(&fs, "C:\\a.txt"), b"new");
+    assert_eq!(trash::list(&fs, 'C').unwrap().len(), 1);
+}
+
+#[test]
+fn purge_removes_items_and_records_for_good() {
+    let fs = filesystem();
+    fs.add_file("C:\\a.txt", b"a").unwrap();
+    fs.add_file("C:\\Dir\\x\\y.txt", b"y").unwrap();
+    trash::trash(&fs, &["C:\\a.txt".into(), "C:\\Dir\\".into()], 0).unwrap();
+    let items: Vec<String> = trash::list(&fs, 'C')
+        .unwrap()
+        .iter()
+        .map(|i| i.bin_path())
+        .collect();
+    assert_eq!(items[1], "C:\\.trash\\2\\");
+    let doomed = trash::purge(&fs, &items).unwrap();
+    assert_eq!(doomed, ["C:\\.trash\\1.~del", "C:\\.trash\\2.~del\\"]);
+    let (removed, bytes_gone) = files_ops::delete::DeleteTree::new(doomed).run(&fs).unwrap();
+    assert_eq!((removed, bytes_gone), (4, 2));
+    assert!(trash::list(&fs, 'C').unwrap().is_empty());
+    let left: Vec<String> = fs.tree().into_iter().map(|(n, _)| n).collect();
+    assert!(
+        left.iter()
+            .all(|n| !n.contains(".~del") && !n.contains("y.txt")),
+        "{left:?}"
+    );
+}
+
+#[test]
+fn every_purge_power_cut_leaves_the_item_listed_or_gone_after_recovery() {
+    let fixture = || {
+        let fs = filesystem();
+        fs.add_file("E:\\Folder\\nested\\two.bin", b"payload")
+            .unwrap();
+        trash::trash(&fs, &["E:\\Folder\\".into()], 0).unwrap();
+        fs
+    };
+    let items = vec!["E:\\.trash\\1\\".to_string()];
+    let baseline = fixture();
+    let start = baseline.ops();
+    let doomed = trash::purge(&baseline, &items).unwrap();
+    files_ops::delete::DeleteTree::new(doomed)
+        .run(&baseline)
+        .unwrap();
+    let mutations = baseline.ops() - start;
+    for cut in 1..=mutations + 1 {
+        let fs = fixture();
+        fs.cut_after(cut);
+        if let Ok(doomed) = trash::purge(&fs, &items) {
+            let _ = files_ops::delete::DeleteTree::new(doomed).run(&fs);
+        }
+        fs.restore();
+        trash::recover(&fs, 'E').unwrap();
+        let listed = trash::list(&fs, 'E').unwrap();
+        let whole = fs.entry("E:\\.trash\\1\\nested\\two.bin").is_ok();
+        assert_eq!(listed.len() == 1, whole, "cut {cut}");
+        if whole {
+            assert_eq!(bytes(&fs, "E:\\.trash\\1\\nested\\two.bin"), b"payload");
+        }
+        for (name, _) in fs.tree() {
+            assert!(!name.contains(".~del"), "cut {cut}: {name}");
+        }
+    }
+}
+
+#[test]
+fn items_expire_at_exactly_the_keep_time() {
+    let fs = filesystem();
+    fs.add_file("C:\\old", b"o").unwrap();
+    fs.add_file("C:\\new", b"n").unwrap();
+    trash::trash(&fs, &["C:\\old".into()], 100).unwrap();
+    trash::trash(&fs, &["C:\\new".into()], 101).unwrap();
+    assert_eq!(
+        trash::expired(&fs, 'C', 130, 30).unwrap(),
+        ["C:\\.trash\\1"]
+    );
+    assert!(trash::expired(&fs, 'C', 129, 30).unwrap().is_empty());
+}
