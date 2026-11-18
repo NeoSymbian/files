@@ -25,6 +25,8 @@ pub struct Shared {
     answer: Option<(Choice, bool)>,
     cancel: bool,
     pub done: Option<Result<Summary, Error>>,
+    /// Set with `done`, and kept when the UI takes `done`.
+    ended: bool,
 }
 
 /// One job at a time; made once and kept (its mutex and semaphore are kernel objects, and ARMv5TE has no
@@ -47,19 +49,31 @@ impl Slot {
         *self.shared.lock() = Shared::default();
         e32::thread::spawn_with_stack(STACK, move || {
             let result = run(self, kind, sources, &dest);
-            self.shared.lock().done = Some(result);
+            let mut s = self.shared.lock();
+            s.done = Some(result);
+            s.ended = true;
             0
         })
         .map(drop)
     }
 
+    /// Answer the clash the worker waits on; nothing when none is waiting (a signal then would answer the next
+    /// job's first clash).
     pub fn answer(&self, choice: Choice, for_all: bool) {
-        {
+        let waiting = {
             let mut s = self.shared.lock();
-            s.clash = None;
             s.answer = Some((choice, for_all));
+            s.clash.take().is_some()
+        };
+        if waiting {
+            self.wake.signal();
         }
-        self.wake.signal();
+    }
+
+    /// The worker has finished (its result taken or not).
+    pub fn idle(&self) -> bool {
+        let s = self.shared.lock();
+        s.done.is_some() || s.ended
     }
 
     /// Stop between steps; a clash waiting for an answer ends too.
@@ -86,7 +100,16 @@ fn run(slot: &Slot, kind: Kind, sources: Vec<String>, dest: &str) -> Result<Summ
         match t.step(&fs, STEP) {
             Step::Progress(p) => slot.shared.lock().progress = Some(p),
             Step::Clash(c) => {
-                slot.shared.lock().clash = Some(c);
+                {
+                    // a Cancel that came while this step ran: don't park for an answer nobody will give
+                    let mut s = slot.shared.lock();
+                    if s.cancel {
+                        drop(s);
+                        t.cancel(&fs);
+                        return Err(Error::Cancelled);
+                    }
+                    s.clash = Some(c);
+                }
                 slot.wake.wait();
                 let answer = slot.shared.lock().answer.take();
                 match answer {

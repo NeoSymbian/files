@@ -166,7 +166,22 @@ fn ensure_bin(fs: &impl Fs, root: &str) -> Result<()> {
     fs.set_att(root, att::HIDDEN | att::SYSTEM, 0)
 }
 
+/// Move `paths` into their drives' bins, all or none: if one fails, those already moved go back.
 pub fn trash(fs: &impl Fs, paths: &[String], now: i64) -> Result<Batch> {
+    let mut batch = Batch {
+        id: 0,
+        items: Vec::new(),
+    };
+    match trash_into(fs, paths, now, &mut batch) {
+        Ok(()) => Ok(batch),
+        Err(e) => {
+            let _ = undo(fs, &batch);
+            Err(e)
+        }
+    }
+}
+
+fn trash_into(fs: &impl Fs, paths: &[String], now: i64, batch: &mut Batch) -> Result<()> {
     for original in paths {
         if original.contains(['\t', '\n', '\r']) {
             return Err(Error::BadName);
@@ -182,10 +197,6 @@ pub fn trash(fs: &impl Fs, paths: &[String], now: i64) -> Result<Batch> {
         }
         fs.entry(original)?;
     }
-    let mut batch = Batch {
-        id: 0,
-        items: Vec::new(),
-    };
     for original in paths {
         let drive = path::drive_of(original).ok_or(Error::BadName)?;
         let root = bin(drive);
@@ -223,7 +234,7 @@ pub fn trash(fs: &impl Fs, paths: &[String], now: i64) -> Result<Batch> {
         }
         batch.items.push(target);
     }
-    Ok(batch)
+    Ok(())
 }
 
 fn restore_name(fs: &impl Fs, original: &str) -> Result<String> {
@@ -278,12 +289,21 @@ pub fn recover(fs: &impl Fs, drive: char) -> Result<()> {
     let mut changed = false;
     let mut reconciled = Vec::new();
     for mut record in journal.drain(..) {
-        if record.state == State::Pending {
-            changed = true;
-            if maybe_entry(fs, &item_path(&root, &record.item))?.is_none() {
+        let in_bin = maybe_entry(fs, &item_path(&root, &record.item))?.is_some();
+        match record.state {
+            State::Pending => {
+                changed = true;
+                if !in_bin {
+                    continue;
+                }
+                record.state = State::Done;
+            }
+            // put back by an Undo whose Restored record a power cut stopped
+            State::Done if !in_bin => {
+                changed = true;
                 continue;
             }
-            record.state = State::Done;
+            _ => {}
         }
         reconciled.push(record);
     }

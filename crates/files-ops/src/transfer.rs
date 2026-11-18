@@ -109,7 +109,8 @@ impl<'a, F: Fs + 'a> Transfer<'a, F> {
         if destination.read_only {
             return Err(Error::ReadOnly);
         }
-        if !fs.entry(dest_dir)?.is_dir() {
+        // a drive's root has no entry on the file server; the drive was found above
+        if path::parent(dest_dir).is_some() && !fs.entry(dest_dir)?.is_dir() {
             return Err(Error::PathNotFound);
         }
         let mut tasks = VecDeque::new();
@@ -327,10 +328,12 @@ impl<'a, F: Fs + 'a> Transfer<'a, F> {
             ) {
                 return Err(Error::SamePlace);
             }
+            // the old file stays until the new one takes its place (only files get Replace)
             if replace {
-                fs.delete(&destination)?;
+                fs.replace(&node.source, &destination)?;
+            } else {
+                fs.rename(&node.source, &destination)?;
             }
-            fs.rename(&node.source, &destination)?;
             collect_paths(&node, &destination, &mut self.committed);
             self.summary.copied += node.files;
             self.summary.bytes += node.bytes;

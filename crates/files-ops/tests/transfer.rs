@@ -311,14 +311,15 @@ fn same_drive_merge_moves_files_and_keeps_skipped_sources() {
 }
 
 #[test]
-fn same_drive_replace_deletes_target_then_renames() {
+fn same_drive_replace_is_one_replace() {
     let fs = fs();
     fs.add_file("C:\\song", b"new").unwrap();
     fs.add_file("C:\\dest\\song", b"old").unwrap();
     let before = fs.ops();
     let mut job = Transfer::new(&fs, Kind::Move, vec!["C:\\song".into()], "C:\\dest\\").unwrap();
     assert!(matches!(run(&mut job, &fs, Choice::Replace), Step::Done(_)));
-    assert_eq!(fs.ops() - before, 2);
+    // one RFs::Replace: the old file is never gone before the new one is in place
+    assert_eq!(fs.ops() - before, 1);
     assert_eq!(contents(&fs, "C:\\dest\\song"), b"new");
     assert!(fs.entry("C:\\song").is_err());
 }
@@ -487,4 +488,15 @@ fn invalid_trailing_slash_file_is_rejected_before_any_copy() {
         Err(Error::BadName)
     ));
     assert_eq!(fs.tree(), before);
+}
+
+#[test]
+fn into_a_drive_root() {
+    // RFs::Entry has no entry for a root (the fake answers BadName, as the phone does)
+    let fs = fs();
+    assert_eq!(fs.entry("C:\\").err(), Some(neo_fs::Error::BadName));
+    fs.add_file("E:\\docs\\a.txt", b"abc").unwrap();
+    let mut job = Transfer::new(&fs, Kind::Copy, vec!["E:\\docs\\a.txt".into()], "C:\\").unwrap();
+    assert!(matches!(run(&mut job, &fs, Choice::Skip), Step::Done(_)));
+    assert_eq!(contents(&fs, "C:\\a.txt"), b"abc");
 }

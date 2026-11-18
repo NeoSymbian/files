@@ -273,7 +273,12 @@ fn run() -> Result<(), i32> {
         Ok::<(), i32>(())
     })?;
     if st.running.is_some() {
+        // the worker dies with the process: let it stop between steps and remove its unfinished file first
         st.slot.cancel();
+        let start = time::millis();
+        while !st.slot.idle() && time::millis() - start < 5_000 {
+            time::sleep(50_000);
+        }
         let _ = app.cancel_notify(JOB_NOTE);
     }
     dprintln!("files: quit");

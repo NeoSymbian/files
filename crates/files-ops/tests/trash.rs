@@ -267,3 +267,21 @@ fn every_same_drive_trash_power_cut_preserves_both_items() {
         assert!(fs.tree().iter().all(|(path, _)| !path.ends_with(".~part")));
     }
 }
+
+#[test]
+fn a_failed_trash_puts_back_what_it_moved() {
+    let fs = filesystem();
+    fs.add_file("C:\\a.txt", b"a").unwrap();
+    fs.add_file("C:\\b.txt", b"b").unwrap();
+    // a stray file where b.txt would go: the second move fails after a.txt went in
+    fs.add_file("C:\\.trash\\2", b"stray").unwrap();
+    let paths = ["C:\\a.txt".to_string(), "C:\\b.txt".to_string()];
+    assert_eq!(trash::trash(&fs, &paths, 1).err(), Some(Error::Exists));
+    assert_eq!(
+        fs.entry("C:\\a.txt").map(|e| e.size),
+        Ok(1),
+        "a.txt went back"
+    );
+    assert_eq!(fs.entry("C:\\b.txt").map(|e| e.size), Ok(1));
+    assert!(trash::list(&fs, 'C').unwrap().is_empty());
+}

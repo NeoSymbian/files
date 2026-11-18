@@ -416,6 +416,10 @@ impl Fs for MemFs {
 
     fn entry(&self, path: &str) -> Result<Entry> {
         let drive = validate(path)?;
+        // as RFs::Entry: a drive's root has no entry (t_nmbs.cpp: KErrBadName)
+        if path::parent(path).is_none() {
+            return Err(Error::BadName);
+        }
         let mut state = self.state.borrow_mut();
         state.begin(&[drive], false)?;
         state
