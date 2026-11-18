@@ -142,3 +142,95 @@ impl Shot {
         px.into_iter().map(|p| p.0).collect()
     }
 }
+
+// ── sample data shared by the board tests ──
+
+use files_core::{self as model, Item};
+use files_ui::{DriveRow, FileRow, drive_row, file_row};
+use slint::{ModelRc, SharedString, VecModel};
+
+pub fn model_of<T: Clone + 'static>(v: Vec<T>) -> ModelRc<T> {
+    ModelRc::from(Rc::new(VecModel::from(v)))
+}
+
+pub fn strings(v: &[&str]) -> ModelRc<SharedString> {
+    model_of(v.iter().map(|s| SharedString::from(*s)).collect())
+}
+
+/// A day of 2026 (or another year) as a Symbian `TTime`: days since 1970-01-01, plus Symbian's 719,540 before that.
+pub fn day(days_since_1970: i64) -> i64 {
+    (719_540 + days_since_1970) * 86_400 * 1_000_000
+}
+
+/// 16 Nov 2026, "today" for the boards.
+pub const TODAY: i64 = 20_773;
+
+pub fn dated(d: &str) -> i64 {
+    let (n, month) = d.split_once(' ').unwrap();
+    let n: i64 = n.parse().unwrap();
+    // days since 1970 of the 1st of Oct/Nov 2026
+    let first = match month {
+        "Oct" => 20_727,
+        "Nov" => 20_758,
+        other => panic!("{other}"),
+    };
+    day(first + n - 1)
+}
+
+pub fn file(name: &str, size: u64, date: &str) -> Item {
+    Item {
+        name: name.into(),
+        size,
+        modified: dated(date),
+        ..Item::default()
+    }
+}
+
+pub fn folder(name: &str, count: u32) -> Item {
+    Item {
+        name: name.into(),
+        is_dir: true,
+        count: Some(count),
+        ..Item::default()
+    }
+}
+
+pub const KB: u64 = 1024;
+pub const MB: u64 = 1024 * 1024;
+
+pub fn rows(items: &[Item], checked: &[usize]) -> ModelRc<FileRow> {
+    model_of(
+        items
+            .iter()
+            .enumerate()
+            .map(|(i, it)| file_row(it, day(TODAY), checked.contains(&i)))
+            .collect(),
+    )
+}
+
+pub fn drives() -> Vec<DriveRow> {
+    const GB: u64 = 1 << 30;
+    vec![
+        drive_row(
+            'C',
+            model::drive_label('C', 0x11, 9),
+            "phone",
+            8 * GB,
+            2 * GB + 922 * MB,
+        ),
+        drive_row(
+            'E',
+            model::drive_label('E', 0x11, 9),
+            "mass",
+            41 * GB + 819 * MB,
+            29 * GB + 410 * MB,
+        ),
+        drive_row(
+            'Z',
+            model::drive_label('Z', 0x12, 7),
+            "rom",
+            2 * GB + 512 * MB,
+            0,
+        ),
+    ]
+}

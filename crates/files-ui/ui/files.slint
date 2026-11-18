@@ -2,7 +2,8 @@
 // The Files app (NEOFILES.EXE), v2 (docs files-app.md FA1 + FA2, the canvas's files2-* boards) on the neoui kit:
 // the Browse tab (drives), folders as a list or a grid with a breadcrumb, the folder and selection menus, the Sort
 // sheet, the read-only banner, New folder / New file / Rename forms, the paste bar, a copy's progress toast and the
-// name-clash dialog. The shell draws QUERY dialogs, toasts with Undo and the shade entry.
+// name-clash dialog; FA3: Favourites and the Recent strip, the Recent and Types tabs, search with filters, the Recycle
+// bin, Free up space and Details. The shell draws QUERY dialogs, toasts with Undo and the shade entry.
 // The Rust side owns the state; this file draws it and reports taps as callbacks.
 import "@neoui/fonts/NeoSans-Regular.ttf";
 import "@neoui/fonts/NeoSans-Medium.ttf";
@@ -12,17 +13,19 @@ import "@neoui/fonts/NeoSans-Bold.ttf";
 import "@neoui/fonts/DejaVuSans.ttf";
 import "@neoui/fonts/DejaVuSansMono.ttf";
 import {
-    Theme, Kit, Scroll, Alphabets, Glyph, NeoList, Header, SubHeader, FormHeader, TextField, Act, Tab, Footer,
+    Theme, Kit, KeyboardFocus, Scroll, Alphabets, Glyph, NeoList, Header, SubHeader, FormHeader, TextField, Act, Tab, Footer,
     Sheet, Switch, Button, ProgressBar
 } from "@neoui/kit.slint";
 import { FTile, FolderTile, DriveTile } from "tiles.slint";
+import { TypeTile, Seg, CleanCard, Detail, Pick, UsedCard, GroupTile, CleanItem, InfoCard, DetailRow } from "fa3.slint";
 
-export { Theme, Scroll, Kit }
+export { Theme, Scroll, Kit, KeyboardFocus }
 
 // kind: "phone", "mass", "card", "rom", "ram"
 export struct DriveRow { title: string, size: string, detail: string, used: float, kind: string, read-only: bool }
 // detail: "4.1 MB · 3 Nov" (list); short: "3.1 MB" or "812 items" (grid). state: 0 a file or folder, 1 being copied
-// here (progress 0..1), 2 just copied
+// here (progress 0..1), 2 just copied. section: a heading above the row (Recent's "Today"); note: orange text at the
+// end ("3 days left"); hit/post: a search match, drawn as name · hit (accent) · post
 export struct FileRow {
     name: string,
     detail: string,
@@ -33,6 +36,10 @@ export struct FileRow {
     checked: bool,
     state: int,
     progress: float,
+    section: string,
+    note: string,
+    hit: string,
+    post: string,
 }
 
 // a round check box (selection)
@@ -154,7 +161,7 @@ component FileItem inherits Rectangle {
             alignment: center;
             spacing: 3 * Theme.dp;
             horizontal-stretch: 1;
-            Text {
+            if root.item.hit == "": Text {
                 text: root.item.name;
                 font-family: "DejaVu Sans";
                 color: Theme.text;
@@ -162,12 +169,57 @@ component FileItem inherits Rectangle {
                 font-weight: 500;
                 overflow: elide;
             }
+            if root.item.hit != "": HorizontalLayout {
+                Text {
+                    text: root.item.name;
+                    font-family: "DejaVu Sans";
+                    color: Theme.text;
+                    font-size: Theme.font-body;
+                    font-weight: 500;
+                }
 
-            Text {
+                Text {
+                    text: root.item.hit;
+                    font-family: "DejaVu Sans";
+                    color: Theme.accent;
+                    font-size: Theme.font-body;
+                    font-weight: 500;
+                }
+
+                Text {
+                    text: root.item.post;
+                    font-family: "DejaVu Sans";
+                    color: Theme.text;
+                    font-size: Theme.font-body;
+                    font-weight: 500;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+            }
+
+            if root.item.note == "": Text {
                 text: root.item.detail;
                 color: Theme.text-dim;
                 font-size: Theme.font-label;
                 overflow: elide;
+            }
+            if root.item.note != "": HorizontalLayout {
+                spacing: 4 * Theme.dp;
+                Text {
+                    text: root.item.detail + " ·";
+                    font-family: "DejaVu Sans";
+                    color: Theme.text-dim;
+                    font-size: Theme.font-label;
+                    overflow: elide;
+                }
+
+                Text {
+                    text: root.item.note;
+                    color: #f0a020;
+                    font-size: Theme.font-label;
+                    font-weight: 600;
+                    horizontal-stretch: 1;
+                }
             }
         }
 
@@ -377,6 +429,34 @@ component SectionLabel inherits Text {
     letter-spacing: 0.8px;
 }
 
+// a section's label with a link at the end (files2-browse: FAVOURITES · Edit, RECENT · See all)
+component HeadingLink inherits HorizontalLayout {
+    in property <string> text;
+    in property <string> link;
+    callback clicked();
+    height: 30 * Theme.dp;
+    padding-left: 4 * Theme.dp;
+    padding-top: 8 * Theme.dp;
+    SectionLabel {
+        text: root.text;
+        horizontal-stretch: 1;
+        vertical-alignment: center;
+    }
+
+    Text {
+        text: root.link;
+        color: Theme.accent;
+        font-size: 14 * Theme.dp;
+        font-weight: 600;
+        vertical-alignment: center;
+        TouchArea {
+            clicked => {
+                root.clicked();
+            }
+        }
+    }
+}
+
 // one choice in the Sort sheet: a radio and its label
 component RadioRow inherits Rectangle {
     in property <string> label;
@@ -423,6 +503,7 @@ component SwitchRow inherits Rectangle {
     in property <string> label;
     in property <string> hint;
     in property <bool> on;
+    in property <bool> enabled: true;
     callback toggled(bool);
     height: 56 * Theme.dp;
     HorizontalLayout {
@@ -450,9 +531,12 @@ component SwitchRow inherits Rectangle {
             alignment: center;
             Switch {
                 on: root.on;
+                opacity: root.enabled ? 1 : 0.4;
                 toggled(v) => {
                     root.toggled(v);
                 }
+                // System: shown, not changeable
+                if !root.enabled: TouchArea { }
             }
         }
     }
@@ -506,6 +590,55 @@ export component FilesApp inherits Window {
     // the system keyboard's height over the bottom of the surface, while a name is typed
     in property <length> kb-h;
 
+    // FA3. tab: the footer's (0 Browse, 1 Recent, 2 Types); views "recent", "types", "type", "bin", "cleanup",
+    // "review", "favs" besides "browse", "folder" and "text"
+    in property <int> tab-index;
+    in property <[FileRow]> favs;
+    in property <[FileRow]> recent-strip;
+    // the open selection holds exactly one item / one folder (the ⋮ offers Details / Add to Favourites)
+    in property <bool> one-item;
+    in property <bool> one-folder;
+    // a list with nothing picked yet (the bin's ⋮ Select)
+    in-out property <bool> picking;
+    in property <string> empty-text;
+    // files2-types and the type page (files2-type-docs)
+    in property <string> types-used;
+    in property <string> types-of;
+    in property <[Seg]> types-bar;
+    in property <[TypeTile]> types;
+    in property <[string]> type-drives;
+    in property <int> type-drive;
+    in property <[string]> type-subs;
+    in property <int> type-sub;
+    in property <string> updating;
+    // search (files2-search): the header's query, the scope chips, the filters sheet
+    in-out property <bool> searching;
+    in-out property <string> query;
+    in property <[FileRow]> hits;
+    in property <string> search-info;
+    in property <bool> search-folder;
+    in property <bool> can-search-folder;
+    in property <int> filter-count;
+    in-out property <bool> filters-open;
+    in property <int> f-type;
+    in property <int> f-size;
+    in property <int> f-modified;
+    in property <int> filter-results;
+    // the bin (files2-bin) and Free up space (files2-cleanup)
+    in property <string> info-title;
+    in property <string> info-text;
+    in property <string> can-free;
+    in property <[CleanCard]> clean;
+    // Details (files2-details)
+    in-out property <bool> details-open;
+    in property <FileRow> details-item;
+    in property <string> details-kind;
+    in property <[Detail]> details;
+    in property <bool> details-attributes;
+    in property <bool> d-read-only;
+    in property <bool> d-hidden;
+    in property <bool> d-system;
+
     callback drive(int);
     callback open-row(int);
     callback toggle(int);
@@ -528,36 +661,69 @@ export component FilesApp inherits Window {
     callback clash-answer(int);
     callback form-cancel();
     callback form-save();
+    callback fav(int);
+    callback fav-remove(int);
+    callback favs-edit();
+    callback recent-open(int);
+    callback see-all();
+    callback type-open(int);
+    callback type-drive-picked(int);
+    callback type-sub-picked(int);
+    callback searched(string);
+    callback search-scope(bool);
+    callback hit-open(int);
+    callback filter-type(int);
+    callback filter-size(int);
+    callback filter-modified(int);
+    callback filters-reset();
+    callback review(int);
+    callback details-read-only(bool);
+    callback details-hidden(bool);
 
-    property <[string]> root-menu: [root.show-hidden ? "Hide hidden files" : "Show hidden files"];
+    property <[string]> root-menu: ["Recycle bin", "Free up space", root.show-hidden ? "Hide hidden files" : "Show hidden files"];
     property <[string]> folder-menu: root.read-only ? [
-        "Sort by", root.grid ? "List view" : "Grid view", root.show-hidden ? "Hide hidden" : "Show hidden"
+        "Sort by", root.grid ? "List view" : "Grid view", root.show-hidden ? "Hide hidden" : "Show hidden", "Details"
     ] : [
         "New folder", "New file", "Sort by", root.grid ? "List view" : "Grid view",
-        root.show-hidden ? "Hide hidden" : "Show hidden"
+        root.show-hidden ? "Hide hidden" : "Show hidden", "Details"
     ];
-    property <[string]> pick-menu: root.read-only ? ["Select all"] : ["Move", "Rename", "Select all"];
-    property <bool> selecting: root.selected > 0;
-    property <bool> footer: root.form == "" && !root.selecting && root.view != "text";
+    property <[string]> pick-menu: root.read-only ? (root.one-item ? ["Details", "Select all"] : ["Select all"])
+        : root.one-folder ? ["Move", "Rename", "Add to Favourites", "Details", "Select all"]
+        : root.one-item ? ["Move", "Rename", "Details", "Select all"] : ["Move", "Rename", "Select all"];
+    property <[string]> bin-menu: ["Empty bin", "Select"];
+    property <bool> selecting: root.selected > 0 || root.picking;
+    property <bool> tab-root: root.view == "browse" || root.view == "recent" || root.view == "types";
+    property <bool> footer: root.form == "" && !root.selecting && !root.searching
+        && (root.tab-root || root.view == "folder");
+    property <bool> listing: root.view == "recent" || root.view == "type" || root.view == "bin" || root.view == "review";
 
     Alphabets { }
 
     VerticalLayout {
-        if root.view == "browse": Header {
+        if root.tab-root: Header {
             title: "Files";
-            search: false;
+            searching <=> root.searching;
+            query <=> root.query;
+            searched(t) => {
+                root.searched(t);
+            }
             menu: root.root-menu;
             menu-picked(i) => {
                 root.menu(root.root-menu[i]);
             }
             top => {
                 browse-list.to-top();
+                list-view.to-top();
             }
         }
         if root.view == "folder": SubHeader {
             title: root.name;
             title-font: "DejaVu Sans";
-            search: false;
+            searching <=> root.searching;
+            query <=> root.query;
+            searched(t) => {
+                root.searched(t);
+            }
             menu: root.folder-menu;
             selected: root.selected;
             selection-actions: [
@@ -592,9 +758,63 @@ export component FilesApp inherits Window {
                 root.up();
             }
         }
+        if root.view == "type": SubHeader {
+            title: root.name;
+            searching <=> root.searching;
+            query <=> root.query;
+            searched(t) => {
+                root.searched(t);
+            }
+            back => {
+                root.up();
+            }
+            top => {
+                list-view.to-top();
+            }
+        }
+        // the bin and the Free up space reviews pick rows; Restore / Delete forever, or Delete (to the bin)
+        if root.view == "bin" || root.view == "review": SubHeader {
+            title: root.name;
+            search: false;
+            menu: root.view == "bin" ? root.bin-menu : ["Select all"];
+            selected: root.selected;
+            selecting: root.picking;
+            selection-actions: root.view == "bin" ? [
+                { icon: @image-url("@neoui/icons/sys/recents.svg"), label: "Restore" },
+                { icon: @image-url("@neoui/icons/sys/delete.svg"), label: "Delete forever" },
+            ] : [
+                { icon: @image-url("@neoui/icons/sys/delete.svg"), label: "Delete" },
+            ];
+            selection-menu: ["Select all"];
+            back => {
+                root.up();
+            }
+            menu-picked(i) => {
+                root.menu(root.view == "bin" ? root.bin-menu[i] : "Select all");
+            }
+            selection-action(i) => {
+                root.selection-action(i);
+            }
+            selection-menu-picked(i) => {
+                root.selection-menu("Select all");
+            }
+            selection-closed => {
+                root.clear-selection();
+            }
+            top => {
+                list-view.to-top();
+            }
+        }
+        if root.view == "cleanup" || root.view == "favs": SubHeader {
+            title: root.view == "cleanup" ? "Free up space" : "Favourites";
+            search: false;
+            back => {
+                root.up();
+            }
+        }
 
         // the breadcrumb (F05): the drive, then each folder; the last is where you are
-        if root.view != "browse": HorizontalLayout {
+        if root.view == "folder" || root.view == "text": HorizontalLayout {
             height: 40 * Theme.dp;
             padding-left: 12 * Theme.dp;
             padding-right: 12 * Theme.dp;
@@ -684,7 +904,7 @@ export component FilesApp inherits Window {
         Rectangle {
             vertical-stretch: 1;
             browse-list := NeoList {
-                visible: root.view == "browse";
+                visible: root.view == "browse" && !root.searching;
                 VerticalLayout {
                     alignment: start;
                     padding-left: 12 * Theme.dp;
@@ -712,12 +932,436 @@ export component FilesApp inherits Window {
                             }
                         }
                     }
+
+                    // files2-browse: Favourites (up to 3 shown) and the last 4 files opened
+                    if root.favs.length > 0: HeadingLink {
+                        text: "FAVOURITES";
+                        link: "Edit";
+                        clicked => {
+                            root.favs-edit();
+                        }
+                    }
+                    if root.favs.length > 0: HorizontalLayout {
+                        spacing: 8 * Theme.dp;
+                        for f[i] in root.favs: Rectangle {
+                            horizontal-stretch: 1;
+                            preferred-width: 0;
+                            min-width: 0;
+                            height: 82 * Theme.dp;
+                            border-radius: Theme.radius;
+                            background: fav-touch.pressed ? Theme.pressed : Theme.card;
+                            border-width: max(1px, Theme.dp / 2);
+                            border-color: #ffffff14;
+                            fav-touch := TouchArea {
+                                clicked => {
+                                    root.fav(i);
+                                }
+                            }
+                            VerticalLayout {
+                                padding: 12 * Theme.dp;
+                                spacing: 2 * Theme.dp;
+                                HorizontalLayout {
+                                    alignment: start;
+                                    FolderTile {
+                                        size: 30 * Theme.dp;
+                                    }
+                                }
+
+                                Text {
+                                    text: f.name;
+                                    font-family: "DejaVu Sans";
+                                    color: Theme.text;
+                                    font-size: 14.5 * Theme.dp;
+                                    font-weight: 600;
+                                    overflow: elide;
+                                }
+
+                                Text {
+                                    text: f.detail;
+                                    color: Theme.text-dim;
+                                    font-size: 12 * Theme.dp;
+                                }
+                            }
+                        }
+                    }
+                    if root.recent-strip.length > 0: HeadingLink {
+                        text: "RECENT";
+                        link: "See all";
+                        clicked => {
+                            root.see-all();
+                        }
+                    }
+                    if root.recent-strip.length > 0: HorizontalLayout {
+                        spacing: 8 * Theme.dp;
+                        for r[i] in root.recent-strip: VerticalLayout {
+                            horizontal-stretch: 1;
+                            preferred-width: 0;
+                            min-width: 0;
+                            spacing: 6 * Theme.dp;
+                            Rectangle {
+                                height: 64 * Theme.dp;
+                                border-radius: Theme.radius;
+                                background: strip-touch.pressed ? Theme.pressed : Theme.card;
+                                border-width: max(1px, Theme.dp / 2);
+                                border-color: #ffffff14;
+                                strip-touch := TouchArea {
+                                    clicked => {
+                                        root.recent-open(i);
+                                    }
+                                }
+                                FTile {
+                                    badge: r.badge;
+                                    colour: r.colour;
+                                }
+                            }
+
+                            Text {
+                                text: r.name;
+                                font-family: "DejaVu Sans";
+                                color: Theme.text;
+                                font-size: 12.5 * Theme.dp;
+                                font-weight: 500;
+                                horizontal-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Recent, a type's files, the bin and a Free up space review: rows with headings
+            list-view := NeoList {
+                visible: root.listing && !root.searching;
+                selected: root.selected;
+                VerticalLayout {
+                    alignment: start;
+                    if root.view == "type": HorizontalLayout {
+                        padding: 12 * Theme.dp;
+                        visible: root.type-subs.length == 0;
+                        height: root.type-subs.length == 0 ? self.preferred-height : 0;
+                        spacing: 8 * Theme.dp;
+                        alignment: start;
+                        for t[i] in root.type-drives: Pick {
+                            text: t;
+                            on: i == root.type-drive;
+                            check: i == 0;
+                            clicked => {
+                                root.type-drive-picked(i);
+                            }
+                        }
+                    }
+                    if root.view == "type" && root.type-subs.length > 0: HorizontalLayout {
+                        padding: 12 * Theme.dp;
+                        spacing: 8 * Theme.dp;
+                        alignment: start;
+                        for t[i] in root.type-subs: Pick {
+                            text: t;
+                            on: i == root.type-sub;
+                            check: i == 0;
+                            clicked => {
+                                root.type-sub-picked(i);
+                            }
+                        }
+                    }
+                    if root.info-title != "" && (root.view == "bin" || root.view == "review"): VerticalLayout {
+                        padding: 12 * Theme.dp;
+                        InfoCard {
+                            title: root.info-title;
+                            text: root.info-text;
+                        }
+                    }
+                    if root.rows.length == 0 && root.empty-text != "": Text {
+                        height: 160 * Theme.dp;
+                        text: root.empty-text;
+                        color: Theme.text-dim;
+                        font-size: 15 * Theme.dp;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                    }
+                    for f[i] in root.rows: VerticalLayout {
+                        if f.section != "": SectionLabel {
+                            height: 36 * Theme.dp;
+                            x: 16 * Theme.dp;
+                            text: f.section;
+                            vertical-alignment: center;
+                        }
+                        FileItem {
+                            item: f;
+                            selecting: root.selecting && (root.view == "bin" || root.view == "review");
+                            held => {
+                                if root.view == "bin" || root.view == "review" {
+                                    root.toggle(i);
+                                }
+                            }
+                            tapped => {
+                                if root.selecting && (root.view == "bin" || root.view == "review") {
+                                    root.toggle(i);
+                                } else {
+                                    root.open-row(i);
+                                }
+                            }
+                        }
+                    }
+                    if root.updating != "": Text {
+                        height: 40 * Theme.dp;
+                        text: root.updating;
+                        color: Theme.text-dim;
+                        font-size: 13 * Theme.dp;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // files2-types: the used card and the 2 x 4 tiles
+            NeoList {
+                visible: root.view == "types" && !root.searching;
+                VerticalLayout {
+                    alignment: start;
+                    padding: 12 * Theme.dp;
+                    spacing: 8 * Theme.dp;
+                    UsedCard {
+                        used: root.types-used;
+                        of: root.types-of;
+                        segs: root.types-bar;
+                    }
+
+                    for r in 4: HorizontalLayout {
+                        spacing: 8 * Theme.dp;
+                        if r * 2 < root.types.length: GroupTile {
+                            tile: root.types[r * 2];
+                            tapped => {
+                                root.type-open(r * 2);
+                            }
+                        }
+                        if r * 2 + 1 < root.types.length: GroupTile {
+                            tile: root.types[r * 2 + 1];
+                            tapped => {
+                                root.type-open(r * 2 + 1);
+                            }
+                        }
+                    }
+                    if root.updating != "": Text {
+                        text: root.updating;
+                        color: Theme.text-dim;
+                        font-size: 13 * Theme.dp;
+                        horizontal-alignment: center;
+                    }
+                }
+            }
+
+            // files2-cleanup: the drives, what can be freed, four reviews
+            NeoList {
+                visible: root.view == "cleanup";
+                VerticalLayout {
+                    alignment: start;
+                    padding: 12 * Theme.dp;
+                    spacing: 10 * Theme.dp;
+                    Rectangle {
+                        border-radius: Theme.radius;
+                        background: Theme.card;
+                        border-width: max(1px, Theme.dp / 2);
+                        border-color: #ffffff14;
+                        clip: true;
+                        // files2-cleanup: title · "12.4 GB of 41.8 GB", the bar, then what is free (size and detail)
+                        VerticalLayout {
+                            for d[i] in root.drives: VerticalLayout {
+                                padding: 16 * Theme.dp;
+                                spacing: 8 * Theme.dp;
+                                HorizontalLayout {
+                                    Text {
+                                        text: d.title;
+                                        color: Theme.text;
+                                        font-size: 15 * Theme.dp;
+                                        font-weight: 600;
+                                        horizontal-stretch: 1;
+                                    }
+
+                                    Text {
+                                        text: d.size;
+                                        color: Theme.text-secondary;
+                                        font-size: 13.5 * Theme.dp;
+                                    }
+                                }
+
+                                Rectangle {
+                                    height: 6 * Theme.dp;
+                                    border-radius: self.height / 2;
+                                    background: #ffffff1a;
+                                    Rectangle {
+                                        x: 0;
+                                        width: parent.width * d.used;
+                                        border-radius: parent.border-radius;
+                                        background: d.kind == "phone" ? #3d8bfd : #22b46a;
+                                    }
+                                }
+
+                                Text {
+                                    text: d.detail;
+                                    color: Theme.text-dim;
+                                    font-size: 13 * Theme.dp;
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        padding-top: 6 * Theme.dp;
+                        padding-left: 4 * Theme.dp;
+                        spacing: 8 * Theme.dp;
+                        alignment: start;
+                        Text {
+                            text: root.can-free;
+                            color: Theme.text;
+                            font-size: 22 * Theme.dp;
+                            font-weight: 700;
+                        }
+
+                        Text {
+                            text: root.updating != "" ? root.updating : "can be freed";
+                            color: Theme.text-secondary;
+                            font-size: 14 * Theme.dp;
+                            vertical-alignment: bottom;
+                        }
+                    }
+
+                    for c[i] in root.clean: CleanItem {
+                        card: c;
+                        review => {
+                            root.review(i);
+                        }
+                    }
+                }
+            }
+
+            // Favourites › Edit: ✕ takes one off
+            NeoList {
+                visible: root.view == "favs";
+                VerticalLayout {
+                    alignment: start;
+                    if root.favs.length == 0: Text {
+                        height: 160 * Theme.dp;
+                        text: "No favourites. Long-press a folder, then ⋮ › Add to Favourites.";
+                        color: Theme.text-dim;
+                        font-size: 15 * Theme.dp;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                    }
+                    for f[i] in root.favs: HorizontalLayout {
+                        height: 64 * Theme.dp;
+                        padding-left: 16 * Theme.dp;
+                        padding-right: 8 * Theme.dp;
+                        spacing: 14 * Theme.dp;
+                        VerticalLayout {
+                            alignment: center;
+                            FolderTile { }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: f.name;
+                                font-family: "DejaVu Sans";
+                                color: Theme.text;
+                                font-size: Theme.font-body;
+                                font-weight: 500;
+                                overflow: elide;
+                            }
+
+                            Text {
+                                text: f.detail;
+                                font-family: "DejaVu Sans";
+                                color: Theme.text-dim;
+                                font-size: Theme.font-label;
+                                overflow: elide;
+                            }
+                        }
+
+                        Rectangle {
+                            width: 48 * Theme.dp;
+                            background: x-touch.pressed ? Theme.pressed : transparent;
+                            border-radius: self.width / 2;
+                            x-touch := TouchArea {
+                                clicked => {
+                                    root.fav-remove(i);
+                                }
+                            }
+                            Glyph {
+                                source: @image-url("@neoui/icons/sys/close.svg");
+                                size: 20 * Theme.dp;
+                                colorize: Theme.text-secondary;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // files2-search: scope chips and Filters, the count, the hits (a tap opens; a folder opens there)
+            NeoList {
+                visible: root.searching;
+                VerticalLayout {
+                    alignment: start;
+                    HorizontalLayout {
+                        padding: 12 * Theme.dp;
+                        spacing: 8 * Theme.dp;
+                        Pick {
+                            text: "All drives";
+                            on: !root.search-folder;
+                            clicked => {
+                                root.search-scope(false);
+                            }
+                        }
+
+                        if root.can-search-folder: Pick {
+                            text: "This folder";
+                            on: root.search-folder;
+                            clicked => {
+                                root.search-scope(true);
+                            }
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+
+                        Pick {
+                            text: "Filters";
+                            check: false;
+                            has-icon: true;
+                            icon: @image-url("@neoui/icons/sys/filter.svg");
+                            count: root.filter-count;
+                            clicked => {
+                                root.filters-open = true;
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 16 * Theme.dp;
+                        padding-right: 16 * Theme.dp;
+                        height: 28 * Theme.dp;
+                        Text {
+                            text: root.search-info;
+                            color: Theme.text-dim;
+                            font-size: 13 * Theme.dp;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+
+                    for f[i] in root.hits: FileItem {
+                        item: f;
+                        tapped => {
+                            root.hit-open(i);
+                        }
+                    }
                 }
             }
 
             // files come from outside (K03): pull to list the folder again
             folder-list := NeoList {
-                visible: root.view == "folder";
+                visible: root.view == "folder" && !root.searching;
                 pull-refresh: true;
                 refreshing: root.refreshing;
                 selected: root.selected;
@@ -986,13 +1630,13 @@ export component FilesApp inherits Window {
             }
         }
 
-        // F01: Browse · Recent · Types (Recent and Types come with FA3)
+        // F01: Browse · Recent · Types
         if root.footer: Footer {
-            current: 0;
+            current: root.tab-index;
             tabs: [
                 { icon: @image-url("@neoui/icons/sys/folder.svg"), label: "Browse" },
-                { icon: @image-url("@neoui/icons/sys/recents.svg"), label: "Recent", disabled: true },
-                { icon: @image-url("@neoui/icons/sys/apps.svg"), label: "Types", disabled: true },
+                { icon: @image-url("@neoui/icons/sys/recents.svg"), label: "Recent" },
+                { icon: @image-url("@neoui/icons/sys/apps.svg"), label: "Types" },
             ];
             picked(i) => {
                 root.tab(i);
@@ -1246,6 +1890,159 @@ export component FilesApp inherits Window {
             on: root.folders-first;
             toggled(v) => {
                 root.folders-first-changed(v);
+            }
+        }
+    }
+
+    // files2-search-filters: Type, Size, Modified; Reset and Show N results
+    Sheet {
+        title: "Filters";
+        open <=> root.filters-open;
+        VerticalLayout {
+            padding-left: 16 * Theme.dp;
+            padding-right: 16 * Theme.dp;
+            spacing: 8 * Theme.dp;
+            SectionLabel {
+                text: "TYPE";
+            }
+
+            for r in [[0, 1, 2, 3], [4, 5, 6], [7]]: HorizontalLayout {
+                spacing: 8 * Theme.dp;
+                alignment: start;
+                for i in r: Pick {
+                    text: ["Any", "Images", "Audio", "Video", "Documents", "Archives", "Apps", "Code & text"][i];
+                    on: i == root.f-type;
+                    clicked => {
+                        root.filter-type(i);
+                    }
+                }
+            }
+            SectionLabel {
+                text: "SIZE";
+            }
+
+            for r in [[0, 1, 2], [3]]: HorizontalLayout {
+                spacing: 8 * Theme.dp;
+                alignment: start;
+                for i in r: Pick {
+                    text: ["Any", "Under 1 MB", "1–100 MB", "Over 100 MB"][i];
+                    on: i == root.f-size;
+                    clicked => {
+                        root.filter-size(i);
+                    }
+                }
+            }
+            SectionLabel {
+                text: "MODIFIED";
+            }
+
+            for r in [[0, 1, 2], [3, 4]]: HorizontalLayout {
+                spacing: 8 * Theme.dp;
+                alignment: start;
+                for i in r: Pick {
+                    text: ["Any time", "Today", "This week", "This month", "This year"][i];
+                    on: i == root.f-modified;
+                    clicked => {
+                        root.filter-modified(i);
+                    }
+                }
+            }
+            HorizontalLayout {
+                padding-top: 10 * Theme.dp;
+                padding-bottom: 12 * Theme.dp;
+                spacing: 10 * Theme.dp;
+                Button {
+                    horizontal-stretch: 1;
+                    text: "Reset";
+                    primary: false;
+                    clicked => {
+                        root.filters-reset();
+                    }
+                }
+
+                Button {
+                    horizontal-stretch: 1;
+                    text: root.filter-results == 1 ? "Show 1 result" : "Show " + root.filter-results + " results";
+                    clicked => {
+                        root.filters-open = false;
+                    }
+                }
+            }
+        }
+    }
+
+    // files2-details: what it is, where, when; Read-only and Hidden can change, System can't
+    Sheet {
+        title: "Details";
+        open <=> root.details-open;
+        HorizontalLayout {
+            padding-left: 20 * Theme.dp;
+            padding-right: 20 * Theme.dp;
+            padding-bottom: 12 * Theme.dp;
+            spacing: 14 * Theme.dp;
+            VerticalLayout {
+                alignment: center;
+                if root.details-item.folder: FolderTile {
+                    size: 48 * Theme.dp;
+                }
+                if !root.details-item.folder: FTile {
+                    size: 48 * Theme.dp;
+                    badge: root.details-item.badge;
+                    colour: root.details-item.colour;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                spacing: 2 * Theme.dp;
+                horizontal-stretch: 1;
+                Text {
+                    text: root.details-item.name;
+                    font-family: "DejaVu Sans";
+                    color: Theme.text;
+                    font-size: 17 * Theme.dp;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+
+                Text {
+                    text: root.details-kind;
+                    color: Theme.text-dim;
+                    font-size: 13.5 * Theme.dp;
+                }
+            }
+        }
+
+        for d in root.details: DetailRow {
+            d: d;
+        }
+        if root.details-attributes: VerticalLayout {
+            padding-top: 10 * Theme.dp;
+            SectionLabel {
+                x: 20 * Theme.dp;
+                text: "ATTRIBUTES";
+            }
+
+            SwitchRow {
+                label: "Read-only";
+                on: root.d-read-only;
+                toggled(v) => {
+                    root.details-read-only(v);
+                }
+            }
+
+            SwitchRow {
+                label: "Hidden";
+                on: root.d-hidden;
+                toggled(v) => {
+                    root.details-hidden(v);
+                }
+            }
+
+            SwitchRow {
+                label: "System";
+                hint: "Set by Symbian, not changeable";
+                on: root.d-system;
+                enabled: false;
             }
         }
     }

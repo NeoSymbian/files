@@ -128,23 +128,26 @@ fn cmp_ignore_case(a: &str, b: &str) -> core::cmp::Ordering {
         .cmp(y.flat_map(char::to_lowercase))
 }
 
+/// The order [`sort`] puts two items in.
+pub fn compare(a: &Item, b: &Item, how: Sort) -> core::cmp::Ordering {
+    let dirs = if how.folders_first {
+        b.is_dir.cmp(&a.is_dir)
+    } else {
+        core::cmp::Ordering::Equal
+    };
+    let by = match how.key {
+        SortKey::Name => cmp_ignore_case(&a.name, &b.name),
+        SortKey::Date => a.modified.cmp(&b.modified),
+        SortKey::Size => a.size.cmp(&b.size),
+        SortKey::Type => cmp_ignore_case(ext(&a.name), ext(&b.name)),
+    }
+    .then_with(|| cmp_ignore_case(&a.name, &b.name));
+    dirs.then(if how.ascending { by } else { by.reverse() })
+}
+
 /// Order a folder: folders first if asked, then by the key (ties by name), in either direction.
 pub fn sort(items: &mut [Item], how: Sort) {
-    items.sort_by(|a, b| {
-        let dirs = if how.folders_first {
-            b.is_dir.cmp(&a.is_dir)
-        } else {
-            core::cmp::Ordering::Equal
-        };
-        let by = match how.key {
-            SortKey::Name => cmp_ignore_case(&a.name, &b.name),
-            SortKey::Date => a.modified.cmp(&b.modified),
-            SortKey::Size => a.size.cmp(&b.size),
-            SortKey::Type => cmp_ignore_case(ext(&a.name), ext(&b.name)),
-        }
-        .then_with(|| cmp_ignore_case(&a.name, &b.name));
-        dirs.then(if how.ascending { by } else { by.reverse() })
-    });
+    items.sort_by(|a, b| compare(a, b, how));
 }
 
 /// The breadcrumb: (label, folder) per level, the drive first (`E:\Music\` → `E:`, `Music`).
@@ -560,4 +563,236 @@ mod tests {
         assert_eq!(error_text(-14), "In use, or folder not empty");
         assert_eq!(error_text(-99), "Error -99");
     }
+}
+
+// ── FA3: ages, Recent, Favourites, Details (files2-recent, -bin, -details, -search-filters) ──────────────────────
+
+/// A day in `TTime` units.
+pub const DAY: i64 = 86_400_000_000;
+/// How long the Recycle bin keeps things.
+pub const BIN_DAYS: i64 = 30;
+/// Recent keeps this many.
+pub const RECENT_MAX: usize = 50;
+
+fn day_no(t: i64) -> i64 {
+    t.div_euclid(DAY) - DAYS_TO_UNIX
+}
+
+/// Days after 1970-01-01 of a civil date (Hinnant's `days_from_civil`).
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let mp = if m > 2 { m - 3 } else { m + 9 } as i64;
+    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+fn ttime_of_day(days: i64) -> i64 {
+    (days + DAYS_TO_UNIX) * DAY
+}
+
+/// Recent's sections.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Age {
+    Today,
+    Yesterday,
+    ThisWeek,
+    Earlier,
+}
+
+impl Age {
+    pub fn label(self) -> &'static str {
+        match self {
+            Age::Today => "Today",
+            Age::Yesterday => "Yesterday",
+            Age::ThisWeek => "This week",
+            Age::Earlier => "Earlier",
+        }
+    }
+}
+
+pub fn age(t: i64, now: i64) -> Age {
+    match day_no(now) - day_no(t) {
+        i64::MIN..=0 => Age::Today,
+        1 => Age::Yesterday,
+        2..=6 => Age::ThisWeek,
+        _ => Age::Earlier,
+    }
+}
+
+const WEEKDAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
+
+/// Recent's middle part: `10:12` today and yesterday, `Sun` this week, else `3 Nov`.
+pub fn when_text(t: i64, now: i64) -> String {
+    match age(t, now) {
+        Age::Today | Age::Yesterday => {
+            let s = t.div_euclid(1_000_000).rem_euclid(86_400);
+            format!("{:02}:{:02}", s / 3600, s / 60 % 60)
+        }
+        Age::ThisWeek => String::from(WEEKDAYS[day_no(t).rem_euclid(7) as usize]),
+        Age::Earlier => day_text(t, now),
+    }
+}
+
+/// The bin's rows: `Deleted today`, `Deleted 1 day ago`, `Deleted 9 days ago`.
+pub fn deleted_text(t: i64, now: i64) -> String {
+    match day_no(now) - day_no(t) {
+        i64::MIN..=0 => String::from("Deleted today"),
+        1 => String::from("Deleted 1 day ago"),
+        n => format!("Deleted {n} days ago"),
+    }
+}
+
+/// `3 days left` once three or fewer remain of [`BIN_DAYS`], else nothing.
+pub fn left_text(deleted: i64, now: i64) -> Option<String> {
+    let left = BIN_DAYS - (now - deleted).div_euclid(DAY);
+    match left {
+        i64::MIN..=1 => Some(String::from("1 day left")),
+        2 | 3 => Some(format!("{left} days left")),
+        _ => None,
+    }
+}
+
+/// Details: `212 KB (217,088 bytes)`.
+pub fn bytes_text(bytes: u64) -> String {
+    let digits = format!("{bytes}");
+    let mut grouped = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(c);
+    }
+    let unit = if bytes == 1 { "byte" } else { "bytes" };
+    if bytes < 1024 {
+        return format!("{grouped} {unit}");
+    }
+    format!("{} ({grouped} {unit})", size_text(bytes))
+}
+
+/// Details: `1 Nov 2026, 08:40`.
+pub fn full_date_text(t: i64) -> String {
+    let (y, m, d) = civil_from_days(day_no(t));
+    let s = t.div_euclid(1_000_000).rem_euclid(86_400);
+    format!(
+        "{d} {} {y}, {:02}:{:02}",
+        MONTHS[(m - 1) as usize],
+        s / 3600,
+        s / 60 % 60
+    )
+}
+
+/// The search filter's Modified chips.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Modified {
+    #[default]
+    Any,
+    Today,
+    Week,
+    Month,
+    Year,
+}
+
+impl Modified {
+    pub const ALL: [Modified; 5] = [
+        Modified::Any,
+        Modified::Today,
+        Modified::Week,
+        Modified::Month,
+        Modified::Year,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Modified::Any => "Any time",
+            Modified::Today => "Today",
+            Modified::Week => "This week",
+            Modified::Month => "This month",
+            Modified::Year => "This year",
+        }
+    }
+
+    /// The earliest `TTime` that counts: the start of today, of this week (Monday), of the month or the year.
+    pub fn since(self, now: i64) -> Option<i64> {
+        let today = day_no(now);
+        let (y, _, d) = civil_from_days(today);
+        let day = match self {
+            Modified::Any => return None,
+            Modified::Today => today,
+            // 1970-01-01 was a Thursday: Monday is 3 days later in the cycle
+            Modified::Week => today - (today - 4).rem_euclid(7),
+            Modified::Month => today - (d as i64 - 1),
+            Modified::Year => days_from_civil(y, 1, 1),
+        };
+        Some(ttime_of_day(day))
+    }
+}
+
+/// The search filter's Size chips: `(low, high)` in bytes, both inclusive.
+pub const SIZE_BANDS: [(&str, Option<(u64, u64)>); 4] = [
+    ("Any", None),
+    ("Under 1 MB", Some((0, (1 << 20) - 1))),
+    ("1–100 MB", Some((1 << 20, 100 << 20))),
+    ("Over 100 MB", Some(((100 << 20) + 1, u64::MAX))),
+];
+
+/// Files opened from Files, the newest first, without repeats (files-app.md: Files' own list).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Recent {
+    pub items: Vec<(String, i64)>,
+}
+
+impl Recent {
+    pub fn add(&mut self, path: &str, t: i64) {
+        self.items.retain(|(p, _)| !p.eq_ignore_ascii_case(path));
+        self.items.insert(0, (String::from(path), t));
+        self.items.truncate(RECENT_MAX);
+    }
+
+    pub fn remove(&mut self, path: &str) {
+        self.items.retain(|(p, _)| !p.eq_ignore_ascii_case(path));
+    }
+
+    /// One `TTime<TAB>path` line each.
+    pub fn encode(&self) -> String {
+        let mut s = String::new();
+        for (p, t) in &self.items {
+            s.push_str(&format!("{t}\t{p}\n"));
+        }
+        s
+    }
+
+    /// Lines that don't read are skipped.
+    pub fn decode(text: &str) -> Recent {
+        let mut r = Recent::default();
+        for line in text.lines() {
+            if let Some((t, p)) = line.split_once('\t')
+                && let Ok(t) = t.parse()
+                && !p.is_empty()
+                && r.items.len() < RECENT_MAX
+            {
+                r.items.push((String::from(p), t));
+            }
+        }
+        r
+    }
+}
+
+/// Favourite folders in the user's order, one path per line.
+pub fn favs_encode(favs: &[String]) -> String {
+    let mut s = String::new();
+    for f in favs {
+        s.push_str(f);
+        s.push('\n');
+    }
+    s
+}
+
+pub fn favs_decode(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|l| l.ends_with('\\'))
+        .map(String::from)
+        .collect()
 }

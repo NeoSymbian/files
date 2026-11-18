@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+use crate::delete::DeleteTree;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -273,6 +274,13 @@ pub fn undo(fs: &impl Fs, batch: &Batch) -> Result<()> {
             return Err(Error::InUse);
         }
         let target = restore_name(fs, &journal[index].item.original)?;
+        // its folder may have gone to the bin too (or been deleted) since
+        if let Some(parent) = path::parent(&target)
+            && parent.len() > 3
+            && maybe_entry(fs, &parent)?.is_none()
+        {
+            crate::store::mkdirs(fs, &parent)?;
+        }
         fs.rename(source, &target)?;
         journal[index].state = State::Restored;
         write_records(fs, &root, &journal[index..=index], true)?;
@@ -310,12 +318,89 @@ pub fn recover(fs: &impl Fs, drive: char) -> Result<()> {
     if changed {
         write_records(fs, &root, &reconciled, false)?;
     }
+    let mut leftovers = Vec::new();
     for entry in fs.read_dir(&root)? {
-        if !entry.is_dir() && entry.name.to_ascii_lowercase().ends_with(".~part") {
+        let name = entry.name.to_ascii_lowercase();
+        if !entry.is_dir() && name.ends_with(".~part") {
             fs.delete(&path::join_file(&root, &entry.name))?;
+        } else if name.ends_with(".~del") {
+            leftovers.push(if entry.is_dir() {
+                path::join_dir(&root, &entry.name)
+            } else {
+                path::join_file(&root, &entry.name)
+            });
         }
     }
+    DeleteTree::new(leftovers).run(fs)?;
     Ok(())
+}
+
+/// Put `items` (bin paths, as [`Trashed::bin_path`] gives) back where they were; a name now taken gets "(1)".
+pub fn restore(fs: &impl Fs, items: &[String]) -> Result<()> {
+    undo(
+        fs,
+        &Batch {
+            id: 0,
+            items: items.to_vec(),
+        },
+    )
+}
+
+/// Take `items` (bin paths) out of the bin for good. Each is renamed to `<id>.~del` and its record dropped, so a
+/// power cut leaves either the item with its record or a leftover [`recover`] deletes. Returns the leftovers, for a
+/// [`DeleteTree`] that does the slow part.
+pub fn purge(fs: &impl Fs, items: &[String]) -> Result<Vec<String>> {
+    let mut doomed = Vec::new();
+    for source in items {
+        let drive = path::drive_of(source).ok_or(Error::BadName)?;
+        writable(fs, drive)?;
+        let root = bin(drive);
+        let mut journal = records(fs, &root)?;
+        let index = journal
+            .iter()
+            .position(|record| {
+                record.state == State::Done
+                    && path::eq_ignore_case(&item_path(&root, &record.item), source)
+            })
+            .ok_or(Error::NotFound)?;
+        let record = journal.remove(index);
+        let target = del_path(&root, &record.item);
+        if maybe_entry(fs, &target)?.is_some() {
+            // a leftover of an older item with the same id (ids are reused once purged)
+            DeleteTree::new(vec![target.clone()]).run(fs)?;
+        }
+        fs.rename(source, &target)?;
+        journal.retain(|r| r.state != State::Restored);
+        write_records(fs, &root, &journal, false)?;
+        doomed.push(target);
+    }
+    Ok(doomed)
+}
+
+/// Bin paths of the items deleted at least `keep` ago (in `now`'s units).
+pub fn expired(fs: &impl Fs, drive: char, now: i64, keep: i64) -> Result<Vec<String>> {
+    Ok(list(fs, drive)?
+        .into_iter()
+        .filter(|item| now.saturating_sub(item.deleted) >= keep)
+        .map(|item| item.bin_path())
+        .collect())
+}
+
+impl Trashed {
+    /// Where the item sits in its drive's bin (a folder ends with `\`).
+    pub fn bin_path(&self) -> String {
+        let drive = path::drive_of(&self.original).unwrap_or('C');
+        item_path(&bin(drive), self)
+    }
+}
+
+fn del_path(root: &str, item: &Trashed) -> String {
+    let name = format!("{}.~del", item.id);
+    if item.original.ends_with('\\') {
+        path::join_dir(root, &name)
+    } else {
+        path::join_file(root, &name)
+    }
 }
 
 pub fn list(fs: &impl Fs, drive: char) -> Result<Vec<Trashed>> {

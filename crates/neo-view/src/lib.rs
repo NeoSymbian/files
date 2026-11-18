@@ -52,6 +52,28 @@ impl Family {
     }
 
     /// What opens it (the type matrix's viewer column).
+    /// What Details calls it (files2-details: "PDF document").
+    pub const fn name(self) -> &'static str {
+        match self {
+            Family::Text => "Text file",
+            Family::Code => "Code file",
+            Family::Image => "Image",
+            Family::Audio => "Audio",
+            Family::Video => "Video",
+            Family::Pdf => "PDF document",
+            Family::Word => "Word document",
+            Family::Excel => "Spreadsheet",
+            Family::Slides => "Presentation",
+            Family::Ebook => "E-book",
+            Family::Archive => "Archive",
+            Family::App => "App package",
+            Family::Contact => "Contact or event",
+            Family::Font => "Font",
+            Family::Cert => "Certificate",
+            Family::Other => "File",
+        }
+    }
+
     pub const fn viewer(self) -> &'static str {
         match self {
             Family::Text => "Text viewer",
