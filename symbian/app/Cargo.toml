@@ -22,4 +22,5 @@ files-ui.workspace = true
 files-ops.workspace = true
 neo-fs.workspace = true
 neo-view.workspace = true
+neo-format-text.workspace = true
 fs-e32.workspace = true

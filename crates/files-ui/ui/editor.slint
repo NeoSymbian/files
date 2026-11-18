@@ -352,7 +352,7 @@ export component TableGrid inherits Rectangle {
     for r[i] in root.cells: Rectangle {
         y: (i + 1) * root.row-h;
         height: root.row-h;
-        width: parent.viewport-width;
+        width: parent.content-width;
         Rectangle {
             x: 0;
             width: root.no-w;

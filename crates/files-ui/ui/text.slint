@@ -73,7 +73,7 @@ export component TextPane inherits Rectangle {
     out property <length> cell-w: probe.preferred-width / 10;
     out property <int> cols: max(8, floor((self.width - root.text-x - 6 * Theme.dp) / root.cell-w));
     out property <int> visible-rows: ceil(self.height / TextMetrics.line-h) + 1;
-    out property <int> first-row: max(0, floor(-flick.viewport-y / TextMetrics.line-h));
+    out property <int> first-row: max(0, floor(-flick.content-y / TextMetrics.line-h));
     callback scrolled(int);
     callback tapped(int, int);
     callback held(int, int);
@@ -94,14 +94,14 @@ export component TextPane inherits Rectangle {
 
     // bring a row into view (the cursor after a key, a find match)
     public function show-row(r: int) {
-        if r * TextMetrics.line-h < -flick.viewport-y {
-            flick.viewport-y = -r * TextMetrics.line-h;
-        } else if (r + 1) * TextMetrics.line-h > -flick.viewport-y + flick.height {
-            flick.viewport-y = min(0, -((r + 1) * TextMetrics.line-h - flick.height));
+        if r * TextMetrics.line-h < -flick.content-y {
+            flick.content-y = -r * TextMetrics.line-h;
+        } else if (r + 1) * TextMetrics.line-h > -flick.content-y + flick.height {
+            flick.content-y = min(0, -((r + 1) * TextMetrics.line-h - flick.height));
         }
     }
     public function to-top() {
-        flick.viewport-y = 0;
+        flick.content-y = 0;
     }
 
     function row-at(y: length) -> int {
@@ -113,14 +113,14 @@ export component TextPane inherits Rectangle {
 
     flick := Flickable {
         content-height: max(self.height, (root.total-rows + 1) * TextMetrics.line-h);
-        changed viewport-y => {
+        changed content-y => {
             root.scrolled(root.first-row);
         }
 
         if root.gutter > 0: Rectangle {
             x: 0;
             width: root.gutter-w;
-            height: parent.viewport-height;
+            height: parent.content-height;
             background: #0d1117;
         }
 
