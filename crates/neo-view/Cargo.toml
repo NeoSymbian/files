@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "neo-view"
+description = "File types for Files: the 55 extensions in their families (badge colour, viewer, editor)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true

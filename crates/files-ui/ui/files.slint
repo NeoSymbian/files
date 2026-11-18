@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// The Files app (NEOFILES.EXE) on the neoui kit (Shell v2): real drives and folders from Symbian's file server. The
-// app draws its header (Header on the drives, SubHeader with ⋮ in a folder, the selection header while rows are
-// picked) and forms ([✕ New folder ✓], [✕ Rename ✓]); the shell draws dialogs (QUERY) and toasts (NOTE).
+// The Files app (NEOFILES.EXE), v2 (docs files-app.md FA1 + FA2, the canvas's files2-* boards) on the neoui kit:
+// the Browse tab (drives), folders as a list or a grid with a breadcrumb, the folder and selection menus, the Sort
+// sheet, the read-only banner, New folder / New file / Rename forms, the paste bar, a copy's progress toast and the
+// name-clash dialog. The shell draws QUERY dialogs, toasts with Undo and the shade entry.
 // The Rust side owns the state; this file draws it and reports taps as callbacks.
 import "@neoui/fonts/NeoSans-Regular.ttf";
 import "@neoui/fonts/NeoSans-Medium.ttf";
@@ -11,32 +12,496 @@ import "@neoui/fonts/NeoSans-Bold.ttf";
 import "@neoui/fonts/DejaVuSans.ttf";
 import "@neoui/fonts/DejaVuSansMono.ttf";
 import {
-    Theme, Kit, Scroll, Alphabets, Card, Glyph, NeoList, ListRow, Header, SubHeader, FormHeader, TextField, Act,
-    EmptyState
+    Theme, Kit, Scroll, Alphabets, Glyph, NeoList, Header, SubHeader, FormHeader, TextField, Act, Tab, Footer,
+    Sheet, Switch, Button, ProgressBar
 } from "@neoui/kit.slint";
+import { FTile, FolderTile, DriveTile } from "tiles.slint";
 
 export { Theme, Scroll, Kit }
 
-export struct DriveRow { label: string, detail: string, used: float, rom: bool }
-export struct FileRow { name: string, detail: string, kind: string, checked: bool }
+// kind: "phone", "mass", "card", "rom", "ram"
+export struct DriveRow { title: string, size: string, detail: string, used: float, kind: string, read-only: bool }
+// detail: "4.1 MB · 3 Nov" (list); short: "3.1 MB" or "812 items" (grid). state: 0 a file or folder, 1 being copied
+// here (progress 0..1), 2 just copied
+export struct FileRow {
+    name: string,
+    detail: string,
+    short: string,
+    folder: bool,
+    badge: string,
+    colour: color,
+    checked: bool,
+    state: int,
+    progress: float,
+}
+
+// a round check box (selection)
+component Check inherits Rectangle {
+    in property <bool> on;
+    width: 24 * Theme.dp;
+    height: self.width;
+    border-radius: self.width / 2;
+    background: root.on ? Theme.accent : transparent;
+    border-width: root.on ? 0 : 2 * Theme.dp;
+    border-color: Theme.text-dim;
+    if root.on: Glyph {
+        source: @image-url("@neoui/icons/sys/check.svg");
+        size: 16 * Theme.dp;
+        colorize: white;
+    }
+}
+
+// A compact pill (the paste bar, the toast, the clash dialog: files2-paste-bar, files2-clash): 40 dp, 15 dp text;
+// primary = accent fill, else a field fill, or `flat` (text only).
+component Pill inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary;
+    in property <bool> flat;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 40 * Theme.dp;
+    width: label.preferred-width + (root.flat ? 24 : 32) * Theme.dp;
+    border-radius: self.height / 2;
+    opacity: root.enabled ? 1 : Theme.disabled;
+    background: root.flat ? (touch.pressed ? Theme.pressed : transparent)
+        : root.primary ? (touch.pressed ? Theme.accent.darker(20%) : Theme.accent)
+        : (touch.pressed ? Theme.pressed : Theme.field);
+    label := Text {
+        text: root.text;
+        color: root.flat && root.primary ? Theme.accent : root.flat ? Theme.text : white;
+        font-size: 15 * Theme.dp;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// A tap, or a 500 ms hold (selection) without the tap after it (ListRow's rule).
+component Press inherits TouchArea {
+    callback tapped();
+    callback held();
+    property <bool> fired;
+    changed pressed => {
+        if self.pressed {
+            self.fired = false;
+        }
+    }
+    clicked => {
+        if !self.fired {
+            root.tapped();
+        }
+    }
+    Timer {
+        interval: 500ms;
+        running: root.pressed && !root.fired;
+        triggered => {
+            root.fired = true;
+            root.held();
+        }
+    }
+}
+
+// one row of a folder (files2-folder-list): 64 dp, a 40 dp tile, name and detail, a lock / chevron / state on the right
+component FileItem inherits Rectangle {
+    in property <FileRow> item;
+    in property <bool> selecting;
+    in property <bool> locked;
+    callback tapped();
+    callback held();
+    height: 64 * Theme.dp;
+    background: press.pressed ? Theme.pressed : root.item.checked ? #3d8bfd1f : transparent;
+    press := Press {
+        tapped => {
+            root.tapped();
+        }
+        held => {
+            root.held();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 16 * Theme.dp;
+        padding-right: 16 * Theme.dp;
+        spacing: 14 * Theme.dp;
+        if root.selecting: VerticalLayout {
+            alignment: center;
+            Check {
+                on: root.item.checked;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            width: 40 * Theme.dp;
+            opacity: root.item.state == 1 ? 0.5 : 1;
+            HorizontalLayout {
+                alignment: center;
+                if root.item.folder: FolderTile { }
+                if !root.item.folder: FTile {
+                    badge: root.item.badge;
+                    colour: root.item.colour;
+                }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 3 * Theme.dp;
+            horizontal-stretch: 1;
+            Text {
+                text: root.item.name;
+                font-family: "DejaVu Sans";
+                color: Theme.text;
+                font-size: Theme.font-body;
+                font-weight: 500;
+                overflow: elide;
+            }
+
+            Text {
+                text: root.item.detail;
+                color: Theme.text-dim;
+                font-size: Theme.font-label;
+                overflow: elide;
+            }
+        }
+
+        if root.item.state == 1: VerticalLayout {
+            alignment: center;
+            ProgressBar {
+                width: 56 * Theme.dp;
+                value: root.item.progress;
+            }
+        }
+        if root.item.state == 2: VerticalLayout {
+            alignment: center;
+            Glyph {
+                source: @image-url("@neoui/icons/sys/check.svg");
+                size: 20 * Theme.dp;
+                colorize: #22b46a;
+            }
+        }
+        if root.locked && root.item.state == 0: VerticalLayout {
+            alignment: center;
+            Glyph {
+                source: @image-url("@neoui/icons/sys/lock.svg");
+                size: 16 * Theme.dp;
+                colorize: Theme.text-dim;
+            }
+        }
+        if root.item.folder && !root.selecting && !root.locked: VerticalLayout {
+            alignment: center;
+            Glyph {
+                source: @image-url("@neoui/icons/sys/chevron_right.svg");
+                size: 18 * Theme.dp;
+                colorize: Theme.text-dim;
+            }
+        }
+    }
+
+    Rectangle {
+        x: 70 * Theme.dp;
+        y: parent.height - self.height;
+        width: parent.width - self.x;
+        height: max(1px, Theme.dp / 2);
+        background: #ffffff12;
+    }
+}
+
+// one cell of the 3-column grid (files2-folder-grid): a 60 dp folder or a 56 dp file tile, the name, the detail
+component FileCell inherits Rectangle {
+    in property <FileRow> item;
+    in property <bool> selecting;
+    callback tapped();
+    callback held();
+    border-radius: 12 * Theme.dp;
+    background: press.pressed ? Theme.pressed : root.item.checked ? #3d8bfd1f : transparent;
+    press := Press {
+        tapped => {
+            root.tapped();
+        }
+        held => {
+            root.held();
+        }
+    }
+
+    VerticalLayout {
+        padding-top: 10 * Theme.dp;
+        spacing: 4 * Theme.dp;
+        alignment: start;
+        HorizontalLayout {
+            alignment: center;
+            height: 60 * Theme.dp;
+            VerticalLayout {
+                alignment: center;
+                if root.item.folder: FolderTile {
+                    size: 60 * Theme.dp;
+                }
+                if !root.item.folder: FTile {
+                    size: 56 * Theme.dp;
+                    badge: root.item.badge;
+                    colour: root.item.colour;
+                }
+            }
+        }
+
+        Text {
+            text: root.item.name;
+            font-family: "DejaVu Sans";
+            color: Theme.text;
+            font-size: 13.5 * Theme.dp;
+            font-weight: 500;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+
+        Text {
+            text: root.item.short;
+            color: Theme.text-dim;
+            font-size: 12 * Theme.dp;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    if root.selecting: Check {
+        x: 8 * Theme.dp;
+        y: 8 * Theme.dp;
+        on: root.item.checked;
+    }
+}
+
+// the drives card (files2-browse): a tile, "C: Phone memory" and its size, the usage line and bar
+component DriveItem inherits Rectangle {
+    in property <DriveRow> drive;
+    in property <bool> last;
+    callback tapped();
+    height: (root.drive.read-only ? 76 : 86) * Theme.dp;
+    background: touch.pressed ? Theme.pressed : transparent;
+    touch := TouchArea {
+        clicked => {
+            root.tapped();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 14 * Theme.dp;
+        padding-right: 14 * Theme.dp;
+        spacing: 14 * Theme.dp;
+        VerticalLayout {
+            alignment: center;
+            DriveTile {
+                kind: root.drive.kind;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 4 * Theme.dp;
+            horizontal-stretch: 1;
+            HorizontalLayout {
+                spacing: 8 * Theme.dp;
+                alignment: start;
+                Text {
+                    text: root.drive.title;
+                    color: Theme.text;
+                    font-size: Theme.font-body;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+
+                if root.drive.read-only: VerticalLayout {
+                    alignment: center;
+                    Glyph {
+                        source: @image-url("@neoui/icons/sys/lock.svg");
+                        size: 14 * Theme.dp;
+                        colorize: Theme.text-dim;
+                    }
+                }
+                Text {
+                    text: root.drive.size;
+                    color: Theme.text-dim;
+                    font-size: Theme.font-label;
+                    vertical-alignment: center;
+                }
+            }
+
+            Text {
+                text: root.drive.detail;
+                color: Theme.text-secondary;
+                font-size: Theme.font-label;
+                overflow: elide;
+            }
+
+            if !root.drive.read-only: Rectangle {
+                height: 6 * Theme.dp;
+                border-radius: self.height / 2;
+                background: #ffffff1a;
+                Rectangle {
+                    x: 0;
+                    width: parent.width * root.drive.used;
+                    border-radius: parent.border-radius;
+                    background: root.drive.kind == "mass" ? #7b6cf0 : root.drive.kind == "card" ? #22b46a : Theme.accent;
+                }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            Glyph {
+                source: @image-url("@neoui/icons/sys/chevron_right.svg");
+                size: 18 * Theme.dp;
+                colorize: Theme.text-dim;
+            }
+        }
+    }
+
+    if !root.last: Rectangle {
+        x: 68 * Theme.dp;
+        y: parent.height - self.height;
+        width: parent.width - self.x;
+        height: max(1px, Theme.dp / 2);
+        background: #ffffff12;
+    }
+}
+
+component SectionLabel inherits Text {
+    color: Theme.text-dim;
+    font-size: 12.5 * Theme.dp;
+    font-weight: 600;
+    letter-spacing: 0.8px;
+}
+
+// one choice in the Sort sheet: a radio and its label
+component RadioRow inherits Rectangle {
+    in property <string> label;
+    in property <bool> on;
+    callback picked();
+    height: 56 * Theme.dp;
+    background: touch.pressed ? Theme.pressed : transparent;
+    touch := TouchArea {
+        clicked => {
+            root.picked();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 20 * Theme.dp;
+        spacing: 16 * Theme.dp;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 22 * Theme.dp;
+                height: self.width;
+                border-radius: self.width / 2;
+                border-width: 2 * Theme.dp;
+                border-color: root.on ? Theme.accent : Theme.text-dim;
+                if root.on: Rectangle {
+                    width: 10 * Theme.dp;
+                    height: self.width;
+                    border-radius: self.width / 2;
+                    background: Theme.accent;
+                }
+            }
+        }
+
+        Text {
+            text: root.label;
+            color: Theme.text;
+            font-size: Theme.font-body;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component SwitchRow inherits Rectangle {
+    in property <string> label;
+    in property <string> hint;
+    in property <bool> on;
+    callback toggled(bool);
+    height: 56 * Theme.dp;
+    HorizontalLayout {
+        padding-left: 20 * Theme.dp;
+        padding-right: 20 * Theme.dp;
+        spacing: 12 * Theme.dp;
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            spacing: 2 * Theme.dp;
+            Text {
+                text: root.label;
+                color: Theme.text;
+                font-size: Theme.font-body;
+            }
+
+            Text {
+                text: root.hint;
+                color: Theme.text-dim;
+                font-size: 12.5 * Theme.dp;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            Switch {
+                on: root.on;
+                toggled(v) => {
+                    root.toggled(v);
+                }
+            }
+        }
+    }
+}
 
 export component FilesApp inherits Window {
     default-font-family: "NeoSans";
     background: Theme.bg;
 
-    // "drives", "folder" or "text"
-    in property <string> view: "drives";
+    // "browse" (the drives), "folder" or "text"
+    in property <string> view: "browse";
     in property <[DriveRow]> drives;
-    // the open folder or file: its full path, and its name (the header's title)
-    in property <string> path;
+    // the open folder or file: its name (the header's title) and the breadcrumb's labels
     in property <string> name;
+    in property <[string]> crumbs;
     in property <[FileRow]> rows;
+    in property <bool> grid;
+    in property <bool> read-only;
+    in property <bool> show-hidden;
     in property <string> text;
     // rows picked (selection mode, K03): how many
     in property <int> selected;
-    // "" (none), "new" or "rename": a form page over the folder
+    // the Sort sheet
+    in-out property <bool> sort-open;
+    in property <int> sort-key;
+    in property <bool> ascending: true;
+    in property <bool> folders-first: true;
+    // the paste bar (F06): "2 files to move", "from E:\Music", "Move here"; hidden while the action is ""
+    in property <string> paste-title;
+    in property <string> paste-from;
+    in property <string> paste-action;
+    // a copy or move running: the toast's text and progress (0..1); hidden while the text is ""
+    in property <string> job-text;
+    in property <float> job-progress;
+    // a name clash: the question, the two versions, how many clashes this answer can cover
+    in property <bool> clash-open;
+    in property <string> clash-title;
+    in property <string> clash-text;
+    in property <int> clash-count;
+    in-out property <bool> clash-all: true;
+    // "" (none), "folder", "file" or "rename": a form page over the folder
     in property <string> form;
+    in property <string> form-dir;
     in-out property <string> name-text;
+    // Rename keeps the extension (files2-rename): ".flac", and what the file is
+    in property <string> name-suffix;
+    in property <string> form-detail;
+    in property <string> form-badge;
+    in property <color> form-colour;
     in property <bool> refreshing;
     // the system keyboard's height over the bottom of the surface, while a name is typed
     in property <length> kb-h;
@@ -44,46 +509,73 @@ export component FilesApp inherits Window {
     callback drive(int);
     callback open-row(int);
     callback toggle(int);
+    callback crumb(int);
     callback up();
-    callback new-folder();
-    callback rename();
-    callback delete();
+    callback tab(int);
+    callback menu(string);
+    callback selection-action(int);
+    callback selection-menu(string);
     callback clear-selection();
+    callback new-folder();
+    callback new-file();
     callback refresh();
+    callback sort-chosen(int);
+    callback ascending-changed(bool);
+    callback folders-first-changed(bool);
+    callback paste-cancel();
+    callback paste-go();
+    callback job-hide();
+    callback clash-answer(int);
     callback form-cancel();
     callback form-save();
+
+    property <[string]> root-menu: [root.show-hidden ? "Hide hidden files" : "Show hidden files"];
+    property <[string]> folder-menu: root.read-only ? [
+        "Sort by", root.grid ? "List view" : "Grid view", root.show-hidden ? "Hide hidden" : "Show hidden"
+    ] : [
+        "New folder", "New file", "Sort by", root.grid ? "List view" : "Grid view",
+        root.show-hidden ? "Hide hidden" : "Show hidden"
+    ];
+    property <[string]> pick-menu: root.read-only ? ["Select all"] : ["Move", "Rename", "Select all"];
+    property <bool> selecting: root.selected > 0;
+    property <bool> footer: root.form == "" && !root.selecting && root.view != "text";
 
     Alphabets { }
 
     VerticalLayout {
-        if root.view == "drives": Header {
+        if root.view == "browse": Header {
             title: "Files";
             search: false;
+            menu: root.root-menu;
+            menu-picked(i) => {
+                root.menu(root.root-menu[i]);
+            }
             top => {
-                drives-list.to-top();
+                browse-list.to-top();
             }
         }
         if root.view == "folder": SubHeader {
             title: root.name;
+            title-font: "DejaVu Sans";
             search: false;
-            menu: ["New folder"];
+            menu: root.folder-menu;
             selected: root.selected;
             selection-actions: [
-                { icon: @image-url("@neoui/icons/sys/edit.svg"), label: "Rename", disabled: root.selected != 1 },
-                { icon: @image-url("@neoui/icons/sys/delete.svg"), label: "Delete" },
+                { icon: @image-url("icons/copy.svg"), label: "Copy" },
+                { icon: @image-url("@neoui/icons/sys/delete.svg"), label: "Delete", disabled: root.read-only },
             ];
+            selection-menu: root.pick-menu;
             back => {
                 root.up();
             }
             menu-picked(i) => {
-                root.new-folder();
+                root.menu(root.folder-menu[i]);
             }
             selection-action(i) => {
-                if i == 0 {
-                    root.rename();
-                } else {
-                    root.delete();
-                }
+                root.selection-action(i);
+            }
+            selection-menu-picked(i) => {
+                root.selection-menu(root.pick-menu[i]);
             }
             selection-closed => {
                 root.clear-selection();
@@ -94,151 +586,510 @@ export component FilesApp inherits Window {
         }
         if root.view == "text": SubHeader {
             title: root.name;
+            title-font: "DejaVu Sans";
             search: false;
             back => {
                 root.up();
             }
         }
 
-        if root.view != "drives": Text {
-            x: Theme.card-pad;
-            height: 30 * Theme.dp;
-            text: root.path;
-            font-family: "DejaVu Sans";
-            color: Theme.text-dim;
-            font-size: Theme.font-label;
-            vertical-alignment: center;
-            overflow: elide;
+        // the breadcrumb (F05): the drive, then each folder; the last is where you are
+        if root.view != "browse": HorizontalLayout {
+            height: 40 * Theme.dp;
+            padding-left: 12 * Theme.dp;
+            padding-right: 12 * Theme.dp;
+            spacing: 4 * Theme.dp;
+            alignment: start;
+            for c[i] in root.crumbs: HorizontalLayout {
+                spacing: 4 * Theme.dp;
+                if i > 0: VerticalLayout {
+                    alignment: center;
+                    Glyph {
+                        source: @image-url("@neoui/icons/sys/chevron_right.svg");
+                        size: 14 * Theme.dp;
+                        colorize: Theme.text-dim;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        property <bool> here: i == root.crumbs.length - 1;
+                        height: 28 * Theme.dp;
+                        width: crumb-text.preferred-width + 20 * Theme.dp;
+                        border-radius: self.height / 2;
+                        background: crumb-touch.pressed ? Theme.pressed : self.here ? Theme.tab-pill : Theme.field;
+                        crumb-text := Text {
+                            text: c;
+                            font-family: "DejaVu Sans";
+                            color: parent.here ? Theme.text : Theme.text-secondary;
+                            font-size: 13.5 * Theme.dp;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+
+                        crumb-touch := TouchArea {
+                            clicked => {
+                                root.crumb(i);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
-        // the three views share the rest of the surface; the hidden ones stay (their ids are used above)
+        // Z: and other read-only drives (files2-rom)
+        if root.view == "folder" && root.read-only && !root.selecting: Rectangle {
+            height: banner.preferred-height + 12 * Theme.dp;
+            Rectangle {
+                x: 12 * Theme.dp;
+                y: 4 * Theme.dp;
+                width: parent.width - 24 * Theme.dp;
+                height: banner.preferred-height;
+                border-radius: Theme.radius;
+                background: Theme.card;
+                border-width: max(1px, Theme.dp / 2);
+                border-color: #ffffff14;
+                banner := HorizontalLayout {
+                    padding: 14 * Theme.dp;
+                    spacing: 12 * Theme.dp;
+                    VerticalLayout {
+                        alignment: start;
+                        Glyph {
+                            source: @image-url("@neoui/icons/sys/lock.svg");
+                            size: 20 * Theme.dp;
+                            colorize: #e2a92a;
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 3 * Theme.dp;
+                        Text {
+                            text: "Read-only drive";
+                            color: Theme.text;
+                            font-size: Theme.font-body;
+                            font-weight: 600;
+                        }
+
+                        Text {
+                            text: "You can open and copy these files, not change or delete them.";
+                            color: Theme.text-secondary;
+                            font-size: Theme.font-label;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+        }
+
+        // the views share the rest of the surface; the hidden ones stay (their ids are used above)
         Rectangle {
             vertical-stretch: 1;
-        drives-list := NeoList {
-            visible: root.view == "drives";
-            VerticalLayout {
-                alignment: start;
-                padding: Theme.margin;
-                spacing: 12 * Theme.dp;
-                for d[i] in root.drives: Card {
-                    height: 108 * Theme.dp;
-                    VerticalLayout {
-                        padding: Theme.card-pad;
+            browse-list := NeoList {
+                visible: root.view == "browse";
+                VerticalLayout {
+                    alignment: start;
+                    padding-left: 12 * Theme.dp;
+                    padding-right: 12 * Theme.dp;
+                    padding-top: 6 * Theme.dp;
+                    spacing: 8 * Theme.dp;
+                    SectionLabel {
+                        x: 4 * Theme.dp;
+                        text: "DRIVES";
+                    }
+
+                    Rectangle {
+                        border-radius: Theme.radius;
+                        background: Theme.card;
+                        border-width: max(1px, Theme.dp / 2);
+                        border-color: #ffffff14;
+                        clip: true;
+                        VerticalLayout {
+                            for d[i] in root.drives: DriveItem {
+                                drive: d;
+                                last: i == root.drives.length - 1;
+                                tapped => {
+                                    root.drive(i);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // files come from outside (K03): pull to list the folder again
+            folder-list := NeoList {
+                visible: root.view == "folder";
+                pull-refresh: true;
+                refreshing: root.refreshing;
+                selected: root.selected;
+                refresh => {
+                    root.refresh();
+                }
+                VerticalLayout {
+                    alignment: start;
+                    // files2-folder-empty
+                    if root.rows.length == 0: VerticalLayout {
+                        padding-top: 72 * Theme.dp;
+                        padding-left: 32 * Theme.dp;
+                        padding-right: 32 * Theme.dp;
+                        spacing: 14 * Theme.dp;
+                        HorizontalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 120 * Theme.dp;
+                                height: self.width;
+                                border-radius: self.width / 2;
+                                background: Theme.card;
+                                FolderTile {
+                                    size: 64 * Theme.dp;
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: "This folder is empty";
+                            color: Theme.text;
+                            font-size: 18 * Theme.dp;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                        }
+
+                        Text {
+                            text: root.read-only ? "" : "Make a folder or a file here, or paste files you copied from another folder.";
+                            color: Theme.text-secondary;
+                            font-size: 14 * Theme.dp;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+
+                        if !root.read-only: HorizontalLayout {
+                            alignment: center;
+                            spacing: 10 * Theme.dp;
+                            Button {
+                                text: "New folder";
+                                icon: @image-url("@neoui/icons/sys/add.svg");
+                                has-icon: true;
+                                clicked => {
+                                    root.new-folder();
+                                }
+                            }
+
+                            Button {
+                                text: "New file";
+                                primary: false;
+                                clicked => {
+                                    root.new-file();
+                                }
+                            }
+                        }
+                    }
+                    if !root.grid: VerticalLayout {
+                        for f[i] in root.rows: FileItem {
+                            item: f;
+                            selecting: root.selecting;
+                            locked: root.read-only;
+                            held => {
+                                root.toggle(i);
+                            }
+                            tapped => {
+                                if root.selecting {
+                                    root.toggle(i);
+                                } else {
+                                    root.open-row(i);
+                                }
+                            }
+                        }
+                    }
+                    if root.grid: Rectangle {
+                        property <length> cell-w: (self.width - 16 * Theme.dp) / 3;
+                        property <length> cell-h: 124 * Theme.dp;
+                        height: Math.ceil(root.rows.length / 3) * self.cell-h + 8 * Theme.dp;
+                        for f[i] in root.rows: FileCell {
+                            x: 8 * Theme.dp + Math.mod(i, 3) * parent.cell-w;
+                            y: Math.floor(i / 3) * parent.cell-h;
+                            width: parent.cell-w;
+                            height: parent.cell-h;
+                            item: f;
+                            selecting: root.selecting;
+                            held => {
+                                root.toggle(i);
+                            }
+                            tapped => {
+                                if root.selecting {
+                                    root.toggle(i);
+                                } else {
+                                    root.open-row(i);
+                                }
+                            }
+                        }
+                    }
+                    // files2-paste-bar: where to go next
+                    if root.paste-action != "" && root.rows.length > 0 && root.rows.length < 6: VerticalLayout {
+                        padding-top: 120 * Theme.dp;
+                        padding-left: 40 * Theme.dp;
+                        padding-right: 40 * Theme.dp;
                         spacing: 10 * Theme.dp;
                         HorizontalLayout {
-                            spacing: 12 * Theme.dp;
+                            alignment: center;
                             Glyph {
-                                source: d.rom ? @image-url("@neoui/icons/sys/lock.svg") : @image-url("@neoui/icons/sys/phone_storage.svg");
+                                source: @image-url("icons/move.svg");
                                 size: 28 * Theme.dp;
-                                colorize: Theme.accent;
-                            }
-
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                Text {
-                                    text: d.label;
-                                    color: Theme.text;
-                                    font-size: Theme.font-body;
-                                    font-weight: 600;
-                                }
-
-                                Text {
-                                    text: d.detail;
-                                    color: Theme.text-dim;
-                                    font-size: Theme.font-label;
-                                }
-                            }
-
-                            Glyph {
-                                source: @image-url("@neoui/icons/sys/chevron_right.svg");
-                                size: 18 * Theme.dp;
                                 colorize: Theme.text-dim;
                             }
                         }
 
-                        Rectangle {
-                            height: 6 * Theme.dp;
-                            border-radius: self.height / 2;
-                            background: Theme.dialog-button;
-                            Rectangle {
-                                x: 0;
-                                width: parent.width * d.used;
-                                border-radius: parent.border-radius;
-                                background: d.rom ? #e2a92a : Theme.accent;
+                        Text {
+                            text: "Open the folder you want, then tap " + root.paste-action + ". Tabs and drives still work.";
+                            color: Theme.text-dim;
+                            font-size: 13.5 * Theme.dp;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                    }
+                    // room for the toast and the paste bar over the last rows
+                    Rectangle {
+                        height: (root.job-text != "" ? 72 : 0) * Theme.dp;
+                    }
+                }
+            }
+
+            NeoList {
+                visible: root.view == "text";
+                VerticalLayout {
+                    alignment: start;
+                    padding: Theme.margin;
+                    Text {
+                        text: root.text;
+                        wrap: char-wrap;
+                        font-family: "DejaVu Sans Mono";
+                        font-size: 13.5 * Theme.dp;
+                        color: #d7dde5;
+                    }
+                }
+            }
+
+            // a copy or move (files2-progress): over the bottom of the list, Hide moves it to the shade only
+            if root.job-text != "": Rectangle {
+                x: 12 * Theme.dp;
+                y: parent.height - self.height - 12 * Theme.dp;
+                width: parent.width - 24 * Theme.dp;
+                height: 56 * Theme.dp;
+                border-radius: Theme.radius;
+                background: #2a2e35;
+                clip: true;
+                HorizontalLayout {
+                    padding-left: 16 * Theme.dp;
+                    padding-right: 8 * Theme.dp;
+                    spacing: 12 * Theme.dp;
+                    VerticalLayout {
+                        alignment: center;
+                        Glyph {
+                            source: @image-url("icons/copy.svg");
+                            size: 20 * Theme.dp;
+                            colorize: Theme.text-secondary;
+                        }
+                    }
+                    Text {
+                        text: root.job-text;
+                        color: Theme.text;
+                        font-size: 14.5 * Theme.dp;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        Pill {
+                            text: "Hide";
+                            flat: true;
+                            primary: true;
+                            clicked => {
+                                root.job-hide();
                             }
                         }
+                    }
+                }
+
+                Rectangle {
+                    x: 0;
+                    y: parent.height - self.height;
+                    height: 3 * Theme.dp;
+                    width: parent.width * max(0, min(1, root.job-progress));
+                    background: Theme.accent;
+                }
+            }
+        }
+
+        // the paste bar (F06): above the footer, so tabs and drives still work while it waits
+        if root.paste-action != "" && root.form == "": Rectangle {
+            height: 60 * Theme.dp;
+            background: Theme.card;
+            Rectangle {
+                y: 0;
+                height: max(1px, Theme.dp / 2);
+                background: #ffffff12;
+            }
+
+            HorizontalLayout {
+                padding-left: 16 * Theme.dp;
+                padding-right: 6 * Theme.dp;
+                spacing: 8 * Theme.dp;
+                VerticalLayout {
+                    alignment: center;
+                    Glyph {
+                        source: @image-url("icons/paste.svg");
+                        size: 22 * Theme.dp;
+                        colorize: Theme.accent;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: root.paste-title;
+                        color: Theme.text;
+                        font-size: 15 * Theme.dp;
+                        font-weight: 600;
+                        overflow: elide;
+                    }
+
+                    Text {
+                        text: root.paste-from;
+                        font-family: "DejaVu Sans";
+                        color: Theme.text-dim;
+                        font-size: 12.5 * Theme.dp;
+                        overflow: elide;
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    Pill {
+                        text: "Cancel";
+                        flat: true;
+                        clicked => {
+                            root.paste-cancel();
+                        }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Pill {
+                        text: root.paste-action;
+                        primary: true;
+                        enabled: root.view == "folder" && !root.read-only;
+                        clicked => {
+                            root.paste-go();
+                        }
+                    }
+                }
+            }
+        }
+
+        // F01: Browse · Recent · Types (Recent and Types come with FA3)
+        if root.footer: Footer {
+            current: 0;
+            tabs: [
+                { icon: @image-url("@neoui/icons/sys/folder.svg"), label: "Browse" },
+                { icon: @image-url("@neoui/icons/sys/recents.svg"), label: "Recent", disabled: true },
+                { icon: @image-url("@neoui/icons/sys/apps.svg"), label: "Types", disabled: true },
+            ];
+            picked(i) => {
+                root.tab(i);
+            }
+        }
+    }
+
+    // a name clash (files2-clash): Replace / Keep both / Skip, and whether the answer covers the rest
+    if root.clash-open: Rectangle {
+        background: Theme.scrim;
+        TouchArea { }
+
+        Rectangle {
+            x: 16 * Theme.dp;
+            width: parent.width - 32 * Theme.dp;
+            height: clash-box.preferred-height;
+            y: (parent.height - self.height) / 2;
+            border-radius: Theme.radius + 4 * Theme.dp;
+            background: Theme.sheet;
+            clash-box := VerticalLayout {
+                padding: 20 * Theme.dp;
+                spacing: 12 * Theme.dp;
+                Text {
+                    text: root.clash-title;
+                    font-family: "DejaVu Sans";
+                    color: Theme.text;
+                    font-size: 18 * Theme.dp;
+                    font-weight: 600;
+                    wrap: word-wrap;
+                }
+
+                Text {
+                    text: root.clash-text;
+                    color: Theme.text-secondary;
+                    font-size: 14.5 * Theme.dp;
+                    wrap: word-wrap;
+                }
+
+                if root.clash-count > 1: HorizontalLayout {
+                    spacing: 12 * Theme.dp;
+                    Rectangle {
+                        width: 22 * Theme.dp;
+                        height: self.width;
+                        border-radius: 4 * Theme.dp;
+                        background: root.clash-all ? Theme.accent : transparent;
+                        border-width: root.clash-all ? 0 : 2 * Theme.dp;
+                        border-color: Theme.text-dim;
+                        if root.clash-all: Glyph {
+                            source: @image-url("@neoui/icons/sys/check.svg");
+                            size: 16 * Theme.dp;
+                            colorize: white;
+                        }
+                    }
+
+                    Text {
+                        text: "Do this for all " + root.clash-count + " clashes";
+                        color: Theme.text;
+                        font-size: 15 * Theme.dp;
+                        vertical-alignment: center;
                     }
 
                     TouchArea {
                         clicked => {
-                            root.drive(i);
+                            root.clash-all = !root.clash-all;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8 * Theme.dp;
+                    alignment: start;
+                    Pill {
+                        text: "Replace";
+                        primary: true;
+                        clicked => {
+                            root.clash-answer(0);
+                        }
+                    }
+
+                    Pill {
+                        text: "Keep both";
+                        clicked => {
+                            root.clash-answer(1);
+                        }
+                    }
+
+                    Pill {
+                        text: "Skip";
+                        clicked => {
+                            root.clash-answer(2);
                         }
                     }
                 }
             }
-        }
-
-        // files come from outside (K03): pull to list the folder again
-        folder-list := NeoList {
-            visible: root.view == "folder";
-            pull-refresh: true;
-            refreshing: root.refreshing;
-            selected: root.selected;
-            refresh => {
-                root.refresh();
-            }
-            VerticalLayout {
-                alignment: start;
-                if root.rows.length == 0: EmptyState {
-                    icon: @image-url("@neoui/icons/sys/folder.svg");
-                    title: "Empty folder";
-                    action: "New folder";
-                    acted => {
-                        root.new-folder();
-                    }
-                }
-                for f[i] in root.rows: ListRow {
-                    title: f.name;
-                    title-font: "DejaVu Sans";
-                    subtitle: f.detail;
-                    has-icon: true;
-                    icon: f.kind == "folder" ? @image-url("@neoui/icons/sys/folder.svg") : f.kind == "image" ? @image-url("@neoui/icons/sys/image.svg") : f.kind == "text" ? @image-url("@neoui/icons/sys/doc.svg") : @image-url("@neoui/icons/sys/file.svg");
-                    icon-tint: f.kind == "folder" ? #e2a92a : f.kind == "image" ? #14a37f : f.kind == "text" ? #e04e9b : Theme.text-secondary;
-                    chevron: f.kind == "folder" && root.selected == 0;
-                    selecting: root.selected > 0;
-                    checked: f.checked;
-                    long-pressed => {
-                        root.toggle(i);
-                    }
-                    clicked => {
-                        if root.selected > 0 {
-                            root.toggle(i);
-                        } else {
-                            root.open-row(i);
-                        }
-                    }
-                }
-            }
-        }
-
-        NeoList {
-            visible: root.view == "text";
-            VerticalLayout {
-                alignment: start;
-                padding: Theme.margin;
-                Text {
-                    text: root.text;
-                    wrap: char-wrap;
-                    font-family: "DejaVu Sans Mono";
-                    font-size: 13.5 * Theme.dp;
-                    color: #d7dde5;
-                }
-            }
-        }
         }
     }
 
-    // a form page over the folder: [✕ New folder ✓] or [✕ Rename ✓] and the name field (the keyboard comes up)
+    // a form page over the folder: [✕ New folder ✓], [✕ New file ✓] or [✕ Rename ✓]; the keyboard comes up
     if root.form != "": Rectangle {
         background: Theme.bg;
         TouchArea { }
@@ -246,7 +1097,7 @@ export component FilesApp inherits Window {
         VerticalLayout {
             alignment: start;
             FormHeader {
-                title: root.form == "new" ? "New folder" : "Rename";
+                title: root.form == "folder" ? "New folder" : root.form == "file" ? "New file" : "Rename";
                 can-save: root.name-text != "";
                 cancel => {
                     root.form-cancel();
@@ -256,16 +1107,145 @@ export component FilesApp inherits Window {
                 }
             }
 
-            VerticalLayout {
-                padding: Theme.card-pad;
-                TextField {
-                    text <=> root.name-text;
-                    placeholder: "Name";
-                    autofocus: true;
-                    accepted(t) => {
-                        root.form-save();
+            // where it goes (files2-new-folder): the tile and the folder
+            if root.form != "rename": HorizontalLayout {
+                padding: 16 * Theme.dp;
+                spacing: 14 * Theme.dp;
+                VerticalLayout {
+                    alignment: center;
+                    if root.form == "folder": FolderTile { }
+                    if root.form == "file": FTile {
+                        badge: "TXT";
+                        colour: #8a93a0;
                     }
                 }
+                VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: root.form == "folder" ? "New folder in" : "New file in";
+                        color: Theme.text-dim;
+                        font-size: Theme.font-label;
+                    }
+
+                    Text {
+                        text: root.form-dir;
+                        font-family: "DejaVu Sans Mono";
+                        color: Theme.text;
+                        font-size: 15 * Theme.dp;
+                        overflow: elide;
+                    }
+                }
+            }
+            VerticalLayout {
+                padding-left: 16 * Theme.dp;
+                padding-right: 16 * Theme.dp;
+                padding-top: root.form == "rename" ? 16 * Theme.dp : 0;
+                spacing: 8 * Theme.dp;
+                SectionLabel {
+                    text: "NAME";
+                }
+
+                HorizontalLayout {
+                    spacing: 8 * Theme.dp;
+                    TextField {
+                        horizontal-stretch: 1;
+                        text <=> root.name-text;
+                        placeholder: "Name";
+                        autofocus: true;
+                        accepted(t) => {
+                            root.form-save();
+                        }
+                    }
+
+                    if root.name-suffix != "": Text {
+                        text: root.name-suffix;
+                        font-family: "DejaVu Sans";
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-body;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Text {
+                    text: root.form == "rename" && root.name-suffix != "" ? "The extension stays " + root.name-suffix : "Up to 256 characters. Not allowed: \\ / : * ? \" < > |";
+                    color: Theme.text-dim;
+                    font-size: 12.5 * Theme.dp;
+                    wrap: word-wrap;
+                }
+            }
+
+            // what is renamed and where (files2-rename)
+            if root.form == "rename": VerticalLayout {
+                padding: 16 * Theme.dp;
+                spacing: 8 * Theme.dp;
+                SectionLabel {
+                    text: "IN";
+                }
+
+                HorizontalLayout {
+                    spacing: 14 * Theme.dp;
+                    VerticalLayout {
+                        alignment: center;
+                        if root.form-badge == "": FolderTile { }
+                        if root.form-badge != "": FTile {
+                            badge: root.form-badge;
+                            colour: root.form-colour;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 3 * Theme.dp;
+                        Text {
+                            text: root.form-dir;
+                            font-family: "DejaVu Sans";
+                            color: Theme.text;
+                            font-size: Theme.font-body;
+                            overflow: elide;
+                        }
+
+                        Text {
+                            text: root.form-detail;
+                            color: Theme.text-dim;
+                            font-size: Theme.font-label;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // the Sort sheet (files2-sort): last in the window, full size
+    Sheet {
+        title: "Sort by";
+        open <=> root.sort-open;
+        for k[i] in ["Name", "Date modified", "Size", "Type"]: RadioRow {
+            label: k;
+            on: i == root.sort-key;
+            picked => {
+                root.sort-chosen(i);
+            }
+        }
+        Rectangle {
+            height: max(1px, Theme.dp / 2);
+            background: #ffffff12;
+        }
+
+        SwitchRow {
+            label: "Ascending";
+            hint: "A → Z · oldest first · smallest first";
+            on: root.ascending;
+            toggled(v) => {
+                root.ascending-changed(v);
+            }
+        }
+
+        SwitchRow {
+            label: "Folders first";
+            hint: "Then files, in the same order";
+            on: root.folders-first;
+            toggled(v) => {
+                root.folders-first-changed(v);
             }
         }
     }

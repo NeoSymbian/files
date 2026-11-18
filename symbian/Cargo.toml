@@ -4,14 +4,18 @@
 # (it defines the global allocator) and one Slint in the ROM.
 [workspace]
 resolver = "3"
-members = ["app"]
+members = ["app", "fs-e32"]
 
 [workspace.dependencies]
-e32 = { git = "https://github.com/NeoSymbian/e32-rs", rev = "e97e2ebcb242f5365d1b3f9d520646603e1e9056", features = ["critical-section"] }
-neoui-proto = { git = "https://github.com/NeoSymbian/neoui", rev = "737babd9c4d3da1a20ec1d2260c7b2f356de9771" }
-neoapp = { git = "https://github.com/NeoSymbian/neoui", rev = "737babd9c4d3da1a20ec1d2260c7b2f356de9771" }
+e32 = { git = "https://github.com/NeoSymbian/e32-rs", rev = "0489694ee55f6879a0f769d1e6d17077b22d4e32", features = ["critical-section"] }
+neoui-proto = { git = "https://github.com/NeoSymbian/neoui", rev = "a73ace8f2b9c8252c8bd63a0c39f1b9d92b6dc29" }
+neoapp = { git = "https://github.com/NeoSymbian/neoui", rev = "a73ace8f2b9c8252c8bd63a0c39f1b9d92b6dc29" }
 slint = { version = "=1.18.1", default-features = false, features = ["compat-1-2", "unsafe-single-threaded", "libm", "renderer-software"] }
 files-core = { path = "../crates/files-core" }
+neo-fs = { path = "../crates/neo-fs" }
+neo-view = { path = "../crates/neo-view" }
+files-ops = { path = "../crates/files-ops" }
+fs-e32 = { path = "fs-e32" }
 files-ui = { path = "../crates/files-ui" }
 
 [profile.release]

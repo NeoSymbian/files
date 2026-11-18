@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// The Files icons (F02, files2-spec-icons): a file is a page with a folded corner and a coloured badge with its
+// extension (the family's colour, neo-view); a folder is amber; a drive is a coloured rounded tile with its glyph.
+// Sizes: 56 (grid), 40 (list rows), 24 (small lists).
+import { Theme, Glyph } from "@neoui/kit.slint";
+
+export component FTile inherits Rectangle {
+    in property <string> badge;
+    in property <color> colour;
+    in property <length> size: 40 * Theme.dp;
+    width: root.size * 0.8;
+    height: root.size;
+    Image {
+        width: 100%;
+        height: 100%;
+        source: @image-url("icons/page.svg");
+    }
+
+    // across the lower half, overhanging the page's left edge (files2_chrome.py ftile)
+    Rectangle {
+        x: -root.width * 0.06;
+        y: root.height * 0.5;
+        width: root.width * 0.94;
+        height: root.height * 0.3;
+        border-radius: max(2px, root.size / 14);
+        background: root.colour;
+        Text {
+            text: root.badge;
+            color: white;
+            font-size: max(7px, root.size * (root.badge.character-count <= 3 ? 0.25 : 0.21));
+            font-weight: 800;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component FolderTile inherits Rectangle {
+    in property <length> size: 40 * Theme.dp;
+    width: root.size;
+    height: root.size * 0.82;
+    Image {
+        width: 100%;
+        height: 100%;
+        source: @image-url("icons/folder.svg");
+    }
+}
+
+// kind: "phone" (C:), "mass" (E:), "card", "rom" (Z:), "ram"
+export component DriveTile inherits Rectangle {
+    in property <string> kind;
+    in property <length> size: 40 * Theme.dp;
+    width: root.size;
+    height: root.size;
+    border-radius: root.size * 0.25;
+    background: root.kind == "phone" ? #3d8bfd : root.kind == "mass" ? #7b6cf0 : root.kind == "card" ? #22b46a : #5b6472;
+    Glyph {
+        size: root.size * 0.55;
+        colorize: white;
+        source: root.kind == "phone" ? @image-url("@neoui/icons/sys/phone_storage.svg")
+            : root.kind == "rom" ? @image-url("@neoui/icons/sys/lock.svg")
+            : root.kind == "ram" ? @image-url("@neoui/icons/sys/data.svg")
+            : @image-url("@neoui/icons/sys/sdcard.svg");
+    }
+}
