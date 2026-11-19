@@ -873,9 +873,9 @@ export component FilesApp inherits Window {
         "New folder", "New file", "Sort by", root.grid ? "List view" : "Grid view",
         root.show-hidden ? "Hide hidden" : "Show hidden", "Details"
     ];
-    property <[string]> pick-menu: root.read-only ? (root.one-item ? ["Details", "Select all"] : ["Select all"])
-        : root.one-folder ? ["Move", "Rename", "Add to Favourites", "Details", "Select all"]
-        : root.one-item ? ["Move", "Rename", "Details", "Select all"] : ["Move", "Rename", "Select all"];
+    property <[string]> pick-menu: root.read-only ? (root.one-item ? ["Compress", "Details", "Select all"] : ["Compress", "Select all"])
+        : root.one-folder ? ["Move", "Rename", "Compress", "Add to Favourites", "Details", "Select all"]
+        : root.one-item ? ["Move", "Rename", "Compress", "Details", "Select all"] : ["Move", "Compress", "Select all"];
     property <[string]> bin-menu: ["Empty bin", "Select"];
     property <bool> selecting: root.selected > 0 || root.picking;
     property <bool> tab-root: root.view == "browse" || root.view == "recent" || root.view == "types";

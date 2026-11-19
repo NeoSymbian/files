@@ -995,6 +995,7 @@ version = "0.1.0"
 name = "files-ops"
 version = "0.1.0"
 dependencies = [
+ "neo-format-archive",
  "neo-fs",
  "neo-view",
  "xxhash-rust",
@@ -2679,6 +2680,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "neo-format-archive"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "miniz_oxide 0.9.1",
+]
+
+[[package]]
 name = "neo-format-image"
 version = "0.1.0"
 dependencies = [
@@ -2730,6 +2739,7 @@ dependencies = [
  "files-ui",
  "fs-e32",
  "libm",
+ "neo-format-archive",
  "neo-format-image",
  "neo-format-text",
  "neo-fs",

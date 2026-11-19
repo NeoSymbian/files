@@ -229,7 +229,10 @@ fn go(ui: &FilesApp, st: &mut State, at: usize) {
     } else {
         "".into()
     });
-    ui.set_img_editable(st.drives.iter().any(|&(d, ro)| path.starts_with(d) && !ro));
+    ui.set_img_editable(
+        st.drives.iter().any(|&(d, ro)| path.starts_with(d) && !ro)
+            && !crate::archive::in_cache(&path),
+    );
     show_view(ui, st);
     strip(ui, st);
 }

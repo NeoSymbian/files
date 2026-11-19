@@ -9,6 +9,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use e32::sync::{Mutex, Semaphore};
+use files_ops::archive::{ArchiveMember, Compress, Extract, Packing, Pick, ScanGz};
 use files_ops::delete::DeleteTree;
 use files_ops::{Choice, Clash, Kind, Progress, Step, Summary, Transfer};
 use fs_e32::E32Fs;
@@ -16,8 +17,8 @@ use neo_fs::Error;
 
 /// Bytes a step copies before the worker looks at the slot again.
 const STEP: usize = 256 * 1024;
-/// The worker's stack: the engine's buffers are on the heap, its paths and the IPC frames on the stack.
-const STACK: i32 = 64 * 1024;
+/// The worker's stack: the engines' buffers are on the heap, its paths, IPC frames and deflate's tables on the stack.
+const STACK: i32 = 128 * 1024;
 
 /// What a job does.
 pub enum Work {
@@ -25,6 +26,17 @@ pub enum Work {
     Transfer(Kind, Vec<String>, String),
     /// Delete for good what `trash::purge` took out of the bin (its `.~del` paths); `items` is how many it was.
     Purge(Vec<String>, usize),
+    /// FA6: extract an archive (or a pick of it) into a folder; `replace` answers every clash Replace (the open cache).
+    Extract {
+        archive: String,
+        pick: Option<Pick>,
+        dest: String,
+        replace: bool,
+    },
+    /// Files and folders into a new archive.
+    Compress(Vec<String>, String, Packing),
+    /// A tar.gz's members (it has no index): [`Shared::members`].
+    List(String),
 }
 
 /// What the worker and the UI share.
@@ -36,6 +48,8 @@ pub struct Shared {
     answer: Option<(Choice, bool)>,
     cancel: bool,
     pub done: Option<Result<Summary, Error>>,
+    /// What a [`Work::List`] found.
+    pub members: Option<Vec<ArchiveMember>>,
     /// Set with `done`, and kept when the UI takes `done`.
     ended: bool,
 }
@@ -62,6 +76,23 @@ impl Slot {
             let result = match work {
                 Work::Transfer(kind, sources, dest) => run(self, kind, sources, &dest),
                 Work::Purge(doomed, items) => purge(self, doomed, items),
+                Work::Extract {
+                    archive,
+                    pick,
+                    dest,
+                    replace,
+                } => E32Fs::connect().and_then(|fs| {
+                    let mut x = Extract::new(&fs, &archive, pick, &dest)?;
+                    if replace {
+                        x.replace_all();
+                    }
+                    drive(self, &fs, &mut x)
+                }),
+                Work::Compress(sources, out, packing) => E32Fs::connect().and_then(|fs| {
+                    let mut c = Compress::new(&fs, &sources, &out, packing)?;
+                    drive(self, &fs, &mut c)
+                }),
+                Work::List(archive) => list(self, &archive),
             };
             let mut s = self.shared.lock();
             s.done = Some(result);
@@ -103,15 +134,62 @@ impl Slot {
     }
 }
 
+/// A stepped job: a copy or move, an extract, a compress.
+trait Job<'a> {
+    fn step(&mut self, fs: &'a E32Fs, budget: usize) -> Step;
+    fn answer(&mut self, choice: Choice, all: bool);
+    fn cancel(&mut self, fs: &'a E32Fs);
+}
+
+impl<'a> Job<'a> for Transfer<'a, E32Fs> {
+    fn step(&mut self, fs: &'a E32Fs, budget: usize) -> Step {
+        Transfer::step(self, fs, budget)
+    }
+    fn answer(&mut self, choice: Choice, all: bool) {
+        Transfer::answer(self, choice, all)
+    }
+    fn cancel(&mut self, fs: &'a E32Fs) {
+        Transfer::cancel(self, fs)
+    }
+}
+
+impl<'a> Job<'a> for Extract<'a, E32Fs> {
+    fn step(&mut self, fs: &'a E32Fs, budget: usize) -> Step {
+        Extract::step(self, fs, budget)
+    }
+    fn answer(&mut self, choice: Choice, all: bool) {
+        Extract::answer(self, choice, all)
+    }
+    fn cancel(&mut self, fs: &'a E32Fs) {
+        Extract::cancel(self, fs)
+    }
+}
+
+impl<'a> Job<'a> for Compress<'a, E32Fs> {
+    fn step(&mut self, fs: &'a E32Fs, budget: usize) -> Step {
+        Compress::step(self, fs, budget)
+    }
+    // a new archive has nothing to clash with
+    fn answer(&mut self, _: Choice, _: bool) {}
+    fn cancel(&mut self, fs: &'a E32Fs) {
+        Compress::cancel(self, fs)
+    }
+}
+
 fn run(slot: &Slot, kind: Kind, sources: Vec<String>, dest: &str) -> Result<Summary, Error> {
     let fs = E32Fs::connect()?;
     let mut t = Transfer::new(&fs, kind, sources, dest)?;
+    drive(slot, &fs, &mut t)
+}
+
+/// Step `job` to its end: progress into the slot, a clash parked until the UI answers, Cancel between steps.
+fn drive<'a>(slot: &Slot, fs: &'a E32Fs, t: &mut impl Job<'a>) -> Result<Summary, Error> {
     loop {
         if slot.shared.lock().cancel {
-            t.cancel(&fs);
+            t.cancel(fs);
             return Err(Error::Cancelled);
         }
-        match t.step(&fs, STEP) {
+        match t.step(fs, STEP) {
             Step::Progress(p) => slot.shared.lock().progress = Some(p),
             Step::Clash(c) => {
                 {
@@ -119,7 +197,7 @@ fn run(slot: &Slot, kind: Kind, sources: Vec<String>, dest: &str) -> Result<Summ
                     let mut s = slot.shared.lock();
                     if s.cancel {
                         drop(s);
-                        t.cancel(&fs);
+                        t.cancel(fs);
                         return Err(Error::Cancelled);
                     }
                     s.clash = Some(c);
@@ -129,13 +207,47 @@ fn run(slot: &Slot, kind: Kind, sources: Vec<String>, dest: &str) -> Result<Summ
                 match answer {
                     Some((choice, all)) => t.answer(choice, all),
                     None => {
-                        t.cancel(&fs);
+                        t.cancel(fs);
                         return Err(Error::Cancelled);
                     }
                 }
             }
             Step::Done(s) => return Ok(s),
             Step::Failed(e) => return Err(e),
+        }
+    }
+}
+
+/// A tar.gz read to its end for its list; progress is the compressed bytes read.
+fn list(slot: &Slot, archive: &str) -> Result<Summary, Error> {
+    let fs = E32Fs::connect()?;
+    let mut scan = ScanGz::new(&fs, archive)?;
+    loop {
+        if slot.shared.lock().cancel {
+            return Err(Error::Cancelled);
+        }
+        let done = scan.step(64)?;
+        let (read, size) = scan.done_of();
+        slot.shared.lock().progress = Some(Progress {
+            files_done: scan.members.len(),
+            files_total: 0,
+            bytes_done: read,
+            bytes_total: size,
+            current: scan
+                .members
+                .last()
+                .map_or(String::new(), |m| m.name.clone()),
+            current_done: 0,
+            current_size: 0,
+        });
+        if done {
+            let n = scan.members.len();
+            slot.shared.lock().members = Some(core::mem::take(&mut scan.members));
+            return Ok(Summary {
+                copied: n,
+                skipped: 0,
+                bytes: size,
+            });
         }
     }
 }
