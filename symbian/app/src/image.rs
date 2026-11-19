@@ -132,7 +132,7 @@ fn current(v: &Viewer) -> &str {
 
 /// Opens `path` in the viewer, with the images of its folder (the open folder's order when it is that folder).
 pub fn open(app: &App, ui: &FilesApp, st: &mut State, path: &str) {
-    let Some(dir) = model::parent(path) else {
+    let Some(dir) = neo_fs::path::parent(path) else {
         return;
     };
     let list: Vec<(String, u64, i64)> = if dir == st.dir && !st.items.is_empty() {
@@ -669,7 +669,7 @@ fn now_edit(e: &Editing) -> (Edit, usize) {
 
 /// The new name: `sunset-edit.jpg`, `sunset-edit 2.jpg`… (PNG unless the original is a JPEG).
 fn copy_name(st: &State, path: &str, jpeg: bool) -> String {
-    let dir = model::parent(path).unwrap_or_default();
+    let dir = neo_fs::path::parent(path).unwrap_or_default();
     let name = neo_fs::path::name_of(path);
     let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
     let ext = if jpeg {
@@ -984,7 +984,7 @@ fn saved(app: &App, ui: &FilesApp, st: &mut State, path: &str, r: Result<(u32, u
             if from == View::Folder {
                 st.items = st
                     .fs
-                    .read_dir(&model::parent(path).unwrap_or_default())
+                    .read_dir(&neo_fs::path::parent(path).unwrap_or_default())
                     .map(|v| {
                         v.into_iter()
                             .map(|e| Item {
@@ -1173,7 +1173,7 @@ pub fn patch_rows(ui: &FilesApp, st: &State) {
 pub fn type_groups(ui: &FilesApp, st: &mut State) {
     let mut groups: Vec<(String, Vec<usize>, usize)> = Vec::new();
     for (k, l) in st.listed.iter().enumerate() {
-        let dir = model::parent(&l.path).unwrap_or_default();
+        let dir = neo_fs::path::parent(&l.path).unwrap_or_default();
         match groups.iter_mut().find(|g| g.0 == dir) {
             Some(g) => {
                 g.2 += 1;

@@ -59,6 +59,28 @@ pub fn probe(b: &[u8]) -> Option<Info> {
     Some(info)
 }
 
+fn options() -> DecoderOptions {
+    DecoderOptions::default()
+        .jpeg_set_out_colorspace(ColorSpace::RGB)
+        .set_max_width(MAX_SIDE)
+        .set_max_height(MAX_SIDE)
+        .set_strict_mode(false)
+}
+
+/// The size and channels a decode gives (RGB only: anything else decodes on the heap).
+pub fn shape(b: &[u8]) -> Option<(u32, u32, u8)> {
+    let mut d = JpegDecoder::new_with_options(ZCursor::new(b), options());
+    d.decode_headers().ok()?;
+    let (w, h) = d.dimensions()?;
+    (d.output_colorspace()? == ColorSpace::RGB && d.output_buffer_size()? == w * h * 3)
+        .then_some((w as u32, h as u32, 3))
+}
+
+pub fn decode_into(b: &[u8], out: &mut [u8]) -> Result<(), Error> {
+    let mut d = JpegDecoder::new_with_options(ZCursor::new(b), options());
+    d.decode_into(out).map_err(|_| Error::Corrupt)
+}
+
 pub fn decode(b: &[u8]) -> Result<Pixels, Error> {
     let opts = DecoderOptions::default()
         .jpeg_set_out_colorspace(ColorSpace::RGB)

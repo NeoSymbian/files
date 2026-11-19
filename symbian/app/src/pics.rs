@@ -10,21 +10,27 @@ use alloc::collections::VecDeque;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use e32::chunk::Chunk;
 use e32::sync::{Mutex, Semaphore};
+use e32::{dprintln, time};
 use files_ops::store;
 use fs_e32::E32Fs;
 use neo_format_image::encode;
 use neo_format_image::ops::{Edit, View};
 use neo_format_image::shrink::{Turn, fit, thumb};
-use neo_format_image::{Error, Format, Info, Pixels, decode, probe};
+use neo_format_image::{
+    Error, Format, Info, Pixels, decode, decode_into, heap_cost, into_shape, probe,
+};
 use neo_fs::Fs as _;
 
 /// Thumbnails, kept between runs.
 pub const CACHE: &str = "C:\\private\\e0006001\\thumbs\\";
 /// A thumbnail's side in px (the grid's 60 dp at 3 px a dp is 180).
 pub const SIDE: u32 = 160;
-/// What a full decode may hold, besides the file: a 12 MP baseline JPEG is 36 MB as RGB.
-pub const BUDGET: usize = 40 << 20;
+/// What a decode may take from the heap, besides the file (the heap is 64 MB, shared with the UI).
+pub const BUDGET: usize = 24 << 20;
+/// A decode into its own chunk: up to 16 MP as RGB (a 12 MP JPEG is 36 MB).
+const CHUNK_MAX: usize = 48 << 20;
 /// Files larger than this aren't read (the decode needs the whole file in memory).
 pub const FILE_MAX: u64 = 40 << 20;
 /// The viewer's picture: the long side (zoom to about 2.5× before pixels show).
@@ -109,6 +115,56 @@ fn read(fs: &E32Fs, path: &str) -> Result<Vec<u8>, i32> {
     store::read(fs, path).map_err(|e| e.code())
 }
 
+/// A decoded picture: a JPEG or WebP in a chunk of its own (created for it, closed after: its 36 MB for a 12 MP photo
+/// never enter the heap, which only grows and would keep the hole), anything else on the heap.
+enum Big {
+    Chunk(Chunk, u32, u32, u8),
+    Heap(Pixels),
+}
+
+impl Big {
+    fn px(&self) -> Pixels<&[u8]> {
+        match self {
+            Big::Chunk(c, w, h, ch) => Pixels {
+                w: *w,
+                h: *h,
+                ch: *ch,
+                // SAFETY: the chunk has w·h·ch bytes committed (create_global), written by the decode, and lives
+                // as long as `self`.
+                px: unsafe {
+                    core::slice::from_raw_parts(c.base(), *w as usize * *h as usize * *ch as usize)
+                },
+            },
+            Big::Heap(p) => Pixels {
+                w: p.w,
+                h: p.h,
+                ch: p.ch,
+                px: p.px.as_slice(),
+            },
+        }
+    }
+}
+
+/// Decodes `b`: into a chunk when the format can, else on the heap within [`BUDGET`] (a JPEG too big for either
+/// shows its EXIF preview: `.2` is true).
+fn decode_big(b: &[u8]) -> Result<(Info, Big, bool), i32> {
+    let info = probe(b).ok_or(-1)?;
+    if let Some((w, h, ch)) = into_shape(b, &info)
+        && heap_cost(&info) <= BUDGET
+    {
+        let n = w as usize * h as usize * ch as usize;
+        if n <= CHUNK_MAX {
+            let c = Chunk::create_global(n)?;
+            // SAFETY: as in `Big::px`, mutable while the decode writes it.
+            let out = unsafe { core::slice::from_raw_parts_mut(c.base(), n) };
+            decode_into(b, &info, out).map_err(code)?;
+            return Ok((info, Big::Chunk(c, w, h, ch), false));
+        }
+    }
+    let d = decode(b, BUDGET).map_err(code)?;
+    Ok((d.info, Big::Heap(d.px), d.preview))
+}
+
 /// A thumbnail: from the cache, or made (a JPEG's EXIF preview when it has one) and cached.
 fn make_thumb(fs: &E32Fs, w: &Want) -> Option<Pixels> {
     let name = cache_name(w);
@@ -119,20 +175,24 @@ fn make_thumb(fs: &E32Fs, w: &Want) -> Option<Pixels> {
     }
     let b = read(fs, &w.path).ok()?;
     let info = probe(&b)?;
-    let d = match info.thumb.clone() {
-        // the camera's preview is enough for a 160 px tile
-        Some(r) if info.format == Format::Jpeg => {
-            neo_format_image::decode(&b[r], BUDGET).or_else(|_| decode(&b, BUDGET))
+    let t0 = time::millis();
+    // the camera's preview is enough for a 160 px tile
+    let preview = match info.thumb.clone() {
+        Some(r) if info.format == Format::Jpeg => decode(&b[r], BUDGET).ok(),
+        _ => None,
+    };
+    let mut t = match preview {
+        Some(d) => thumb(&d.px, Turn::exif(info.orientation), SIDE),
+        None => {
+            let (i, big, _) = decode_big(&b).ok()?;
+            drop(b);
+            thumb(&big.px(), Turn::exif(i.orientation), SIDE)
         }
-        _ => decode(&b, BUDGET),
-    }
-    .ok()?;
-    drop(b);
-    let mut t = thumb(&d.px, Turn::exif(info.orientation), SIDE);
-    drop(d);
+    };
     if t.ch == 4 {
         t = flatten(&t);
     }
+    dprintln!("files: thumb {} {} ms", w.path, time::millis() - t0);
     if let Ok(j) = encode::jpeg_rgb(&t.px, t.w as u16, t.h as u16, 80) {
         let _ = store::write(fs, &name, &j);
     }
@@ -158,21 +218,39 @@ fn flatten(p: &Pixels) -> Pixels {
 }
 
 fn show(fs: &E32Fs, path: &str) -> Result<Shown, i32> {
+    let t0 = time::millis();
     let b = read(fs, path)?;
     let bytes = b.len() as u64;
-    let d = decode(&b, BUDGET).map_err(code)?;
-    // the file goes before the shrink (a 12 MP JPEG: 36 MB decoded + 4 MB file + 9 MB shrunk otherwise)
-    let gif = if d.info.format == Format::Gif && d.info.animated {
+    let (info, big, preview) = decode_big(&b)?;
+    let t1 = time::millis();
+    // the file goes before the shrink, unless a GIF animates from it
+    let gif = if info.format == Format::Gif && info.animated {
         Some(b)
     } else {
         drop(b);
         None
     };
-    let px = fit(&d.px, Turn::exif(d.info.orientation), SHOW_MAX);
+    let px = fit(&big.px(), Turn::exif(info.orientation), SHOW_MAX);
+    dprintln!(
+        "files: decoded {} {}x{} in {} ms ({}), shown {}x{} after {} ms",
+        path,
+        info.w,
+        info.h,
+        t1 - t0,
+        if matches!(big, Big::Chunk(..)) {
+            "chunk"
+        } else {
+            "heap"
+        },
+        px.w,
+        px.h,
+        time::millis() - t0
+    );
+    drop(big);
     Ok(Shown {
-        info: d.info,
+        info,
         px,
-        preview: d.preview,
+        preview,
         bytes,
         gif,
     })
@@ -180,18 +258,18 @@ fn show(fs: &E32Fs, path: &str) -> Result<Shown, i32> {
 
 fn save(fs: &E32Fs, s: &Save) -> Result<(u32, u32), i32> {
     let b = read(fs, &s.src)?;
-    let d = decode(&b, BUDGET).map_err(code)?;
-    if d.preview {
+    let (info, big, preview) = decode_big(&b)?;
+    if preview {
         // the copy would be the preview's size
         return Err(-2);
     }
-    let jpeg = d.info.format == Format::Jpeg;
+    let jpeg = info.format == Format::Jpeg;
     drop(b);
-    let base = Turn::exif(d.info.orientation);
+    let base = Turn::exif(info.orientation);
+    let src = big.px();
     let out = match s.edit.size {
         Some(_) => {
-            let p = neo_format_image::ops::apply(&d.px, base, &s.edit);
-            drop(d);
+            let p = neo_format_image::ops::apply(&src, base, &s.edit);
             let size = (p.w, p.h);
             let bytes = if jpeg {
                 encode::jpeg(&p, 90).map_err(code)?
@@ -201,7 +279,7 @@ fn save(fs: &E32Fs, s: &Save) -> Result<(u32, u32), i32> {
             (bytes, size)
         }
         None => {
-            let v = View::new(&d.px, base, &s.edit);
+            let v = View::new(&src, base, &s.edit);
             use neo_format_image::shrink::Rows;
             let size = (v.w(), v.h());
             let bytes = if jpeg {

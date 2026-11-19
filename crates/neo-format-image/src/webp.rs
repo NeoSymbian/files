@@ -46,6 +46,18 @@ pub fn probe(b: &[u8]) -> Option<Info> {
     Some(i)
 }
 
+pub fn shape(b: &[u8]) -> Option<(u32, u32, u8)> {
+    let d = WebPDecoder::new(Cursor::new(b)).ok()?;
+    let (w, h) = d.dimensions();
+    let ch = if d.has_alpha() { 4 } else { 3 };
+    (d.output_buffer_size()? == w as usize * h as usize * ch).then_some((w, h, ch as u8))
+}
+
+pub fn decode_into(b: &[u8], out: &mut [u8]) -> Result<(), Error> {
+    let mut d = WebPDecoder::new(Cursor::new(b)).map_err(|_| Error::Corrupt)?;
+    d.read_image(out).map_err(|_| Error::Corrupt)
+}
+
 /// The image (an animation's first frame), RGB or RGBA.
 pub fn decode(b: &[u8]) -> Result<Pixels, Error> {
     let mut d = WebPDecoder::new(Cursor::new(b)).map_err(|_| Error::Corrupt)?;

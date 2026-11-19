@@ -83,18 +83,23 @@ impl Edit {
 
 /// The stored image `src` as the recipe shows it (before any resize): turned, then cropped.
 pub struct View<'a> {
-    src: &'a Pixels,
+    src: Pixels<&'a [u8]>,
     turn: Turn,
     crop: [u32; 4],
 }
 
 impl<'a> View<'a> {
     /// `base`: the image's own orientation (EXIF), applied before the edit's turn.
-    pub fn new(src: &'a Pixels, base: Turn, e: &Edit) -> View<'a> {
+    pub fn new<B: AsRef<[u8]>>(src: &'a Pixels<B>, base: Turn, e: &Edit) -> View<'a> {
         let turn = base.then(e.turn);
         let (tw, th) = turn.size(src.w, src.h);
         View {
-            src,
+            src: Pixels {
+                w: src.w,
+                h: src.h,
+                ch: src.ch,
+                px: src.px.as_ref(),
+            },
             turn,
             crop: e.crop_px(tw, th),
         }
@@ -123,7 +128,7 @@ impl Rows for View<'_> {
 }
 
 /// The recipe applied to `src` (a copy): the preview, and what a save writes when it resizes.
-pub fn apply(src: &Pixels, base: Turn, e: &Edit) -> Pixels {
+pub fn apply<B: AsRef<[u8]>>(src: &Pixels<B>, base: Turn, e: &Edit) -> Pixels {
     let v = View::new(src, base, e);
     match e.size {
         Some((w, h)) => resize(&v, w, h),

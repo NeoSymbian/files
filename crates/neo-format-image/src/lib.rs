@@ -25,13 +25,14 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::ops::Range;
 
-/// 8-bit pixels, rows top to bottom, `ch` bytes a pixel: 3 (RGB) or 4 (RGBA, not premultiplied).
+/// 8-bit pixels, rows top to bottom, `ch` bytes a pixel: 3 (RGB) or 4 (RGBA, not premultiplied). Owned (a `Vec`)
+/// or borrowed (`&[u8]`: a decode into memory outside the heap, see [`decode_into`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Pixels {
+pub struct Pixels<B = Vec<u8>> {
     pub w: u32,
     pub h: u32,
     pub ch: u8,
-    pub px: Vec<u8>,
+    pub px: B,
 }
 
 impl Pixels {
@@ -43,19 +44,28 @@ impl Pixels {
             px: alloc::vec![0; w as usize * h as usize * ch as usize],
         }
     }
+}
 
+impl<B: AsRef<[u8]>> Pixels<B> {
     /// The pixel at `(x, y)` as RGBA.
     #[inline]
     pub fn rgba(&self, x: u32, y: u32) -> [u8; 4] {
         let c = self.ch as usize;
         let i = (y as usize * self.w as usize + x as usize) * c;
-        let p = &self.px[i..i + c];
+        let p = &self.px.as_ref()[i..i + c];
         [p[0], p[1], p[2], if c == 4 { p[3] } else { 255 }]
     }
 
     /// Whether any pixel is less than opaque.
     pub fn has_alpha(&self) -> bool {
-        self.ch == 4 && self.px.as_chunks::<4>().0.iter().any(|p| p[3] != 255)
+        self.ch == 4
+            && self
+                .px
+                .as_ref()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|p| p[3] != 255)
     }
 }
 
@@ -207,6 +217,44 @@ pub fn decode(b: &[u8], budget: usize) -> Result<Decoded, Error> {
         px,
         preview: false,
     })
+}
+
+/// The pixels [`decode_into`] writes for this file: size and channels, for the formats that decode into the caller's
+/// memory (JPEG, WebP: the big photos, kept out of a heap that only grows). `None`: [`decode`] it.
+pub fn into_shape(b: &[u8], i: &Info) -> Option<(u32, u32, u8)> {
+    match i.format {
+        Format::Jpeg => jpeg::shape(b),
+        Format::WebP => webp::shape(b),
+        _ => None,
+    }
+}
+
+/// What a decode into the caller's memory still takes from the heap: a progressive JPEG's coefficients (2 bytes,
+/// up to 3 components); otherwise a few rows.
+pub fn heap_cost(i: &Info) -> usize {
+    let n = i.w as usize * i.h as usize;
+    if i.format == Format::Jpeg && i.progressive {
+        n * 6
+    } else {
+        64 << 10
+    }
+}
+
+/// Decodes into `out`, exactly [`into_shape`]'s `w × h × ch` bytes (a WebP: its first frame).
+pub fn decode_into<'o>(
+    b: &[u8],
+    i: &Info,
+    out: &'o mut [u8],
+) -> Result<Pixels<&'o mut [u8]>, Error> {
+    let (w, h, ch) = into_shape(b, i).ok_or(Error::NotImage)?;
+    if out.len() != w as usize * h as usize * ch as usize {
+        return Err(Error::Corrupt);
+    }
+    match i.format {
+        Format::Jpeg => jpeg::decode_into(b, out)?,
+        _ => webp::decode_into(b, out)?,
+    }
+    Ok(Pixels { w, h, ch, px: out })
 }
 
 #[inline]

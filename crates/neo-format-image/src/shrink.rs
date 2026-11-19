@@ -91,7 +91,7 @@ pub trait Rows {
     fn row(&self, y: u32, out: &mut [u8]);
 }
 
-impl Rows for Pixels {
+impl<B: AsRef<[u8]>> Rows for Pixels<B> {
     fn w(&self) -> u32 {
         self.w
     }
@@ -103,7 +103,7 @@ impl Rows for Pixels {
     }
     fn row(&self, y: u32, out: &mut [u8]) {
         let n = self.w as usize * self.ch as usize;
-        out.copy_from_slice(&self.px[y as usize * n..(y as usize + 1) * n]);
+        out.copy_from_slice(&self.px.as_ref()[y as usize * n..(y as usize + 1) * n]);
     }
 }
 
@@ -151,13 +151,14 @@ pub fn boxed_turned(src: &impl Rows, k: u32, turn: Turn) -> Pixels {
 
 /// The image turned and box-shrunk so its long side is at most `max`: the viewer's and the thumbnails' first step.
 /// Reads `src` in order and writes each block where the turn puts it, so a 12 MP image is walked once.
-pub fn fit(src: &Pixels, turn: Turn, max: u32) -> Pixels {
+pub fn fit<B: AsRef<[u8]>>(src: &Pixels<B>, turn: Turn, max: u32) -> Pixels {
     let k = src.w.max(src.h).div_ceil(max.max(1)).max(1);
     boxed_turned(src, k, turn)
 }
 
 /// `src` turned (a copy).
-pub fn turned(src: &Pixels, turn: Turn) -> Pixels {
+pub fn turned<B: AsRef<[u8]>>(src: &Pixels<B>, turn: Turn) -> Pixels {
+    let sp = src.px.as_ref();
     let (tw, th) = turn.size(src.w, src.h);
     let mut out = Pixels::new(tw, th, src.ch);
     let c = src.ch as usize;
@@ -166,14 +167,15 @@ pub fn turned(src: &Pixels, turn: Turn) -> Pixels {
             let (dx, dy) = turn.dst(x, y, src.w, src.h);
             let s = (y as usize * src.w as usize + x as usize) * c;
             let d = (dy as usize * tw as usize + dx as usize) * c;
-            out.px[d..d + c].copy_from_slice(&src.px[s..s + c]);
+            out.px[d..d + c].copy_from_slice(&sp[s..s + c]);
         }
     }
     out
 }
 
 /// Bilinear to exactly `w`×`h` (16.16 fixed point, pixel centres aligned). For reductions over 2×, [`resize`].
-pub fn bilinear(src: &Pixels, w: u32, h: u32) -> Pixels {
+pub fn bilinear<B: AsRef<[u8]>>(src: &Pixels<B>, w: u32, h: u32) -> Pixels {
+    let sp = src.px.as_ref();
     let (w, h) = (w.max(1), h.max(1));
     let mut out = Pixels::new(w, h, src.ch);
     let c = src.ch as usize;
@@ -189,9 +191,8 @@ pub fn bilinear(src: &Pixels, w: u32, h: u32) -> Pixels {
         let (y0, y1, fy) = map(y, h, sh);
         for x in 0..w {
             let (x0, x1, fx) = map(x, w, sw);
-            let p = |xx: usize, yy: usize, ch: usize| {
-                src.px[(yy * src.w as usize + xx) * c + ch] as u32
-            };
+            let p =
+                |xx: usize, yy: usize, ch: usize| sp[(yy * src.w as usize + xx) * c + ch] as u32;
             for ch in 0..c {
                 let top = p(x0, y0, ch) * (65536 - fx) + p(x1, y0, ch) * fx;
                 let bot = p(x0, y1, ch) * (65536 - fx) + p(x1, y1, ch) * fx;
@@ -219,7 +220,7 @@ pub fn resize(src: &impl Rows, w: u32, h: u32) -> Pixels {
 }
 
 /// A square thumbnail `side` px across: turned, the middle of the short side kept.
-pub fn thumb(src: &Pixels, turn: Turn, side: u32) -> Pixels {
+pub fn thumb<B: AsRef<[u8]>>(src: &Pixels<B>, turn: Turn, side: u32) -> Pixels {
     let k = (src.w.min(src.h) / side.max(1)).max(1);
     let g = boxed_turned(src, k, turn);
     let s = g.w.min(g.h);

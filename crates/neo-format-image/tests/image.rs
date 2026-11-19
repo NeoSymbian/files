@@ -565,3 +565,24 @@ fn webp_lossless_decodes_exactly() {
         }
     }
 }
+
+#[test]
+fn decode_into_the_callers_memory_matches_decode() {
+    let p = gradient(40, 24, 3);
+    for b in [jpeg(&p, 90).unwrap(), jpeg_with(&p, None, true)] {
+        let i = probe(&b).unwrap();
+        let (w, h, ch) = neo_format_image::into_shape(&b, &i).unwrap();
+        let mut out = vec![0u8; (w * h * ch as u32) as usize];
+        let d = neo_format_image::decode_into(&b, &i, &mut out).unwrap();
+        assert_eq!((d.w, d.h, d.ch), (40, 24, 3));
+        let f = fit(&d, Turn::NONE, 20);
+        assert_eq!((f.w, f.h), (20, 12));
+        assert_eq!(out, decode(&b, 1 << 20).unwrap().px.px);
+    }
+    // a PNG decodes on the heap
+    let pn = png_out(&p);
+    assert!(neo_format_image::into_shape(&pn, &probe(&pn).unwrap()).is_none());
+    assert!(
+        neo_format_image::heap_cost(&probe(&jpeg_with(&p, None, true)).unwrap()) >= 40 * 24 * 6
+    );
+}
