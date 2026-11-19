@@ -15,6 +15,7 @@ extern crate alloc;
 mod archive;
 mod edit;
 mod fa3;
+mod fa7;
 mod image;
 mod job;
 mod pics;
@@ -159,6 +160,8 @@ enum Action {
     PickerCrumb(usize),
     PickerOpen(usize),
     PickerNewFolder,
+    // FA7
+    Fa7(fa7::Act),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -178,6 +181,8 @@ enum View {
     ImageEdit,
     Archive,
     PickFolder,
+    /// FA7's viewers (cards, events, font, certificate, package, bytes).
+    Fa7,
 }
 
 /// The form page over the folder.
@@ -199,6 +204,8 @@ enum Ask {
     Unsaved,
     /// Leave the image editor: Save copy / Discard / Cancel.
     ImageEdits,
+    /// Leave a contact's or an event's form: Save / Discard / Cancel.
+    Fa7Unsaved,
 }
 
 /// Files picked for Copy or Move, waiting in the paste bar for a folder.
@@ -293,6 +300,8 @@ struct State {
     archive: Option<archive::Browse>,
     picker: Option<archive::Picker>,
     compress: Option<archive::CompressForm>,
+    // FA7
+    fa7: Option<fa7::Open7>,
 }
 
 fn run() -> Result<(), i32> {
@@ -358,6 +367,7 @@ fn run() -> Result<(), i32> {
         archive: None,
         picker: None,
         compress: None,
+        fa7: None,
     };
     load_settings(&app, &ui, &mut st);
     fa3::load(&mut st);
@@ -367,6 +377,7 @@ fn run() -> Result<(), i32> {
         test_files(&st);
         test_photos(&st);
         test_zips(&st);
+        fa7::test_files(&st);
     }
     show_drives(&app, &ui, &mut st);
     // a trash cut short by a power cut is finished or rolled back (files-ops' journal)
@@ -478,6 +489,8 @@ fn run() -> Result<(), i32> {
                     ui.set_kb_h(h as f32);
                 }
                 AppEvent::NoteAction => undo(&app, &ui, &mut st),
+                // back from NEOCONT's IMPORT page: the cards it has now are marked
+                AppEvent::Visible(true) if st.view == View::Fa7 => fa7::visible(&ui, &mut st),
                 AppEvent::Notified {
                     id: JOB_NOTE,
                     action: 1,
@@ -654,6 +667,7 @@ fn bind(ui: &FilesApp, actions: &Rc<RefCell<VecDeque<Action>>>) {
     ui.on_picker_crumb(index(Action::PickerCrumb));
     ui.on_picker_open(index(Action::PickerOpen));
     ui.on_picker_new_folder(plain(|| Action::PickerNewFolder));
+    fa7::bind(ui, actions);
     {
         let q = actions.clone();
         ui.on_group_picked(move |g, i| {
@@ -796,6 +810,8 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
         Action::PickerCrumb(i) => archive::picker_crumb(app, ui, st, i),
         Action::PickerOpen(i) => archive::picker_open(app, ui, st, i),
         Action::PickerNewFolder => archive::picker_new_folder(app, ui, st),
+        Action::Fa7(a) => fa7::act(app, ui, st, a),
+        Action::Edit if st.view == View::Fa7 => fa7::edit(ui, st),
         Action::Row(i) if st.view == View::Folder => {
             let Some(item) = st.items.get(i).cloned() else {
                 return;
@@ -1191,8 +1207,8 @@ fn open_path(app: &App, ui: &FilesApp, st: &mut State, p: &str) {
         return archive::sheet(app, ui, st, p);
     }
     if !is_text(&name) {
-        // st.dir stays the open folder's: Delete, Paste and Rename build their paths from it
-        return note_with(app, &format!("No viewer for {name} yet"), "");
+        // FA7: cards, events, fonts, certificates, packages; anything else as bytes
+        return fa7::open(app, ui, st, p);
     }
     st.dir = dir;
     view_file(
@@ -1331,6 +1347,8 @@ fn back(app: &App, ui: &FilesApp, st: &mut State) {
         archive::picker_cancel(app, ui, st);
     } else if st.compress.is_some() {
         archive::compress_cancel(ui, st);
+    } else if st.view == View::Fa7 {
+        fa7::back(app, ui, st);
     } else if st.view == View::Archive {
         archive::up(app, ui, st);
     } else if st.view == View::Edit {
@@ -1467,6 +1485,7 @@ fn answer(app: &App, ui: &FilesApp, st: &mut State, i: usize) {
             }
             _ => {}
         },
+        Some(Ask::Fa7Unsaved) => fa7::answer(app, ui, st, i),
         Some(Ask::ImageEdits) => match i {
             0 => image::save(app, ui, st),
             1 => image::leave_editor(ui, st),
@@ -2077,8 +2096,7 @@ fn view_file(app: &App, ui: &FilesApp, st: &mut State, item: &Item) {
         return archive::sheet(app, ui, st, &path);
     }
     if !is_text(&item.name) {
-        note_with(app, &format!("No viewer for {} yet", item.name), "");
-        return;
+        return fa7::open(app, ui, st, &path);
     }
     open_text(app, ui, st, &path, false);
 }

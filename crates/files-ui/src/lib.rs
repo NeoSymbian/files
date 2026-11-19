@@ -12,6 +12,8 @@ use files_core::{self as model, Item};
 slint::include_modules!();
 
 pub mod image;
+pub mod inspect;
+pub mod pim;
 pub mod text;
 
 /// `0xRRGGBB` as an opaque colour.
