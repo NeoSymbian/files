@@ -1,0 +1,640 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// FA6 (archives): the extract sheet's rows and progress card (files2-extract), the bar under an archive's list
+// (files2-zip-browse), the Compress form (files2-compress) and the folder picker (Extract to…, Save in).
+
+import { Theme, Glyph, Button, FormHeader, TextField, NeoList, ProgressBar } from "@neoui/kit.slint";
+import { FTile, FolderTile } from "tiles.slint";
+import { Pick } from "fa3.slint";
+
+// a row of the Compress form's items or the picker's folders
+export struct PackItem { name: string, detail: string, badge: string, colour: color, folder: bool }
+
+component Label inherits Text {
+    color: Theme.text-dim;
+    font-size: 12.5 * Theme.dp;
+    font-weight: 600;
+    letter-spacing: 0.8px;
+}
+
+component Line inherits Rectangle {
+    height: max(1px, Theme.dp / 2);
+    background: #ffffff12;
+}
+
+// a compact pill for the bars (the kit's Button is wider than these rows have room for)
+component Pill2 inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary;
+    in property <bool> enabled: true;
+    in property <image> icon;
+    in property <bool> has-icon;
+    callback clicked();
+    height: 44 * Theme.dp;
+    width: row.preferred-width + 32 * Theme.dp;
+    border-radius: self.height / 2;
+    opacity: root.enabled ? 1 : Theme.disabled;
+    background: root.primary ? (touch.pressed ? Theme.accent.darker(20%) : Theme.accent)
+        : (touch.pressed ? Theme.pressed : Theme.field);
+    row := HorizontalLayout {
+        alignment: center;
+        spacing: 6 * Theme.dp;
+        if root.has-icon: VerticalLayout {
+            alignment: center;
+            Glyph {
+                source: root.icon;
+                size: 18 * Theme.dp;
+                colorize: white;
+            }
+        }
+        Text {
+            text: root.text;
+            color: white;
+            font-size: 14.5 * Theme.dp;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// files2-extract: one way to extract (Extract here ✓, Extract to… ›, Browse inside ›)
+export component WayRow inherits Rectangle {
+    in property <image> icon;
+    in property <color> colour;
+    in property <string> title;
+    in property <string> sub;
+    in property <bool> chosen;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 64 * Theme.dp;
+    opacity: root.enabled ? 1 : Theme.disabled;
+    background: touch.pressed ? Theme.pressed : transparent;
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 20 * Theme.dp;
+        padding-right: 20 * Theme.dp;
+        spacing: 14 * Theme.dp;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 40 * Theme.dp;
+                height: self.width;
+                border-radius: 10 * Theme.dp;
+                background: root.colour;
+                Glyph {
+                    source: root.icon;
+                    size: 22 * Theme.dp;
+                    colorize: white;
+                }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 3 * Theme.dp;
+            horizontal-stretch: 1;
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: Theme.font-body;
+                font-weight: 600;
+            }
+
+            Text {
+                text: root.sub;
+                font-family: "DejaVu Sans";
+                color: Theme.text-dim;
+                font-size: Theme.font-label;
+                overflow: elide;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            Glyph {
+                source: root.chosen ? @image-url("@neoui/icons/sys/check.svg") : @image-url("@neoui/icons/sys/chevron_right.svg");
+                size: 20 * Theme.dp;
+                colorize: root.chosen ? Theme.accent : Theme.text-dim;
+            }
+        }
+    }
+}
+
+// files2-extract's card: "Extracting… 31 %", the bar, "128 of 412 files · Documents/… · about 2 min left"
+export component JobCard inherits Rectangle {
+    in property <string> title;
+    in property <float> progress;
+    in property <string> detail;
+    callback hide();
+    callback cancel();
+    height: box.preferred-height;
+    border-radius: Theme.radius;
+    background: Theme.card;
+    border-width: max(1px, Theme.dp / 2);
+    border-color: #ffffff14;
+    box := VerticalLayout {
+        padding: 16 * Theme.dp;
+        spacing: 10 * Theme.dp;
+        HorizontalLayout {
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: Theme.font-body;
+                font-weight: 600;
+                horizontal-stretch: 1;
+            }
+
+            Text {
+                text: Math.round(max(0, min(1, root.progress)) * 100) + " %";
+                color: Theme.text-secondary;
+                font-size: Theme.font-label;
+            }
+        }
+
+        ProgressBar {
+            value: root.progress;
+        }
+
+        Text {
+            text: root.detail;
+            font-family: "DejaVu Sans";
+            color: Theme.text-dim;
+            font-size: Theme.font-label;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            alignment: end;
+            spacing: 10 * Theme.dp;
+            Button {
+                text: "Hide";
+                primary: false;
+                clicked => {
+                    root.hide();
+                }
+            }
+
+            Button {
+                text: "Cancel";
+                primary: false;
+                clicked => {
+                    root.cancel();
+                }
+            }
+        }
+    }
+}
+
+// files2-zip-browse: under the list, "412 files / 1.2 GB · zip" [Extract to…] [Extract all]
+export component ArchiveBar inherits Rectangle {
+    in property <string> count;
+    in property <string> sub;
+    callback extract-to();
+    callback extract-all();
+    height: 72 * Theme.dp;
+    background: Theme.bg;
+    Line {
+        y: 0;
+        width: parent.width;
+    }
+
+    HorizontalLayout {
+        padding-left: 16 * Theme.dp;
+        padding-right: 12 * Theme.dp;
+        spacing: 8 * Theme.dp;
+        VerticalLayout {
+            alignment: center;
+            spacing: 2 * Theme.dp;
+            horizontal-stretch: 1;
+            min-width: 72 * Theme.dp;
+            Text {
+                text: root.count;
+                color: Theme.text;
+                font-size: Theme.font-body;
+                font-weight: 600;
+            }
+
+            Text {
+                text: root.sub;
+                color: Theme.text-dim;
+                font-size: Theme.font-label;
+                overflow: elide;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            Pill2 {
+                text: "Extract to…";
+                clicked => {
+                    root.extract-to();
+                }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            Pill2 {
+                text: "Extract all";
+                primary: true;
+                icon: @image-url("icons/unarchive.svg");
+                has-icon: true;
+                clicked => {
+                    root.extract-all();
+                }
+            }
+        }
+    }
+}
+
+// files2-zip-browse's banner: 🔒 View only · extract to edit  [READ-ONLY]
+export component ViewOnly inherits Rectangle {
+    height: 48 * Theme.dp;
+    Rectangle {
+        x: 12 * Theme.dp;
+        y: 4 * Theme.dp;
+        width: parent.width - 24 * Theme.dp;
+        height: parent.height - 8 * Theme.dp;
+        border-radius: Theme.radius;
+        background: Theme.card;
+        HorizontalLayout {
+            padding-left: 14 * Theme.dp;
+            padding-right: 10 * Theme.dp;
+            spacing: 10 * Theme.dp;
+            VerticalLayout {
+                alignment: center;
+                Glyph {
+                    source: @image-url("@neoui/icons/sys/lock.svg");
+                    size: 16 * Theme.dp;
+                    colorize: Theme.text-secondary;
+                }
+            }
+            Text {
+                text: "View only · extract to edit";
+                color: Theme.text-secondary;
+                font-size: Theme.font-label;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    height: 22 * Theme.dp;
+                    width: tag.preferred-width + 16 * Theme.dp;
+                    border-radius: 6 * Theme.dp;
+                    border-width: max(1px, Theme.dp);
+                    border-color: #ffffff30;
+                    tag := Text {
+                        text: "READ-ONLY";
+                        color: Theme.text-secondary;
+                        font-size: 11 * Theme.dp;
+                        font-weight: 700;
+                        letter-spacing: 0.6px;
+                    }
+                }
+            }
+        }
+    }
+}
+
+component ItemRow inherits Rectangle {
+    in property <PackItem> item;
+    in property <bool> chevron;
+    callback tapped();
+    height: 60 * Theme.dp;
+    background: touch.pressed && root.chevron ? Theme.pressed : transparent;
+    touch := TouchArea {
+        clicked => {
+            root.tapped();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 16 * Theme.dp;
+        padding-right: 16 * Theme.dp;
+        spacing: 14 * Theme.dp;
+        VerticalLayout {
+            alignment: center;
+            width: 40 * Theme.dp;
+            if root.item.folder: FolderTile { }
+            if !root.item.folder: FTile {
+                badge: root.item.badge;
+                colour: root.item.colour;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 3 * Theme.dp;
+            horizontal-stretch: 1;
+            Text {
+                text: root.item.name;
+                font-family: "DejaVu Sans";
+                color: Theme.text;
+                font-size: Theme.font-body;
+                font-weight: 500;
+                overflow: elide;
+            }
+
+            if root.item.detail != "": Text {
+                text: root.item.detail;
+                color: Theme.text-dim;
+                font-size: Theme.font-label;
+                overflow: elide;
+            }
+        }
+
+        if root.chevron: VerticalLayout {
+            alignment: center;
+            Glyph {
+                source: @image-url("@neoui/icons/sys/chevron_right.svg");
+                size: 18 * Theme.dp;
+                colorize: Theme.text-dim;
+            }
+        }
+    }
+}
+
+// files2-compress: [✕ Compress 3 items ✓], the name, zip or tar.gz, where it goes, what goes in
+export component CompressForm inherits Rectangle {
+    in property <string> title;
+    in-out property <string> name;
+    in property <int> format;
+    in property <string> dir;
+    in property <string> free;
+    in property <string> total;
+    in property <[PackItem]> items;
+    in property <string> note;
+    callback cancel();
+    callback save();
+    callback format-picked(int);
+    callback save-in();
+    background: Theme.bg;
+    TouchArea { }
+
+    VerticalLayout {
+        FormHeader {
+            title: root.title;
+            can-save: root.name != "";
+            cancel => {
+                root.cancel();
+            }
+            save => {
+                root.save();
+            }
+        }
+
+        NeoList {
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                VerticalLayout {
+                    padding-left: 16 * Theme.dp;
+                    padding-right: 16 * Theme.dp;
+                    padding-top: 12 * Theme.dp;
+                    spacing: 10 * Theme.dp;
+                    Label {
+                        text: "ARCHIVE NAME";
+                    }
+
+                    TextField {
+                        text <=> root.name;
+                        placeholder: "Name";
+                        accepted(t) => {
+                            root.save();
+                        }
+                    }
+
+                    Label {
+                        text: "FORMAT";
+                    }
+
+                    HorizontalLayout {
+                        alignment: start;
+                        spacing: 8 * Theme.dp;
+                        for f[i] in ["zip", "tar.gz"]: Pick {
+                            text: f;
+                            on: i == root.format;
+                            clicked => {
+                                root.format-picked(i);
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: "zip opens on any computer · tar.gz keeps Unix file permissions";
+                        color: Theme.text-dim;
+                        font-size: 12.5 * Theme.dp;
+                        wrap: word-wrap;
+                    }
+
+                    Label {
+                        text: "SAVE IN";
+                    }
+                }
+
+                ItemRow {
+                    item: { name: root.dir, detail: root.free, folder: true };
+                    chevron: true;
+                    tapped => {
+                        root.save-in();
+                    }
+                }
+
+                VerticalLayout {
+                    padding-left: 16 * Theme.dp;
+                    padding-top: 6 * Theme.dp;
+                    Label {
+                        text: "ITEMS · " + root.total;
+                    }
+                }
+
+                for it in root.items: ItemRow {
+                    item: it;
+                }
+                VerticalLayout {
+                    padding: 16 * Theme.dp;
+                    Text {
+                        text: root.note;
+                        color: Theme.text-dim;
+                        font-size: 12.5 * Theme.dp;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Extract to… and Save in: [✕ Choose a folder ✓], the drives, where you are, its folders; the action at the bottom
+export component FolderPicker inherits Rectangle {
+    in property <string> title;
+    in property <[string]> drives;
+    in property <int> drive;
+    in property <[string]> crumbs;
+    in property <[PackItem]> rows;
+    in property <string> action;
+    in property <string> info;
+    in property <bool> can-pick: true;
+    callback cancel();
+    callback done();
+    callback drive-picked(int);
+    callback crumb(int);
+    callback open(int);
+    callback new-folder();
+    background: Theme.bg;
+    TouchArea { }
+
+    VerticalLayout {
+        FormHeader {
+            title: root.title;
+            can-save: root.can-pick;
+            cancel => {
+                root.cancel();
+            }
+            save => {
+                root.done();
+            }
+        }
+
+        HorizontalLayout {
+            padding-left: 12 * Theme.dp;
+            padding-right: 12 * Theme.dp;
+            padding-top: 4 * Theme.dp;
+            padding-bottom: 6 * Theme.dp;
+            spacing: 8 * Theme.dp;
+            alignment: start;
+            for d[i] in root.drives: Pick {
+                text: d;
+                on: i == root.drive;
+                check: false;
+                clicked => {
+                    root.drive-picked(i);
+                }
+            }
+        }
+
+        HorizontalLayout {
+            height: 36 * Theme.dp;
+            padding-left: 12 * Theme.dp;
+            padding-right: 12 * Theme.dp;
+            spacing: 4 * Theme.dp;
+            alignment: start;
+            for c[i] in root.crumbs: HorizontalLayout {
+                spacing: 4 * Theme.dp;
+                if i > 0: VerticalLayout {
+                    alignment: center;
+                    Glyph {
+                        source: @image-url("@neoui/icons/sys/chevron_right.svg");
+                        size: 14 * Theme.dp;
+                        colorize: Theme.text-dim;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        property <bool> here: i == root.crumbs.length - 1;
+                        height: 28 * Theme.dp;
+                        width: crumb-text.preferred-width + 20 * Theme.dp;
+                        border-radius: self.height / 2;
+                        background: crumb-touch.pressed ? Theme.pressed : self.here ? Theme.tab-pill : Theme.field;
+                        crumb-text := Text {
+                            text: c;
+                            font-family: "DejaVu Sans";
+                            color: parent.here ? Theme.text : Theme.text-secondary;
+                            font-size: 13.5 * Theme.dp;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+
+                        crumb-touch := TouchArea {
+                            clicked => {
+                                root.crumb(i);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        NeoList {
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                if root.rows.length == 0: Text {
+                    height: 96 * Theme.dp;
+                    text: "No folders here";
+                    color: Theme.text-dim;
+                    font-size: 14 * Theme.dp;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                for r[i] in root.rows: ItemRow {
+                    item: r;
+                    chevron: true;
+                    tapped => {
+                        root.open(i);
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 72 * Theme.dp;
+            Line {
+                y: 0;
+                width: parent.width;
+            }
+
+            HorizontalLayout {
+                padding-left: 16 * Theme.dp;
+                padding-right: 12 * Theme.dp;
+                spacing: 10 * Theme.dp;
+                Text {
+                    text: root.info;
+                    font-family: "DejaVu Sans";
+                    color: Theme.text-dim;
+                    font-size: Theme.font-label;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    Pill2 {
+                        text: "New folder";
+                        clicked => {
+                            root.new-folder();
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    Pill2 {
+                        text: root.action;
+                        primary: true;
+                        enabled: root.can-pick;
+                        clicked => {
+                            root.done();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

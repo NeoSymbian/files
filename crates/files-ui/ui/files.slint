@@ -21,6 +21,7 @@ import { FTile, FolderTile, DriveTile, Thumb } from "tiles.slint";
 import { StripItem, ImageView, ImageEdit } from "image.slint";
 import { TypeTile, Seg, CleanCard, Detail, Pick, UsedCard, GroupTile, CleanItem, InfoCard, DetailRow } from "fa3.slint";
 import { TSpan, TRow, Mark, TextPane, TextMetrics } from "text.slint";
+import { PackItem, WayRow, JobCard, ArchiveBar, ViewOnly, CompressForm, FolderPicker } from "fa6.slint";
 import { MdSpan, MdRow, CellRow, Col, CodeKeys, StatusLine, FindBar, Segments, MdView, TableGrid, CellBar, TypeChips } from "editor.slint";
 export { TSpan, TRow, Mark, MdSpan, MdRow, CellRow, Col, TextMetrics, StripItem }
 
@@ -815,6 +816,48 @@ export component FilesApp inherits Window {
     callback crop-done();
     callback resize-chosen(int);
 
+    // FA6: view "archive" (files2-zip-browse) lists inside an archive; the bar under it
+    in property <string> archive-count;
+    in property <string> archive-sub;
+    // files2-extract: the sheet, its ways (Extract here's folder; Browse inside for a zip or tar), and the job's card
+    in-out property <bool> extract-open;
+    in property <string> extract-title;
+    in property <string> extract-info;
+    in property <string> extract-here;
+    in property <bool> extract-browse: true;
+    in property <bool> extract-busy;
+    in property <string> job-title;
+    in property <string> job-detail;
+    // files2-compress (form "compress"): its title, the format (0 zip, 1 tar.gz), Save in, the items and the estimate
+    in property <string> compress-title;
+    in property <int> compress-format;
+    in property <string> compress-dir;
+    in property <string> compress-free;
+    in property <string> compress-total;
+    in property <[PackItem]> compress-items;
+    in property <string> compress-note;
+    // view "pick-folder": Extract to… and Save in
+    in property <string> picker-title;
+    in property <[string]> picker-drives;
+    in property <int> picker-drive;
+    in property <[string]> picker-crumbs;
+    in property <[PackItem]> picker-rows;
+    in property <string> picker-action;
+    in property <string> picker-info;
+    in property <bool> picker-can;
+    callback extract-way(int);
+    callback extract-to();
+    callback extract-all();
+    callback job-cancel();
+    callback compress-format-picked(int);
+    callback save-in();
+    callback picker-cancel();
+    callback picker-done();
+    callback picker-drive-picked(int);
+    callback picker-crumb(int);
+    callback picker-open(int);
+    callback picker-new-folder();
+
     // keep a row in view (the cursor after a key, a find match)
     public function text-show-row(r: int) {
         pane.show-row(r);
@@ -830,9 +873,9 @@ export component FilesApp inherits Window {
         "New folder", "New file", "Sort by", root.grid ? "List view" : "Grid view",
         root.show-hidden ? "Hide hidden" : "Show hidden", "Details"
     ];
-    property <[string]> pick-menu: root.read-only ? (root.one-item ? ["Details", "Select all"] : ["Select all"])
-        : root.one-folder ? ["Move", "Rename", "Add to Favourites", "Details", "Select all"]
-        : root.one-item ? ["Move", "Rename", "Details", "Select all"] : ["Move", "Rename", "Select all"];
+    property <[string]> pick-menu: root.read-only ? (root.one-item ? ["Compress", "Details", "Select all"] : ["Compress", "Select all"])
+        : root.one-folder ? ["Move", "Rename", "Compress", "Add to Favourites", "Details", "Select all"]
+        : root.one-item ? ["Move", "Rename", "Compress", "Details", "Select all"] : ["Move", "Compress", "Select all"];
     property <[string]> bin-menu: ["Empty bin", "Select"];
     property <bool> selecting: root.selected > 0 || root.picking;
     property <bool> tab-root: root.view == "browse" || root.view == "recent" || root.view == "types";
@@ -885,6 +928,38 @@ export component FilesApp inherits Window {
             }
             selection-menu-picked(i) => {
                 root.selection-menu(root.pick-menu[i]);
+            }
+            selection-closed => {
+                root.clear-selection();
+            }
+            top => {
+                folder-list.to-top();
+            }
+        }
+        // files2-zip-browse: [← backup-2026.zip · search · ⋮]; a pick extracts
+        if root.view == "archive": SubHeader {
+            title: root.name;
+            title-font: "DejaVu Sans";
+            searching <=> root.searching;
+            query <=> root.query;
+            searched(t) => {
+                root.searched(t);
+            }
+            menu: ["Select all", "Details"];
+            selected: root.selected;
+            selection-actions: [{ icon: @image-url("icons/unarchive.svg"), label: "Extract" }];
+            selection-menu: ["Select all"];
+            back => {
+                root.up();
+            }
+            menu-picked(i) => {
+                root.menu(["Select all", "Details"][i]);
+            }
+            selection-action(i) => {
+                root.selection-action(i);
+            }
+            selection-menu-picked(i) => {
+                root.selection-menu("Select all");
             }
             selection-closed => {
                 root.clear-selection();
@@ -995,7 +1070,7 @@ export component FilesApp inherits Window {
         }
 
         // the breadcrumb (F05): the drive, then each folder; the last is where you are
-        if root.view == "folder": HorizontalLayout {
+        if root.view == "folder" || root.view == "archive": HorizontalLayout {
             height: 40 * Theme.dp;
             padding-left: 12 * Theme.dp;
             padding-right: 12 * Theme.dp;
@@ -1080,6 +1155,8 @@ export component FilesApp inherits Window {
                 }
             }
         }
+
+        if root.view == "archive" && !root.selecting: ViewOnly { }
 
         // the views share the rest of the surface; the hidden ones stay (their ids are used above)
         Rectangle {
@@ -1612,8 +1689,9 @@ export component FilesApp inherits Window {
 
             // files come from outside (K03): pull to list the folder again
             folder-list := NeoList {
-                visible: root.view == "folder" && !root.searching;
-                pull-refresh: true;
+                // an archive filters its rows while searching
+                visible: (root.view == "folder" && !root.searching) || root.view == "archive";
+                pull-refresh: root.view == "folder";
                 refreshing: root.refreshing;
                 selected: root.selected;
                 refresh => {
@@ -1622,7 +1700,7 @@ export component FilesApp inherits Window {
                 VerticalLayout {
                     alignment: start;
                     // files2-folder-empty
-                    if root.rows.length == 0: VerticalLayout {
+                    if root.rows.length == 0 && root.view == "folder": VerticalLayout {
                         padding-top: 72 * Theme.dp;
                         padding-left: 32 * Theme.dp;
                         padding-right: 32 * Theme.dp;
@@ -1681,7 +1759,7 @@ export component FilesApp inherits Window {
                         for f[i] in root.rows: FileItem {
                             item: f;
                             selecting: root.selecting;
-                            locked: root.read-only;
+                            locked: root.read-only && root.view == "folder";
                             held => {
                                 root.toggle(i);
                             }
@@ -2001,6 +2079,17 @@ export component FilesApp inherits Window {
             }
         }
 
+        if root.view == "archive" && !root.selecting && root.form == "": ArchiveBar {
+            count: root.archive-count;
+            sub: root.archive-sub;
+            extract-to => {
+                root.extract-to();
+            }
+            extract-all => {
+                root.extract-all();
+            }
+        }
+
         // F01: Browse · Recent · Types
         if root.footer: Footer {
             current: root.tab-index;
@@ -2209,7 +2298,7 @@ export component FilesApp inherits Window {
     }
 
     // a form page over the folder: [✕ New folder ✓], [✕ New file ✓] or [✕ Rename ✓]; the keyboard comes up
-    if root.form != "": Rectangle {
+    if root.form != "" && root.form != "compress": Rectangle {
         background: Theme.bg;
         TouchArea { }
 
@@ -2352,6 +2441,124 @@ export component FilesApp inherits Window {
                             overflow: elide;
                         }
                     }
+                }
+            }
+        }
+    }
+
+    if root.form == "compress": CompressForm {
+        title: root.compress-title;
+        name <=> root.name-text;
+        format: root.compress-format;
+        dir: root.compress-dir;
+        free: root.compress-free;
+        total: root.compress-total;
+        items: root.compress-items;
+        note: root.compress-note;
+        cancel => {
+            root.form-cancel();
+        }
+        save => {
+            root.form-save();
+        }
+        format-picked(i) => {
+            root.compress-format-picked(i);
+        }
+        save-in => {
+            root.save-in();
+        }
+    }
+
+    if root.view == "pick-folder": FolderPicker {
+        title: root.picker-title;
+        drives: root.picker-drives;
+        drive: root.picker-drive;
+        crumbs: root.picker-crumbs;
+        rows: root.picker-rows;
+        action: root.picker-action;
+        info: root.picker-info;
+        can-pick: root.picker-can;
+        cancel => {
+            root.picker-cancel();
+        }
+        done => {
+            root.picker-done();
+        }
+        drive-picked(i) => {
+            root.picker-drive-picked(i);
+        }
+        crumb(i) => {
+            root.picker-crumb(i);
+        }
+        open(i) => {
+            root.picker-open(i);
+        }
+        new-folder => {
+            root.picker-new-folder();
+        }
+    }
+
+    // files2-extract: three ways, then the job's card while it runs
+    Sheet {
+        title: root.extract-title;
+        open <=> root.extract-open;
+        VerticalLayout {
+            padding-left: 20 * Theme.dp;
+            padding-right: 20 * Theme.dp;
+            padding-bottom: 8 * Theme.dp;
+            Text {
+                text: root.extract-info;
+                color: Theme.text-dim;
+                font-size: Theme.font-label;
+                wrap: word-wrap;
+            }
+        }
+
+        WayRow {
+            icon: @image-url("icons/unarchive.svg");
+            colour: #3d8bfd;
+            title: "Extract here";
+            sub: root.extract-here;
+            chosen: true;
+            clicked => {
+                root.extract-way(0);
+            }
+        }
+
+        WayRow {
+            icon: @image-url("@neoui/icons/sys/folder.svg");
+            colour: #e2a92a;
+            title: "Extract to…";
+            sub: "Pick a folder on any drive";
+            clicked => {
+                root.extract-way(1);
+            }
+        }
+
+        if root.extract-browse: WayRow {
+            icon: @image-url("@neoui/icons/sys/archive.svg");
+            colour: #a0703c;
+            title: "Browse inside";
+            sub: "Read-only, nothing is unpacked";
+            clicked => {
+                root.extract-way(2);
+            }
+        }
+
+        if root.extract-busy: VerticalLayout {
+            padding-left: 16 * Theme.dp;
+            padding-right: 16 * Theme.dp;
+            padding-top: 8 * Theme.dp;
+            JobCard {
+                title: root.job-title;
+                progress: root.job-progress;
+                detail: root.job-detail;
+                hide => {
+                    root.extract-open = false;
+                    root.job-hide();
+                }
+                cancel => {
+                    root.job-cancel();
                 }
             }
         }

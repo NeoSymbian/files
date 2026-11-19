@@ -12,6 +12,7 @@
 
 extern crate alloc;
 
+mod archive;
 mod edit;
 mod fa3;
 mod image;
@@ -146,6 +147,18 @@ enum Action {
     CropDone,
     ResizeChosen(usize),
     GroupPicked(usize, usize),
+    // FA6
+    ExtractWay(usize),
+    ExtractBar(bool),
+    JobCancel,
+    CompressFormat(usize),
+    SaveIn,
+    PickerCancel,
+    PickerDone,
+    PickerDrive(usize),
+    PickerCrumb(usize),
+    PickerOpen(usize),
+    PickerNewFolder,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -163,6 +176,8 @@ enum View {
     Edit,
     Image,
     ImageEdit,
+    Archive,
+    PickFolder,
 }
 
 /// The form page over the folder.
@@ -203,6 +218,10 @@ struct Running {
     hidden: bool,
     asked: bool,
     noted_at: u64,
+    /// FA6: an archive job (Extract, Compress, List, Unpack) in place of a copy or move.
+    arc: Option<archive::ArcJob>,
+    /// When it started (ms), for the time left.
+    started: u64,
 }
 
 struct State {
@@ -269,6 +288,11 @@ struct State {
     img_groups: Vec<(String, Vec<usize>)>,
     /// What the thumbnails were last fitted to: (view, scroll in rows, rows, groups, viewer's image).
     thumb_mark: (u8, i32, usize, usize, usize),
+    // FA6
+    sheet: Option<archive::Sheet>,
+    archive: Option<archive::Browse>,
+    picker: Option<archive::Picker>,
+    compress: Option<archive::CompressForm>,
 }
 
 fn run() -> Result<(), i32> {
@@ -330,13 +354,19 @@ fn run() -> Result<(), i32> {
         viewer: None,
         img_groups: Vec::new(),
         thumb_mark: (0, 0, 0, 0, 0),
+        sheet: None,
+        archive: None,
+        picker: None,
+        compress: None,
     };
     load_settings(&app, &ui, &mut st);
     fa3::load(&mut st);
+    archive::clear_cache(&st);
     #[cfg(feature = "test-files")]
     {
         test_files(&st);
         test_photos(&st);
+        test_zips(&st);
     }
     show_drives(&app, &ui, &mut st);
     // a trash cut short by a power cut is finished or rolled back (files-ops' journal)
@@ -611,6 +641,19 @@ fn bind(ui: &FilesApp, actions: &Rc<RefCell<VecDeque<Action>>>) {
         let q = actions.clone();
         ui.on_crop_drag(move |h, x, y| q.borrow_mut().push_back(Action::CropDrag(h, x, y)));
     }
+    // FA6
+    ui.on_extract_way(index(Action::ExtractWay));
+    ui.on_extract_to(plain(|| Action::ExtractBar(true)));
+    ui.on_extract_all(plain(|| Action::ExtractBar(false)));
+    ui.on_job_cancel(plain(|| Action::JobCancel));
+    ui.on_compress_format_picked(index(Action::CompressFormat));
+    ui.on_save_in(plain(|| Action::SaveIn));
+    ui.on_picker_cancel(plain(|| Action::PickerCancel));
+    ui.on_picker_done(plain(|| Action::PickerDone));
+    ui.on_picker_drive_picked(index(Action::PickerDrive));
+    ui.on_picker_crumb(index(Action::PickerCrumb));
+    ui.on_picker_open(index(Action::PickerOpen));
+    ui.on_picker_new_folder(plain(|| Action::PickerNewFolder));
     {
         let q = actions.clone();
         ui.on_group_picked(move |g, i| {
@@ -632,6 +675,7 @@ fn describe(app: &App, ui: &FilesApp, st: &mut State) -> Result<(), i32> {
         title: "Files".into(),
         can_back: !matches!(st.view, View::Browse | View::Recent | View::Types)
             || st.form.is_some()
+            || st.compress.is_some()
             || ui.get_clash_open()
             || ui.global::<Kit>().get_layers() > 0,
         ..Page::default()
@@ -724,6 +768,34 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
                 open_dir(app, ui, st, format!("{d}:\\"));
             }
         }
+        Action::Row(i) if st.view == View::Archive => archive::row(app, ui, st, i),
+        Action::Toggle(i) if st.view == View::Archive => archive::toggle(ui, st, i),
+        Action::Crumb(i) if st.view == View::Archive => archive::crumb(ui, st, i),
+        Action::Pick(_) if st.view == View::Archive => archive::extract_picked(app, ui, st),
+        Action::PickMenu(_) if st.view == View::Archive => archive::select_all(ui, st, true),
+        Action::ClearSelection if st.view == View::Archive => archive::select_all(ui, st, false),
+        Action::Menu(m) if st.view == View::Archive => match m.as_str() {
+            "Select all" => archive::select_all(ui, st, true),
+            _ => archive::details(app, ui, st),
+        },
+        Action::Searched(t) if st.view == View::Archive => archive::searched(ui, st, &t),
+        Action::FormCancel if st.form.is_none() && st.compress.is_some() => {
+            archive::compress_cancel(ui, st)
+        }
+        Action::FormSave if st.form.is_none() && st.compress.is_some() => {
+            archive::compress_save(app, ui, st)
+        }
+        Action::ExtractWay(i) => archive::way(app, ui, st, i),
+        Action::ExtractBar(to) => archive::bar(app, ui, st, to),
+        Action::JobCancel => st.slot.cancel(),
+        Action::CompressFormat(i) => archive::compress_format(ui, st, i),
+        Action::SaveIn => archive::save_in(app, ui, st),
+        Action::PickerCancel => archive::picker_cancel(app, ui, st),
+        Action::PickerDone => archive::picker_done(app, ui, st),
+        Action::PickerDrive(i) => archive::picker_drive(app, ui, st, i),
+        Action::PickerCrumb(i) => archive::picker_crumb(app, ui, st, i),
+        Action::PickerOpen(i) => archive::picker_open(app, ui, st, i),
+        Action::PickerNewFolder => archive::picker_new_folder(app, ui, st),
         Action::Row(i) if st.view == View::Folder => {
             let Some(item) = st.items.get(i).cloned() else {
                 return;
@@ -776,6 +848,11 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
         Action::PickMenu(m) => match m.as_str() {
             "Move" => pick_clip(ui, st, Kind::Move),
             "Rename" => start_rename(app, ui, st),
+            "Compress" => {
+                let paths = picked(st).iter().map(|i| path_of(st, i)).collect();
+                clear_selection(ui, st);
+                archive::compress_open(app, ui, st, paths);
+            }
             "Add to Favourites" => {
                 if let [one] = picked(st).as_slice()
                     && one.is_dir
@@ -1110,6 +1187,9 @@ fn open_path(app: &App, ui: &FilesApp, st: &mut State, p: &str) {
     if image::is_image(&name) {
         return image::open(app, ui, st, p);
     }
+    if archive::is_archive(&name) {
+        return archive::sheet(app, ui, st, p);
+    }
     if !is_text(&name) {
         // st.dir stays the open folder's: Delete, Paste and Rename build their paths from it
         return note_with(app, &format!("No viewer for {name} yet"), "");
@@ -1247,6 +1327,12 @@ fn back(app: &App, ui: &FilesApp, st: &mut State) {
         act(app, ui, st, Action::Clash(2));
     } else if st.form.is_some() {
         cancel_form(app, ui, st);
+    } else if st.view == View::PickFolder {
+        archive::picker_cancel(app, ui, st);
+    } else if st.compress.is_some() {
+        archive::compress_cancel(ui, st);
+    } else if st.view == View::Archive {
+        archive::up(app, ui, st);
     } else if st.view == View::Edit {
         if ui.get_find_open() {
             ui.set_find_open(false);
@@ -1318,6 +1404,10 @@ fn return_to(app: &App, ui: &FilesApp, st: &mut State, from: View) {
             fa3::show_review(ui, st, k);
         }
         View::Browse | View::Types => show_tab(app, ui, st, st.tab),
+        View::Archive if st.archive.is_some() => {
+            st.view = View::Archive;
+            archive::show(ui, st);
+        }
         _ => {
             let dir = st.dir.clone();
             open_dir(app, ui, st, dir);
@@ -1545,6 +1635,8 @@ fn paste(app: &App, ui: &FilesApp, st: &mut State) {
         hidden: false,
         asked: false,
         noted_at: 0,
+        arc: None,
+        started: time::millis(),
     });
     ui.set_job_text(format!("{} …", title_verb(clip.kind)).into());
     ui.set_job_progress(0.0);
@@ -1589,6 +1681,8 @@ fn start_purge(app: &App, ui: &FilesApp, st: &mut State, items: Vec<String>, qui
         hidden: quiet,
         asked: false,
         noted_at: 0,
+        arc: None,
+        started: time::millis(),
     });
     if !quiet {
         ui.set_job_text("Deleting …".into());
@@ -1624,10 +1718,20 @@ fn poll_job(app: &App, ui: &FilesApp, st: &mut State) {
         let kind = r.kind;
         let dest = r.dest.clone();
         let (purge, quiet) = (r.purge, r.quiet);
+        let arc = r.arc.take();
         st.running = None;
         ui.set_job_text(SharedString::new());
         ui.set_clash_open(false);
         let _ = app.cancel_notify(JOB_NOTE);
+        if let Some(a) = arc {
+            if matches!(
+                a,
+                archive::ArcJob::Extract { .. } | archive::ArcJob::Compress { .. }
+            ) {
+                rescan(st, st.dupes.is_some());
+            }
+            return archive::done(app, ui, st, a, done);
+        }
         if purge {
             let n = done.as_ref().map_or(0, |s| s.copied);
             dprintln!(
@@ -1725,36 +1829,59 @@ fn poll_job(app: &App, ui: &FilesApp, st: &mut State) {
         }
         return;
     }
-    if !r.hidden {
-        let files = if p.files_total == 1 {
-            "1 file".to_string()
-        } else {
-            format!("{} files", p.files_total)
-        };
-        ui.set_job_text(format!("{} {files} · {pct} %", title_verb(r.kind)).into());
+    let verb = r.arc.as_ref().map_or(title_verb(r.kind), |a| a.verb());
+    let arc_text = r
+        .arc
+        .as_ref()
+        .map(|a| archive::progress_text(a, &p, r.started));
+    let now = time::millis();
+    let due = now.saturating_sub(r.noted_at) >= NOTIFY_MS;
+    // an archive job's sheet and toast change once a second: redrawn on every poll, the sheet over the whole
+    // surface cost a 1 GB extract 396 s instead of 70 s on the Pixel
+    if arc_text.is_some() && !due {
+        return;
+    }
+    if let Some(t) = &arc_text {
+        // the extract sheet's card
+        ui.set_job_title(format!("{verb}…").into());
+        ui.set_job_detail(t.as_str().into());
         ui.set_job_progress(f32::from(pct) / 100.0);
     }
-    let now = time::millis();
-    if now.saturating_sub(r.noted_at) >= NOTIFY_MS {
+    if !r.hidden {
+        let files = match p.files_total {
+            0 => String::new(),
+            1 => " 1 file".to_string(),
+            n => format!(" {n} files"),
+        };
+        ui.set_job_text(format!("{verb}{files} · {pct} %").into());
+        ui.set_job_progress(f32::from(pct) / 100.0);
+    }
+    if due {
         r.noted_at = now;
         let n = Notification {
             id: JOB_NOTE,
             title: cut(
-                &format!(
-                    "Files · {} file {} of {}",
-                    title_verb(r.kind),
-                    (p.files_done + 1).min(p.files_total),
-                    p.files_total
-                ),
+                &if arc_text.is_some() {
+                    format!("Files · {verb}")
+                } else {
+                    format!(
+                        "Files · {verb} file {} of {}",
+                        (p.files_done + 1).min(p.files_total),
+                        p.files_total
+                    )
+                },
                 proto::TITLE_MAX,
             ),
             text: cut(
-                &format!(
-                    "{} · {} of {} · {pct} %",
-                    p.current,
-                    model::size_text(p.current_done),
-                    model::size_text(p.current_size)
-                ),
+                &match &arc_text {
+                    Some(t) => format!("{t} · {pct} %"),
+                    None => format!(
+                        "{} · {} of {} · {pct} %",
+                        p.current,
+                        model::size_text(p.current_done),
+                        model::size_text(p.current_size)
+                    ),
+                },
                 neoui_proto::page::TEXT_MAX,
             ),
             actions: alloc::vec!["Cancel".into()],
@@ -1946,6 +2073,9 @@ fn view_file(app: &App, ui: &FilesApp, st: &mut State, item: &Item) {
     if image::is_image(&item.name) {
         return image::open(app, ui, st, &path);
     }
+    if archive::is_archive(&item.name) {
+        return archive::sheet(app, ui, st, &path);
+    }
     if !is_text(&item.name) {
         note_with(app, &format!("No viewer for {} yet", item.name), "");
         return;
@@ -1956,7 +2086,8 @@ fn view_file(app: &App, ui: &FilesApp, st: &mut State, item: &Item) {
 /// A text file in the viewer (`edit` false) or its editor; the folder under it stays `st.dir`.
 fn open_text(app: &App, ui: &FilesApp, st: &mut State, path: &str, edit: bool) {
     let letter = path.chars().next().unwrap_or('C');
-    let ro_drive = st.drives.iter().any(|&(d, ro)| d == letter && ro);
+    // a file opened from an archive is a copy in the cache: read-only
+    let ro_drive = st.drives.iter().any(|&(d, ro)| d == letter && ro) || archive::in_cache(path);
     let mut o = match edit::Open::new(&st.fs, path, edit, ro_drive) {
         Ok(o) => o,
         Err(msg) => return note_with(app, &msg, ""),
@@ -2124,6 +2255,100 @@ fn test_photos(st: &State) {
         b.len() / 1024,
         e32::time::millis() - t,
         r.err().map_or(0, |e| e.code())
+    );
+}
+
+/// FA6's Pixel gate: C:\Data\zips\ with a 1 GB zip written by our own writer (63 stored members of 16 MB, one
+/// deflated text of 16 MB), a small zip with UTF-8 names and a tar.gz (both made by other tools).
+#[cfg(feature = "test-files")]
+fn test_zips(st: &State) {
+    use neo_format_archive::zip::ZipWriter;
+    use neo_format_archive::{Patch, Result as ArResult, Sink};
+    use neo_fs::File as _;
+    const DIR: &str = "C:\\Data\\zips\\";
+    let _ = files_ops::store::write(
+        &*st.fs,
+        &format!("{DIR}names.zip"),
+        include_bytes!("../../../crates/neo-format-archive/tests/data/infozip.zip"),
+    );
+    let _ = files_ops::store::write(
+        &*st.fs,
+        &format!("{DIR}data.tar.gz"),
+        include_bytes!("../../../crates/neo-format-archive/tests/data/data.tar.gz"),
+    );
+    let big = format!("{DIR}big.zip");
+    if st.fs.entry(&big).is_ok() {
+        return;
+    }
+    struct Out<'a> {
+        f: fs_e32::E32File<'a>,
+        at: u64,
+    }
+    impl Sink for Out<'_> {
+        fn write(&mut self, d: &[u8]) -> ArResult<()> {
+            self.f
+                .write_at(self.at, d)
+                .map_err(|e| neo_format_archive::Error::Io(e.code()))?;
+            self.at += d.len() as u64;
+            Ok(())
+        }
+    }
+    impl Patch for Out<'_> {
+        fn pos(&self) -> u64 {
+            self.at
+        }
+        fn patch(&mut self, at: u64, d: &[u8]) -> ArResult<()> {
+            self.f
+                .write_at(at, d)
+                .map_err(|e| neo_format_archive::Error::Io(e.code()))
+        }
+    }
+    let t = e32::time::millis();
+    let part = format!("{big}.~part");
+    let Ok(f) = st.fs.open(&part, Open::Replace) else {
+        return;
+    };
+    let mut z = ZipWriter::new(Out { f, at: 0 });
+    let mut buf = alloc::vec![0u8; 1 << 20];
+    let mut seed = 0x9e37_79b9u32;
+    let mut r = Ok(());
+    for k in 0..64 {
+        let text = k == 0;
+        let name = if text {
+            String::from("notes/long.txt")
+        } else {
+            format!("media/part-{k:02}.bin")
+        };
+        r = r.and_then(|_| z.start(&name, 1_763_548_800, text));
+        for mb in 0..16 {
+            if text {
+                for (i, b) in buf.iter_mut().enumerate() {
+                    *b = b"Files FA6 extracts a gigabyte. "[(i + mb) % 31];
+                }
+            } else {
+                for b in buf.as_chunks_mut::<4>().0 {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    b.copy_from_slice(&seed.to_le_bytes());
+                }
+            }
+            r = r.and_then(|_| z.write(&buf));
+        }
+    }
+    let r = r.and_then(|_| z.finish()).map(|o| drop(o.f));
+    let r = r.map_err(|e| match e {
+        neo_format_archive::Error::Io(c) => c,
+        _ => -20,
+    });
+    let r = r.and_then(|_| st.fs.rename(&part, &big).map_err(|e| e.code()));
+    if r.is_err() {
+        let _ = st.fs.delete(&part);
+    }
+    dprintln!(
+        "files: test zips big.zip {} ms {}",
+        e32::time::millis() - t,
+        r.err().unwrap_or(0)
     );
 }
 
@@ -2298,6 +2523,10 @@ fn save_form(app: &App, ui: &FilesApp, st: &mut State) {
         r.as_ref().err().map_or(0, |e| e.code())
     );
     relist(app, ui, st);
+    if st.view == View::PickFolder {
+        // a folder made in the picker shows up in it
+        archive::picker_list(app, ui, st);
+    }
     match r {
         Err(e) => toast(app, "", e.code()),
         Ok(()) if matches!(form, Form::NewFile) => {

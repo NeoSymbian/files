@@ -4,7 +4,7 @@
 # nightly build-std).
 [workspace]
 resolver = "3"
-members = ["crates/files-core", "crates/files-ui", "crates/neo-fs", "crates/files-ops", "crates/neo-view", "crates/neo-format-text", "crates/neo-format-image"]
+members = ["crates/files-core", "crates/files-ui", "crates/neo-fs", "crates/files-ops", "crates/neo-view", "crates/neo-format-text", "crates/neo-format-image", "crates/neo-format-archive"]
 
 [workspace.package]
 version = "0.1.0"
@@ -18,6 +18,7 @@ files-core = { path = "crates/files-core" }
 neo-view = { path = "crates/neo-view" }
 neo-format-text = { path = "crates/neo-format-text" }
 neo-format-image = { path = "crates/neo-format-image" }
+neo-format-archive = { path = "crates/neo-format-archive" }
 files-ui = { path = "crates/files-ui" }
 # NeoSymbian/neoui: the kit (the shared theme, fonts and components, as a build helper); the same rev as symbian/
 neoui-kit = { git = "https://github.com/NeoSymbian/neoui", rev = "a73ace8f2b9c8252c8bd63a0c39f1b9d92b6dc29" }

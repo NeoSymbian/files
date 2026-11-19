@@ -980,6 +980,7 @@ version = "0.1.0"
 name = "files-ops"
 version = "0.1.0"
 dependencies = [
+ "neo-format-archive",
  "neo-fs",
  "neo-view",
  "xxhash-rust",
@@ -2649,6 +2650,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
 dependencies = [
  "jni-sys 0.3.1",
+]
+
+[[package]]
+name = "neo-format-archive"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "miniz_oxide 0.9.1",
 ]
 
 [[package]]

@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "neo-format-archive"
+description = "Archives for Files: zip (read, write), gzip and tar (read, write), streamed, with safe member names"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
+crc32fast = { version = "1.5", default-features = false }

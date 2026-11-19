@@ -38,6 +38,50 @@ pub fn file_row(item: &Item, now: i64, checked: bool) -> FileRow {
     }
 }
 
+/// A member of an archive (files2-zip-browse): `212 KB · packed 198 KB` (just the size when packing saved nothing),
+/// or a folder's `6 items`.
+pub fn member_row(
+    name: &str,
+    folder: bool,
+    size: u64,
+    packed: u64,
+    items: u32,
+    checked: bool,
+) -> FileRow {
+    let item = Item {
+        name: name.into(),
+        is_dir: folder,
+        size,
+        count: folder.then_some(items),
+        ..Item::default()
+    };
+    let mut row = file_row(&item, 0, checked);
+    if !folder {
+        row.detail = if packed < size {
+            format!(
+                "{} · packed {}",
+                model::size_text(size),
+                model::size_text(packed)
+            )
+        } else {
+            model::size_text(size)
+        }
+        .into();
+    }
+    row
+}
+
+/// A row of the Compress form's items or the folder picker: the tile, the name and a detail.
+pub fn pack_item(name: &str, folder: bool, detail: &str) -> PackItem {
+    PackItem {
+        name: name.into(),
+        detail: detail.into(),
+        badge: neo_view::badge(name).as_str().into(),
+        colour: colour(neo_view::family_of(name).colour()),
+        folder,
+    }
+}
+
 /// A search hit (files2-search): the name split around the first match of `needle` (any case, any script), drawn
 /// as name · hit (accent) · post.
 pub fn hit_row(mut row: FileRow, needle: &str) -> FileRow {
