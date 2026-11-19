@@ -980,6 +980,7 @@ version = "0.1.0"
 name = "files-ops"
 version = "0.1.0"
 dependencies = [
+ "neo-format-archive",
  "neo-fs",
  "neo-view",
  "xxhash-rust",

@@ -189,14 +189,14 @@ fn cp437(b: u8) -> char {
     }
 }
 
-enum Body<'r, R: ReadAt + ?Sized> {
-    Stored(At<'r, R>),
-    Deflated(Inflate<At<'r, R>>),
+enum Body<R: ReadAt> {
+    Stored(At<R>),
+    Deflated(Inflate<At<R>>),
 }
 
 /// A member's data, checked: more than it declares, less, or a wrong CRC is [`Error::Corrupt`] (the bomb guard).
-pub struct Reader<'r, R: ReadAt + ?Sized> {
-    body: Body<'r, R>,
+pub struct Reader<R: ReadAt> {
+    body: Body<R>,
     crc: crc32fast::Hasher,
     out: u64,
     size: u64,
@@ -204,12 +204,12 @@ pub struct Reader<'r, R: ReadAt + ?Sized> {
 }
 
 /// Read `m` (a file from [`list`] that is [`Member::extractable`]).
-pub fn open<'r, R: ReadAt + ?Sized>(r: &'r R, m: &Member) -> Result<Reader<'r, R>> {
+pub fn open<R: ReadAt>(r: R, m: &Member) -> Result<Reader<R>> {
     if !m.extractable() || m.kind != Kind::File {
         return Err(Error::NotArchive);
     }
     let mut h = [0u8; 30];
-    read_full(r, m.offset, &mut h)?;
+    read_full(&r, m.offset, &mut h)?;
     if le32(&h, 0) != LOC {
         return Err(Error::Corrupt);
     }
@@ -233,7 +233,7 @@ pub fn open<'r, R: ReadAt + ?Sized>(r: &'r R, m: &Member) -> Result<Reader<'r, R
     })
 }
 
-impl<R: ReadAt + ?Sized> Stream for Reader<'_, R> {
+impl<R: ReadAt> Stream for Reader<R> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         let n = match &mut self.body {
             Body::Stored(s) => s.read(buf)?,
@@ -417,7 +417,7 @@ fn put32(v: &mut Vec<u8>, x: u32) {
 mod tests {
     use super::*;
 
-    fn read_all<R: ReadAt + ?Sized>(r: &R, m: &Member) -> Result<Vec<u8>> {
+    fn read_all<R: ReadAt>(r: R, m: &Member) -> Result<Vec<u8>> {
         let mut s = open(r, m)?;
         let mut out = Vec::new();
         let mut buf = [0u8; 1000];

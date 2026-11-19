@@ -445,7 +445,7 @@ impl<'a, F: Fs + 'a> Transfer<'a, F> {
     }
 }
 
-fn optional_entry(fs: &impl Fs, path: &str) -> Result<Option<Entry>> {
+pub(crate) fn optional_entry(fs: &impl Fs, path: &str) -> Result<Option<Entry>> {
     match fs.entry(path) {
         Ok(entry) => Ok(Some(entry)),
         Err(Error::NotFound | Error::PathNotFound) => Ok(None),
@@ -453,7 +453,7 @@ fn optional_entry(fs: &impl Fs, path: &str) -> Result<Option<Entry>> {
     }
 }
 
-fn directory(path: &str) -> String {
+pub(crate) fn directory(path: &str) -> String {
     if path.ends_with('\\') {
         path.into()
     } else {
@@ -461,7 +461,7 @@ fn directory(path: &str) -> String {
     }
 }
 
-fn target_path(parent: &str, name: &str, is_dir: bool) -> String {
+pub(crate) fn target_path(parent: &str, name: &str, is_dir: bool) -> String {
     if is_dir {
         path::join_dir(parent, name)
     } else {

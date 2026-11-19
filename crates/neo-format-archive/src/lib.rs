@@ -58,6 +58,15 @@ impl ReadAt for [u8] {
     }
 }
 
+impl<T: ReadAt + ?Sized> ReadAt for &T {
+    fn read_at(&self, pos: u64, buf: &mut [u8]) -> Result<usize> {
+        (**self).read_at(pos, buf)
+    }
+    fn size(&self) -> u64 {
+        (**self).size()
+    }
+}
+
 impl ReadAt for Vec<u8> {
     fn read_at(&self, pos: u64, buf: &mut [u8]) -> Result<usize> {
         self.as_slice().read_at(pos, buf)
@@ -86,6 +95,15 @@ pub trait Stream {
     }
 }
 
+impl<S: Stream + ?Sized> Stream for alloc::boxed::Box<S> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        (**self).read(buf)
+    }
+    fn skip(&mut self, n: u64) -> Result<()> {
+        (**self).skip(n)
+    }
+}
+
 /// Fill `buf` exactly, or `Corrupt` at an early end.
 pub fn read_exact(s: &mut (impl Stream + ?Sized), buf: &mut [u8]) -> Result<()> {
     let mut at = 0;
@@ -99,21 +117,22 @@ pub fn read_exact(s: &mut (impl Stream + ?Sized), buf: &mut [u8]) -> Result<()> 
     Ok(())
 }
 
-/// A window `[pos, end)` of a [`ReadAt`], as a stream.
-pub struct At<'r, R: ReadAt + ?Sized> {
-    r: &'r R,
+/// A window `[pos, end)` of a [`ReadAt`] (owned, or a reference), as a stream.
+pub struct At<R: ReadAt> {
+    r: R,
     pos: u64,
     end: u64,
 }
 
-impl<'r, R: ReadAt + ?Sized> At<'r, R> {
-    pub fn new(r: &'r R, pos: u64, end: u64) -> Self {
+impl<R: ReadAt> At<R> {
+    pub fn new(r: R, pos: u64, end: u64) -> Self {
         At { r, pos, end }
     }
 
     /// The whole file.
-    pub fn all(r: &'r R) -> Self {
-        At::new(r, 0, r.size())
+    pub fn all(r: R) -> Self {
+        let end = r.size();
+        At::new(r, 0, end)
     }
 
     pub fn pos(&self) -> u64 {
@@ -121,7 +140,7 @@ impl<'r, R: ReadAt + ?Sized> At<'r, R> {
     }
 }
 
-impl<R: ReadAt + ?Sized> Stream for At<'_, R> {
+impl<R: ReadAt> Stream for At<R> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         let n = (buf.len() as u64).min(self.end.saturating_sub(self.pos)) as usize;
         if n == 0 {
@@ -133,7 +152,7 @@ impl<R: ReadAt + ?Sized> Stream for At<'_, R> {
     }
 
     fn skip(&mut self, n: u64) -> Result<()> {
-        if n > self.end - self.pos {
+        if n > self.end.saturating_sub(self.pos) {
             return Err(Error::Corrupt);
         }
         self.pos += n;

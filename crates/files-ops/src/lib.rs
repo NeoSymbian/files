@@ -3,6 +3,7 @@
 
 extern crate alloc;
 
+pub mod archive;
 pub mod delete;
 pub mod index;
 pub mod store;

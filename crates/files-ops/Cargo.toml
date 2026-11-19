@@ -8,4 +8,5 @@ license.workspace = true
 [dependencies]
 neo-fs.workspace = true
 neo-view.workspace = true
+neo-format-archive.workspace = true
 xxhash-rust = { version = "0.8", default-features = false, features = ["xxh3"] }
