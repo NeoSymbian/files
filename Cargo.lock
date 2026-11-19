@@ -2652,6 +2652,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "neo-format-archive"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "miniz_oxide 0.9.1",
+]
+
+[[package]]
 name = "neo-format-image"
 version = "0.1.0"
 dependencies = [
