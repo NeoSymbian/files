@@ -587,6 +587,6 @@ impl Open {
     }
 
     pub fn path_dir(&self) -> String {
-        model::parent(&self.path).unwrap_or_else(|| self.path.to_string())
+        neo_fs::path::parent(&self.path).unwrap_or_else(|| self.path.to_string())
     }
 }

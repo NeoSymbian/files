@@ -1103,7 +1103,9 @@ fn open_path(app: &App, ui: &FilesApp, st: &mut State, p: &str) {
     if p.ends_with('\\') {
         return open_dir(app, ui, st, p.to_string());
     }
-    let Some(dir) = model::parent(p) else { return };
+    let Some(dir) = neo_fs::path::parent(p) else {
+        return;
+    };
     let name = neo_fs::path::name_of(p).to_string();
     if image::is_image(&name) {
         return image::open(app, ui, st, p);
@@ -1967,7 +1969,7 @@ fn open_text(app: &App, ui: &FilesApp, st: &mut State, path: &str, edit: bool) {
         o.ed.doc.lines.len()
     );
     fa3::opened(st, path);
-    if let Some(dir) = model::parent(path) {
+    if let Some(dir) = neo_fs::path::parent(path) {
         st.dir = dir;
     }
     st.file = String::from(path);
