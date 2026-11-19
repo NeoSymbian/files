@@ -1834,6 +1834,13 @@ fn poll_job(app: &App, ui: &FilesApp, st: &mut State) {
         .arc
         .as_ref()
         .map(|a| archive::progress_text(a, &p, r.started));
+    let now = time::millis();
+    let due = now.saturating_sub(r.noted_at) >= NOTIFY_MS;
+    // an archive job's sheet and toast change once a second: redrawn on every poll, the sheet over the whole
+    // surface cost a 1 GB extract 396 s instead of 70 s on the Pixel
+    if arc_text.is_some() && !due {
+        return;
+    }
     if let Some(t) = &arc_text {
         // the extract sheet's card
         ui.set_job_title(format!("{verb}…").into());
@@ -1849,8 +1856,7 @@ fn poll_job(app: &App, ui: &FilesApp, st: &mut State) {
         ui.set_job_text(format!("{verb}{files} · {pct} %").into());
         ui.set_job_progress(f32::from(pct) / 100.0);
     }
-    let now = time::millis();
-    if now.saturating_sub(r.noted_at) >= NOTIFY_MS {
+    if due {
         r.noted_at = now;
         let n = Notification {
             id: JOB_NOTE,
