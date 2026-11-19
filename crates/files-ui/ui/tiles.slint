@@ -63,3 +63,20 @@ export component DriveTile inherits Rectangle {
             : @image-url("@neoui/icons/sys/sdcard.svg");
     }
 }
+
+// an image's thumbnail (FA5): the square middle of the picture, rounded
+export component Thumb inherits Rectangle {
+    in property <image> source;
+    in property <length> size: 40 * Theme.dp;
+    width: root.size;
+    height: root.size;
+    border-radius: root.size / 7;
+    clip: true;
+    background: #2a2e35;
+    Image {
+        width: 100%;
+        height: 100%;
+        source: root.source;
+        image-fit: cover;
+    }
+}

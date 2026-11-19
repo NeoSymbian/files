@@ -17,11 +17,12 @@ import {
     Theme, Kit, KeyboardFocus, Scroll, Alphabets, Glyph, NeoList, Header, SubHeader, FormHeader, TextField, Act, Tab, Footer,
     Sheet, Switch, Button, ProgressBar
 } from "@neoui/kit.slint";
-import { FTile, FolderTile, DriveTile } from "tiles.slint";
+import { FTile, FolderTile, DriveTile, Thumb } from "tiles.slint";
+import { StripItem, ImageView, ImageEdit } from "image.slint";
 import { TypeTile, Seg, CleanCard, Detail, Pick, UsedCard, GroupTile, CleanItem, InfoCard, DetailRow } from "fa3.slint";
 import { TSpan, TRow, Mark, TextPane, TextMetrics } from "text.slint";
 import { MdSpan, MdRow, CellRow, Col, CodeKeys, StatusLine, FindBar, Segments, MdView, TableGrid, CellBar, TypeChips } from "editor.slint";
-export { TSpan, TRow, Mark, MdSpan, MdRow, CellRow, Col, TextMetrics }
+export { TSpan, TRow, Mark, MdSpan, MdRow, CellRow, Col, TextMetrics, StripItem }
 
 export { Theme, Scroll, Kit, KeyboardFocus }
 
@@ -44,7 +45,12 @@ export struct FileRow {
     note: string,
     hit: string,
     post: string,
+    // FA5: an image's thumbnail, once the worker made it
+    thumb: image,
+    has-thumb: bool,
 }
+
+export struct ImgGroup { title: string, count: string, more: string, thumbs: [FileRow] }
 
 // a round check box (selection)
 component Check inherits Rectangle {
@@ -154,9 +160,13 @@ component FileItem inherits Rectangle {
             HorizontalLayout {
                 alignment: center;
                 if root.item.folder: FolderTile { }
-                if !root.item.folder: FTile {
+                if !root.item.folder && !root.item.has-thumb: FTile {
                     badge: root.item.badge;
                     colour: root.item.colour;
+                }
+                if root.item.has-thumb: Thumb {
+                    size: 40 * Theme.dp;
+                    source: root.item.thumb;
                 }
             }
         }
@@ -298,10 +308,14 @@ component FileCell inherits Rectangle {
                 if root.item.folder: FolderTile {
                     size: 60 * Theme.dp;
                 }
-                if !root.item.folder: FTile {
+                if !root.item.folder && !root.item.has-thumb: FTile {
                     size: 56 * Theme.dp;
                     badge: root.item.badge;
                     colour: root.item.colour;
+                }
+                if root.item.has-thumb: Thumb {
+                    size: 60 * Theme.dp;
+                    source: root.item.thumb;
                 }
             }
         }
@@ -742,6 +756,65 @@ export component FilesApp inherits Window {
     callback cell-done();
     callback new-type-picked(int);
 
+    // FA5: views "image" (files2-view-image) and "image-edit" (files2-edit-image), over everything but the sheets
+    in property <image> img;
+    in property <string> img-counter;
+    in property <string> img-info;
+    in property <string> img-note;
+    in property <float> img-zoom: 1;
+    in property <length> img-pan-x;
+    in property <length> img-pan-y;
+    in property <bool> img-chrome: true;
+    in property <bool> img-hint;
+    in property <bool> img-editable;
+    in property <[StripItem]> img-strip;
+    // files2-type-images: the Images type by folder
+    in property <[ImgGroup]> img-groups;
+    in property <int> img-current;
+    in property <[string]> img-menu: ["Details"];
+    in property <bool> img-can-undo;
+    in property <bool> img-can-redo;
+    in property <bool> img-cropping;
+    in property <length> crop-x;
+    in property <length> crop-y;
+    in property <length> crop-w;
+    in property <length> crop-h;
+    in property <string> crop-label;
+    in property <int> crop-ratio;
+    in property <string> img-save-note;
+    in property <bool> img-saving;
+    in-out property <bool> resize-open;
+    in property <[string]> resize-choices;
+    in property <int> resize-current;
+    out property <float> img-fit: viewer.fit;
+    // how far the folder and the listing views scrolled, and their height (which thumbnails to make)
+    out property <length> folder-top: -folder-list.content-y;
+    out property <length> folder-h: folder-list.height;
+    out property <length> list-top: -list-view.content-y;
+    out property <length> list-h: list-view.height;
+    out property <length> img-box-w: editor.box-w;
+    out property <length> img-box-h: editor.box-h;
+    callback img-menu-picked(int);
+    // a thumbnail of a group (the last one, "+804", opens the folder)
+    callback group-picked(int, int);
+    callback img-strip-picked(int);
+    callback img-tapped();
+    callback img-double-tapped(length, length);
+    callback img-dragged(length, length);
+    callback img-released(length, length);
+    callback img-edit-menu(int);
+    callback img-redo();
+    callback img-rotate();
+    callback img-crop-mode();
+    callback img-resize();
+    callback img-flip();
+    callback img-save();
+    callback crop-ratio-picked(int);
+    callback crop-start(int);
+    callback crop-drag(int, length, length);
+    callback crop-done();
+    callback resize-chosen(int);
+
     // keep a row in view (the cursor after a key, a find match)
     public function text-show-row(r: int) {
         pane.show-row(r);
@@ -1143,18 +1216,22 @@ export component FilesApp inherits Window {
                 selected: root.selected;
                 VerticalLayout {
                     alignment: start;
-                    if root.view == "type": HorizontalLayout {
-                        padding: 12 * Theme.dp;
+                    // the drive chips scroll sideways when they don't fit (they would widen the page)
+                    if root.view == "type": Flickable {
                         visible: root.type-subs.length == 0;
-                        height: root.type-subs.length == 0 ? self.preferred-height : 0;
-                        spacing: 8 * Theme.dp;
-                        alignment: start;
-                        for t[i] in root.type-drives: Pick {
-                            text: t;
-                            on: i == root.type-drive;
-                            check: i == 0;
-                            clicked => {
-                                root.type-drive-picked(i);
+                        height: root.type-subs.length == 0 ? drive-chips.preferred-height : 0;
+                        content-width: drive-chips.preferred-width;
+                        drive-chips := HorizontalLayout {
+                            padding: 12 * Theme.dp;
+                            spacing: 8 * Theme.dp;
+                            alignment: start;
+                            for t[i] in root.type-drives: Pick {
+                                text: t;
+                                on: i == root.type-drive;
+                                check: i == 0;
+                                clicked => {
+                                    root.type-drive-picked(i);
+                                }
                             }
                         }
                     }
@@ -1168,6 +1245,72 @@ export component FilesApp inherits Window {
                             check: i == 0;
                             clicked => {
                                 root.type-sub-picked(i);
+                            }
+                        }
+                    }
+                    // files2-type-images: by folder, eight thumbnails in four columns, the last "+804"
+                    if root.view == "type": VerticalLayout {
+                        for g[gi] in root.img-groups: VerticalLayout {
+                            HorizontalLayout {
+                                height: 38 * Theme.dp;
+                                padding-left: 16 * Theme.dp;
+                                padding-bottom: 8 * Theme.dp;
+                                spacing: 6 * Theme.dp;
+                                alignment: start;
+                                Text {
+                                    text: g.title;
+                                    font-family: "DejaVu Sans";
+                                    color: Theme.text-secondary;
+                                    font-size: 13.5 * Theme.dp;
+                                    font-weight: 600;
+                                    vertical-alignment: bottom;
+                                }
+                                Text {
+                                    text: "· " + g.count;
+                                    color: Theme.text-dim;
+                                    font-size: 13.5 * Theme.dp;
+                                    font-weight: 500;
+                                    vertical-alignment: bottom;
+                                }
+                            }
+                            Rectangle {
+                                property <length> gap: 4 * Theme.dp;
+                                property <length> cell: (self.width - 24 * Theme.dp - 3 * self.gap) / 4;
+                                height: Math.ceil(g.thumbs.length / 4) * (self.cell + self.gap);
+                                for t[i] in g.thumbs: Rectangle {
+                                    x: 12 * Theme.dp + Math.mod(i, 4) * (parent.cell + parent.gap);
+                                    y: Math.floor(i / 4) * (parent.cell + parent.gap);
+                                    width: parent.cell;
+                                    height: parent.cell;
+                                    border-radius: 6 * Theme.dp;
+                                    clip: true;
+                                    background: #2a2e35;
+                                    if t.has-thumb: Image {
+                                        width: 100%;
+                                        height: 100%;
+                                        source: t.thumb;
+                                        image-fit: cover;
+                                    }
+                                    if !t.has-thumb: FTile {
+                                        size: 40 * Theme.dp;
+                                        badge: t.badge;
+                                        colour: t.colour;
+                                    }
+                                    if i == g.thumbs.length - 1 && g.more != "": Rectangle {
+                                        background: #000000a6;
+                                        Text {
+                                            text: g.more;
+                                            color: white;
+                                            font-size: 16 * Theme.dp;
+                                            font-weight: 600;
+                                        }
+                                    }
+                                    TouchArea {
+                                        clicked => {
+                                            root.group-picked(gi, i);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1873,6 +2016,110 @@ export component FilesApp inherits Window {
     }
 
     // a name clash (files2-clash): Replace / Keep both / Skip, and whether the answer covers the rest
+    viewer := ImageView {
+        visible: root.view == "image";
+        name: root.name;
+        counter: root.img-counter;
+        info: root.img-info;
+        note: root.img-note;
+        source: root.img;
+        zoom: root.img-zoom;
+        pan-x: root.img-pan-x;
+        pan-y: root.img-pan-y;
+        chrome: root.img-chrome;
+        hint: root.img-hint;
+        editable: root.img-editable;
+        strip: root.img-strip;
+        current: root.img-current;
+        menu: root.img-menu;
+        back => {
+            root.up();
+        }
+        edit => {
+            root.edit();
+        }
+        menu-picked(i) => {
+            root.img-menu-picked(i);
+        }
+        strip-picked(i) => {
+            root.img-strip-picked(i);
+        }
+        tapped => {
+            root.img-tapped();
+        }
+        double-tapped(x, y) => {
+            root.img-double-tapped(x, y);
+        }
+        dragged(x, y) => {
+            root.img-dragged(x, y);
+        }
+        released(x, y) => {
+            root.img-released(x, y);
+        }
+    }
+
+    editor := ImageEdit {
+        visible: root.view == "image-edit";
+        name: root.name;
+        source: root.img;
+        can-undo: root.img-can-undo;
+        can-redo: root.img-can-redo;
+        cropping: root.img-cropping;
+        crop-x: root.crop-x;
+        crop-y: root.crop-y;
+        crop-w: root.crop-w;
+        crop-h: root.crop-h;
+        size-label: root.crop-label;
+        ratio: root.crop-ratio;
+        note: root.img-save-note;
+        saving: root.img-saving;
+        resize-open <=> root.resize-open;
+        resize-choices: root.resize-choices;
+        resize-current: root.resize-current;
+        back => {
+            root.up();
+        }
+        undo => {
+            root.undo();
+        }
+        redo => {
+            root.img-redo();
+        }
+        menu-picked(i) => {
+            root.img-edit-menu(i);
+        }
+        rotate => {
+            root.img-rotate();
+        }
+        crop-mode => {
+            root.img-crop-mode();
+        }
+        resize => {
+            root.img-resize();
+        }
+        flip => {
+            root.img-flip();
+        }
+        save => {
+            root.img-save();
+        }
+        ratio-picked(i) => {
+            root.crop-ratio-picked(i);
+        }
+        crop-start(h) => {
+            root.crop-start(h);
+        }
+        crop-drag(h, x, y) => {
+            root.crop-drag(h, x, y);
+        }
+        crop-done => {
+            root.crop-done();
+        }
+        resize-chosen(i) => {
+            root.resize-chosen(i);
+        }
+    }
+
     if root.clash-open: Rectangle {
         background: Theme.scrim;
         TouchArea { }

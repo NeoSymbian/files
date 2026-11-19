@@ -15,6 +15,7 @@ files-core = { path = "../crates/files-core" }
 neo-fs = { path = "../crates/neo-fs" }
 neo-view = { path = "../crates/neo-view" }
 neo-format-text = { path = "../crates/neo-format-text" }
+neo-format-image = { path = "../crates/neo-format-image" }
 files-ops = { path = "../crates/files-ops" }
 fs-e32 = { path = "fs-e32" }
 files-ui = { path = "../crates/files-ui" }

@@ -15,9 +15,13 @@ types, editors, archives, search) is NeoSymbian/docs `files-app.md`, phases FA0â
 | `crates/neo-view` | File types: the 55 extensions in their families (badge colour, viewer, editor) | Apache-2.0 |
 | `crates/neo-fs` | The file-system contract (`Fs`, `File`, typed errors, paths) and `MemFs`, a fake with full disks, pulled drives and power cuts | Apache-2.0 |
 | `crates/files-ops` | The job engine on `neo-fs`: copy and move in bounded steps (clashes, Cancel), the per-drive Recycle bin with its journal | Apache-2.0 |
+| `crates/neo-format-text` | Text, code, Markdown and CSV (FA4): a byte-exact model, editing with undo, find, highlighting, layout | Apache-2.0 |
+| `crates/neo-format-image` | Images (FA5): probe and EXIF, decoders (JPEG `zune-jpeg`, PNG `zune-png`, GIF ours over `weezl`, WebP NeoSymbian's no_std `image-webp`, BMP ours, an SVG subset ours on `tiny-skia`), shrink and turn, the editor's recipe, JPEG / PNG encoders | Apache-2.0 |
 | `crates/files-ui` | The screens in Slint (no_std), with the neoui kit imported as `@neoui/...` (built by `neoui_kit::compile`); host snapshot tests write `snapshots/files2-*.png`, one per canvas board | GPL-3.0 (links Slint) |
 | `symbian/fs-e32` | `neo-fs` over Symbian's file server (`e32::fs`) | GPL-3.0 |
 | `symbian/app` | `NEOFILES.EXE` (UID 0xE0006001): the event loop, the worker, settings (`files.*`), the shell's dialogs, toasts and shade entry | GPL-3.0 (links Slint) |
+
+The JPEG encoder (`jpeg-encoder`, in `neo-format-image`) is based in part on the work of the Independent JPEG Group.
 
 ## Build
 

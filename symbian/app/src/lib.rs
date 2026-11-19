@@ -7,13 +7,16 @@
 //! (`files_ops::trash`) with Undo; Rename keeps the extension. Z: and other read-only drives open and copy only.
 //! FA3 ([`fa3`]): Favourites and Recent, the Types tab and search over a file index kept by a worker ([`scan`]), the
 //! Recycle bin, Free up space and Details. FA4 ([`edit`]): the text viewer and the editors (code, Markdown, CSV).
+//! FA5 ([`image`], [`pics`]): the image viewer and editor, and thumbnails, decoded on a picture worker.
 #![no_std]
 
 extern crate alloc;
 
 mod edit;
 mod fa3;
+mod image;
 mod job;
+mod pics;
 mod scan;
 
 use alloc::collections::VecDeque;
@@ -37,7 +40,7 @@ use neoui_proto::ipc as proto;
 use neoui_proto::page::Notification;
 use neoui_proto::settings::Value;
 use neoui_proto::{InputEvent, Rect};
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use files_ui::{FileRow, FilesApp, KeyboardFocus, Kit, Scroll, Theme};
 
@@ -61,6 +64,8 @@ const NOTIFY_MS: u64 = 1_000;
 const JOB_NOTE: u32 = 1;
 /// Folders with more subfolders than this show "Folder" instead of counting each one's items.
 const COUNT_MAX: usize = 64;
+/// How often the picture worker is polled while it works.
+const PICS_POLL_US: i32 = 100_000;
 
 /// What the UI asked for (its callbacks only queue; the loop acts with the file server).
 enum Action {
@@ -121,6 +126,26 @@ enum Action {
     CellPicked(usize, usize),
     CellDone,
     NewType(usize),
+    // FA5
+    ImgMenu,
+    ImgStrip(usize),
+    ImgTapped,
+    ImgDouble(f32, f32),
+    ImgDragged(f32, f32),
+    ImgReleased(f32, f32),
+    ImgEditMenu(usize),
+    ImgRedo,
+    ImgRotate,
+    ImgCropMode,
+    ImgResize,
+    ImgFlip,
+    ImgSave,
+    CropRatio(usize),
+    CropStart(i32),
+    CropDrag(i32, f32, f32),
+    CropDone,
+    ResizeChosen(usize),
+    GroupPicked(usize, usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -136,6 +161,8 @@ enum View {
     Review,
     Favs,
     Edit,
+    Image,
+    ImageEdit,
 }
 
 /// The form page over the folder.
@@ -155,6 +182,8 @@ enum Ask {
     Purge(Vec<String>),
     /// Leave the editor: Save / Discard / Cancel.
     Unsaved,
+    /// Leave the image editor: Save copy / Discard / Cancel.
+    ImageEdits,
 }
 
 /// Files picked for Copy or Move, waiting in the paste bar for a folder.
@@ -232,6 +261,14 @@ struct State {
     open: Option<edit::Open>,
     /// New file's type (files2-new-file): 0 .txt, 1 .md, 2 .csv, 3 .json, 4 Code… (the name carries it).
     new_type: usize,
+    // FA5
+    pics: &'static pics::Pics,
+    thumbs: image::Thumbs,
+    viewer: Option<image::Viewer>,
+    /// The Images type page's folders and their rows in `listed`.
+    img_groups: Vec<(String, Vec<usize>)>,
+    /// What the thumbnails were last fitted to: (view, scroll in rows, rows, groups, viewer's image).
+    thumb_mark: (u8, i32, usize, usize, usize),
 }
 
 fn run() -> Result<(), i32> {
@@ -288,11 +325,19 @@ fn run() -> Result<(), i32> {
         kb: (false, 0, 0),
         open: None,
         new_type: 0,
+        pics: pics::Pics::new()?,
+        thumbs: image::Thumbs::default(),
+        viewer: None,
+        img_groups: Vec::new(),
+        thumb_mark: (0, 0, 0, 0, 0),
     };
     load_settings(&app, &ui, &mut st);
     fa3::load(&mut st);
     #[cfg(feature = "test-files")]
-    test_files(&st);
+    {
+        test_files(&st);
+        test_photos(&st);
+    }
     show_drives(&app, &ui, &mut st);
     // a trash cut short by a power cut is finished or rolled back (files-ops' journal)
     for &(d, ro) in &st.drives {
@@ -322,6 +367,9 @@ fn run() -> Result<(), i32> {
                     let mut wait = app.wake_us().unwrap_or(10_000_000).min(10_000_000) as i32;
                     if st.running.is_some() || st.scanner.running() {
                         wait = wait.min(JOB_POLL_US);
+                    }
+                    if st.pics.busy() {
+                        wait = wait.min(PICS_POLL_US);
                     }
                     let watch_dir =
                         (st.view == View::Folder && st.dir != st.unwatched).then(|| st.dir.clone());
@@ -353,6 +401,7 @@ fn run() -> Result<(), i32> {
                         Either::Right(Either::Right(())) => {
                             poll_job(&app, &ui, &mut st);
                             poll_scan(&app, &ui, &mut st);
+                            image::poll(&app, &ui, &mut st);
                             // a flick goes on without events: its scroll callbacks wait here
                             loop {
                                 let next = actions.borrow_mut().pop_front();
@@ -363,6 +412,7 @@ fn run() -> Result<(), i32> {
                             }
                         }
                     }
+                    thumbs_tick(&app, &ui, &mut st);
                     describe(&app, &ui, &mut st)?;
                     sync_keyboard(&app, &ui, &mut st);
                     app.redraw()?;
@@ -379,6 +429,10 @@ fn run() -> Result<(), i32> {
                 {
                     editor_key(&app, &ui, &mut st, code)
                 }
+                // the viewer reads a second finger itself (a pinch)
+                AppEvent::Input(InputEvent::Touch { id, x, y, phase })
+                    if st.view == View::Image
+                        && image::touch(&app, &ui, &mut st, id, x, y, phase) => {}
                 _ => app.handle(&e),
             }
             match e {
@@ -407,6 +461,8 @@ fn run() -> Result<(), i32> {
                     None => break,
                 }
             }
+            image::poll(&app, &ui, &mut st);
+            thumbs_tick(&app, &ui, &mut st);
             describe(&app, &ui, &mut st)?;
             sync_keyboard(&app, &ui, &mut st);
             app.redraw()?;
@@ -523,6 +579,45 @@ fn bind(ui: &FilesApp, actions: &Rc<RefCell<VecDeque<Action>>>) {
     ui.on_cell_done(plain(|| Action::CellDone));
     // a handle let go: the selection stays as it was dragged
     ui.on_handle_done(|| {});
+    // FA5
+    {
+        let q = actions.clone();
+        ui.on_img_menu_picked(move |_| q.borrow_mut().push_back(Action::ImgMenu));
+    }
+    ui.on_img_strip_picked(index(Action::ImgStrip));
+    ui.on_img_edit_menu(index(Action::ImgEditMenu));
+    ui.on_crop_ratio_picked(index(Action::CropRatio));
+    ui.on_resize_chosen(index(Action::ResizeChosen));
+    ui.on_img_tapped(plain(|| Action::ImgTapped));
+    ui.on_img_redo(plain(|| Action::ImgRedo));
+    ui.on_img_rotate(plain(|| Action::ImgRotate));
+    ui.on_img_crop_mode(plain(|| Action::ImgCropMode));
+    ui.on_img_resize(plain(|| Action::ImgResize));
+    ui.on_img_flip(plain(|| Action::ImgFlip));
+    ui.on_img_save(plain(|| Action::ImgSave));
+    ui.on_crop_done(plain(|| Action::CropDone));
+    let lengths = |f: fn(f32, f32) -> Action| {
+        let q = actions.clone();
+        move |x: f32, y: f32| q.borrow_mut().push_back(f(x, y))
+    };
+    ui.on_img_double_tapped(lengths(Action::ImgDouble));
+    ui.on_img_dragged(lengths(Action::ImgDragged));
+    ui.on_img_released(lengths(Action::ImgReleased));
+    {
+        let q = actions.clone();
+        ui.on_crop_start(move |h| q.borrow_mut().push_back(Action::CropStart(h)));
+    }
+    {
+        let q = actions.clone();
+        ui.on_crop_drag(move |h, x, y| q.borrow_mut().push_back(Action::CropDrag(h, x, y)));
+    }
+    {
+        let q = actions.clone();
+        ui.on_group_picked(move |g, i| {
+            q.borrow_mut()
+                .push_back(Action::GroupPicked(g.max(0) as usize, i.max(0) as usize))
+        });
+    }
 }
 
 /// The page: Back stays in the app below the Browse tab, in a form, with a dialog, or with a kit layer open.
@@ -584,7 +679,7 @@ fn scrolled(ui: &FilesApp) -> ((i32, i32), Rect) {
 
 // ── settings (files.*: the app's own namespace, no registry row needed) ───────────────────────────────────────────
 
-fn flag(app: &App, key: &str, default: bool) -> bool {
+pub(crate) fn flag(app: &App, key: &str, default: bool) -> bool {
     match app.setting_raw(key) {
         Ok(Value::Bool(b)) => b,
         _ => default,
@@ -614,7 +709,7 @@ fn show_settings(ui: &FilesApp, st: &State) {
     ui.set_show_hidden(st.hidden);
 }
 
-fn save(app: &App, key: &str, v: Value) {
+pub(crate) fn save(app: &App, key: &str, v: Value) {
     if let Err(e) = app.set_setting_raw(key, &v) {
         dprintln!("files: setting {} {}", key, e);
     }
@@ -846,11 +941,13 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
                 o.handle_moved(ui, w, r, x);
             }
         }
+        Action::Edit if st.view == View::Image => image::edit(ui, st),
         Action::Edit => {
             if let Some(o) = st.open.take() {
                 open_text(app, ui, st, &o.path, true);
             }
         }
+        Action::UndoEdit if st.view == View::ImageEdit => image::undo(ui, st, false),
         Action::UndoEdit => {
             if let Some(o) = st.open.as_mut() {
                 o.undo(ui);
@@ -923,6 +1020,70 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
             ui.set_new_type(st.new_type as i32);
             ui.set_name_suffix([".txt", ".md", ".csv", ".json", ""][st.new_type].into());
         }
+        Action::ImgMenu => {
+            let p = st.file.clone();
+            fa3::details(app, ui, st, &p);
+        }
+        Action::ImgStrip(i) => image::strip_picked(ui, st, i),
+        Action::ImgTapped => image::tapped(ui, st),
+        Action::ImgDouble(x, y) => image::double_tapped(app, ui, st, x, y),
+        Action::ImgDragged(x, y) => image::dragged(app, ui, st, x, y),
+        Action::ImgReleased(x, y) => image::released(app, ui, st, x, y),
+        Action::ImgEditMenu(0) => image::reset(ui, st),
+        Action::ImgEditMenu(_) => {
+            let p = st.file.clone();
+            fa3::details(app, ui, st, &p);
+        }
+        Action::ImgRedo => image::undo(ui, st, true),
+        Action::ImgRotate => image::rotate(ui, st, false),
+        Action::ImgFlip => image::rotate(ui, st, true),
+        Action::ImgCropMode => image::crop_mode(ui, st),
+        Action::ImgResize => ui.set_resize_open(true),
+        Action::ResizeChosen(i) => image::resize_chosen(ui, st, i),
+        Action::ImgSave => image::save(app, ui, st),
+        Action::CropRatio(i) => image::ratio_picked(ui, st, i),
+        Action::CropStart(h) => image::crop_start(st, h),
+        Action::CropDrag(h, x, y) => image::crop_drag(ui, st, h, x, y),
+        Action::CropDone => image::crop_done(ui, st),
+        Action::GroupPicked(g, i) => {
+            let Some((dir, idx)) = st.img_groups.get(g).cloned() else {
+                return;
+            };
+            let more = ui
+                .get_img_groups()
+                .row_data(g)
+                .is_some_and(|r| !r.more.is_empty());
+            if more && i + 1 == idx.len() {
+                open_dir(app, ui, st, dir);
+            } else if let Some(p) = idx
+                .get(i)
+                .and_then(|&k| st.listed.get(k))
+                .map(|l| l.path.clone())
+            {
+                image::open(app, ui, st, &p);
+            }
+        }
+    }
+}
+
+/// Thumbnails follow the rows: refitted when the rows, the scroll (by a row) or the viewer's image change.
+fn thumbs_tick(app: &App, ui: &FilesApp, st: &mut State) {
+    let top = if st.view == View::Folder {
+        ui.get_folder_top()
+    } else {
+        ui.get_list_top()
+    };
+    let row = 64.0 * app.dp;
+    let mark = (
+        st.view as u8,
+        (top / row) as i32,
+        ui.get_rows().row_count() + st.dir.len() * 1000 + st.listed.len() * 7,
+        st.img_groups.len(),
+        st.viewer.as_ref().map_or(0, |v| v.at),
+    );
+    if mark != st.thumb_mark {
+        st.thumb_mark = mark;
+        image::refresh(app, ui, st);
     }
 }
 
@@ -944,6 +1105,9 @@ fn open_path(app: &App, ui: &FilesApp, st: &mut State, p: &str) {
     }
     let Some(dir) = model::parent(p) else { return };
     let name = neo_fs::path::name_of(p).to_string();
+    if image::is_image(&name) {
+        return image::open(app, ui, st, p);
+    }
     if !is_text(&name) {
         // st.dir stays the open folder's: Delete, Paste and Rename build their paths from it
         return note_with(app, &format!("No viewer for {name} yet"), "");
@@ -1105,20 +1269,28 @@ fn back(app: &App, ui: &FilesApp, st: &mut State) {
         } else {
             leave_editor(app, ui, st);
         }
-    } else if st.view == View::Text {
-        match st.text_from {
-            View::Recent => fa3::show_recent(ui, st),
-            View::Type => fa3::show_type(ui, st),
-            View::Review => {
-                let k = st.review;
-                fa3::show_review(ui, st, k);
+    } else if st.view == View::ImageEdit {
+        if image::edited(st) {
+            let q = Query {
+                text:
+                    "Save a copy with your edits? Discard drops them; the picture stays as it was."
+                        .into(),
+                buttons: alloc::vec!["Save copy".into(), "Discard".into(), "Cancel".into()],
+                destructive: false,
+            };
+            if app.query(&q).is_ok() {
+                st.asking = Some(Ask::ImageEdits);
             }
-            View::Browse | View::Types => show_tab(app, ui, st, st.tab),
-            _ => {
-                let dir = st.dir.clone();
-                open_dir(app, ui, st, dir);
-            }
+        } else {
+            image::leave_editor(ui, st);
         }
+    } else if st.view == View::Image {
+        let from = st.viewer.take().map_or(View::Folder, |v| v.from);
+        st.text_from = from;
+        return_to(app, ui, st, from);
+    } else if st.view == View::Text {
+        let from = st.text_from;
+        return_to(app, ui, st, from);
     } else if st.view == View::Review {
         fa3::show_cleanup(ui, st);
     } else if st.view == View::Bin && st.bin_from == View::Cleanup {
@@ -1131,6 +1303,23 @@ fn back(app: &App, ui: &FilesApp, st: &mut State) {
     } else {
         // Back order 6: the tab's root
         show_tab(app, ui, st, st.tab);
+    }
+}
+
+/// Back from a viewer to the page it was opened from.
+fn return_to(app: &App, ui: &FilesApp, st: &mut State, from: View) {
+    match from {
+        View::Recent => fa3::show_recent(ui, st),
+        View::Type => fa3::show_type(ui, st),
+        View::Review => {
+            let k = st.review;
+            fa3::show_review(ui, st, k);
+        }
+        View::Browse | View::Types => show_tab(app, ui, st, st.tab),
+        _ => {
+            let dir = st.dir.clone();
+            open_dir(app, ui, st, dir);
+        }
     }
 }
 
@@ -1184,6 +1373,11 @@ fn answer(app: &App, ui: &FilesApp, st: &mut State, i: usize) {
                 }
                 leave_editor(app, ui, st);
             }
+            _ => {}
+        },
+        Some(Ask::ImageEdits) => match i {
+            0 => image::save(app, ui, st),
+            1 => image::leave_editor(ui, st),
             _ => {}
         },
         Some(Ask::Discard) if yes => close_form(app, ui, st),
@@ -1730,6 +1924,8 @@ fn show_rows(ui: &FilesApp, st: &State) {
     ui.set_one_folder(matches!(picked.as_slice(), [one] if one.is_dir));
     ui.set_selected(picked.len() as i32);
     ui.set_rows(ModelRc::from(Rc::new(VecModel::from(rows))));
+    // new rows: the thumbnails already made go straight back in
+    image::patch_rows(ui, st);
 }
 
 /// Text-like types open in the text viewer (FA4 brings the editors and the other viewers).
@@ -1745,6 +1941,9 @@ pub(crate) fn is_text(name: &str) -> bool {
 
 fn view_file(app: &App, ui: &FilesApp, st: &mut State, item: &Item) {
     let path = model::join_file(&st.dir, &item.name);
+    if image::is_image(&item.name) {
+        return image::open(app, ui, st, &path);
+    }
     if !is_text(&item.name) {
         note_with(app, &format!("No viewer for {} yet", item.name), "");
         return;
@@ -1845,6 +2044,83 @@ fn test_files(st: &State) {
     dprintln!(
         "files: test big.log {} lines {}",
         i,
+        r.err().map_or(0, |e| e.code())
+    );
+}
+
+/// Test images only: `C:\Data\photos\` with three landscapes, a PNG and a 12 MP JPEG (FA5's gate), drawn here.
+#[cfg(feature = "test-files")]
+fn test_photos(st: &State) {
+    use neo_format_image::encode;
+    use neo_format_image::shrink::Rows;
+    const DIR: &str = "C:\\Data\\photos\\";
+    if st.fs.entry(&format!("{DIR}big.jpg")).is_ok() {
+        return;
+    }
+    let land = |sky: &str, low: &str, hill: &str| {
+        format!(
+            r##"<svg viewBox="0 0 400 300"><rect width="400" height="300" fill="{sky}"/><rect y="90" width="400" height="120" fill="{low}" opacity=".75"/><circle cx="236" cy="130" r="22" fill="#ffe1a0"/><path d="M-40 230 Q80 150 200 210 T440 200 V300 H-40 Z" fill="{hill}"/><rect y="250" width="400" height="50" fill="#1b0d2e"/></svg>"##
+        )
+    };
+    let pics = [
+        ("a.jpg", land("#f6c46a", "#d2607a", "#4a2466")),
+        ("b.jpg", land("#3aa0d8", "#8fd0f0", "#0b3c5d")),
+        ("c.jpg", land("#9fd88a", "#2f9e44", "#0b3d1e")),
+        ("d.png", land("#e88fb0", "#f4c6d6", "#5a1d3a")),
+    ];
+    for (name, svg) in pics {
+        let Ok(p) = neo_format_image::svg::render(svg.as_bytes(), 1024) else {
+            continue;
+        };
+        let b = if name.ends_with(".png") {
+            encode::png(&p)
+        } else {
+            encode::jpeg(&p, 90).unwrap_or_default()
+        };
+        let _ = files_ops::store::write(&*st.fs, &format!("{DIR}{name}"), &b);
+    }
+    /// A 4032 × 3024 gradient with a disc, made a row at a time (no 36 MB buffer).
+    struct Big;
+    impl Rows for Big {
+        fn w(&self) -> u32 {
+            4032
+        }
+        fn h(&self) -> u32 {
+            3024
+        }
+        fn ch(&self) -> u8 {
+            3
+        }
+        fn row(&self, y: u32, out: &mut [u8]) {
+            for x in 0..4032u32 {
+                let (dx, dy) = (x as i32 - 2600, y as i32 - 1100);
+                let sun = dx * dx + dy * dy < 300 * 300;
+                let o = x as usize * 3;
+                out[o] = if sun {
+                    255
+                } else {
+                    (240 - y * 160 / 3024) as u8
+                };
+                out[o + 1] = if sun {
+                    225
+                } else {
+                    (190 - y * 150 / 3024) as u8
+                };
+                out[o + 2] = if sun {
+                    160
+                } else {
+                    (110 + x * 80 / 4032) as u8
+                };
+            }
+        }
+    }
+    let t = e32::time::millis();
+    let b = encode::jpeg(&Big, 90).unwrap_or_default();
+    let r = files_ops::store::write(&*st.fs, &format!("{DIR}big.jpg"), &b);
+    dprintln!(
+        "files: test photos big.jpg {} KB {} ms {}",
+        b.len() / 1024,
+        e32::time::millis() - t,
         r.err().map_or(0, |e| e.code())
     );
 }

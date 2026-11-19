@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "neo-format-image"
+description = "Images for Files: probe, decode (JPEG, PNG, GIF, WebP, BMP, an SVG subset), shrink, edit, encode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+zune-core = { version = "0.5", default-features = false }
+zune-jpeg = { version = "0.5", default-features = false }
+zune-png = { version = "0.5", default-features = false }
+weezl = { version = "0.2", default-features = false, features = ["alloc"] }
+miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
+# IJG-derived: the credit line is in the README and Files' About notes
+jpeg-encoder = { version = "0.7", default-features = false }
+tiny-skia = { version = "0.12", default-features = false, features = ["no-std-float"] }
+xmlparser = { version = "0.13", default-features = false }
+libm = "0.2"
+# NeoSymbian/image-webp, branch neosymbian: v0.2.4 with the decoder no_std (std off)
+image-webp = { git = "https://github.com/NeoSymbian/image-webp", rev = "687734dea2a3e3e2d7d002f6bef367ee08fb138c", default-features = false }
+
+[dev-dependencies]
+png.workspace = true
+weezl = "0.2"
+jpeg-encoder = "0.7"
+# the lossless encoder (std) makes test files
+image-webp = { git = "https://github.com/NeoSymbian/image-webp", rev = "687734dea2a3e3e2d7d002f6bef367ee08fb138c" }
