@@ -37,7 +37,8 @@ pub const FILE_MAX: u64 = 40 << 20;
 pub const SHOW_MAX: u32 = 2560;
 /// Cached thumbnails kept: at most this many files, the oldest go at start.
 const CACHE_FILES: usize = 4000;
-const STACK: i32 = 64 * 1024;
+/// The worker's stack: the decoders keep their tables and blocks on it (64 KB overflowed in zune-jpeg on the Pixel).
+const STACK: i32 = 256 * 1024;
 
 pub struct Want {
     pub path: String,
