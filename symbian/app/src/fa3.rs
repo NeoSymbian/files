@@ -265,6 +265,7 @@ pub fn show_listed(ui: &FilesApp, st: &State) {
     });
     ui.set_selected(st.checked.iter().filter(|c| **c).count() as i32);
     ui.set_rows(model_of(rows));
+    crate::image::patch_rows(ui, st);
 }
 
 fn set_listed(ui: &FilesApp, st: &mut State, listed: Vec<Listed>, empty: &str) {
@@ -424,6 +425,13 @@ pub fn show_type(ui: &FilesApp, st: &mut State) {
             "None here"
         },
     );
+    // FA5: images by folder, as thumbnails
+    if group == Group::Images {
+        crate::image::type_groups(ui, st);
+    } else {
+        st.img_groups.clear();
+        ui.set_img_groups(ModelRc::default());
+    }
     ui.set_view("type".into());
 }
 

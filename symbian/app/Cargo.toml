@@ -23,7 +23,10 @@ files-ops.workspace = true
 neo-fs.workspace = true
 neo-view.workspace = true
 neo-format-text.workspace = true
+neo-format-image.workspace = true
 fs-e32.workspace = true
+# the pinch's distance (soft-float, no std)
+libm = "0.2"
 
 [features]
 # Pixel test images only: writes C:\Data\big.log (5 MB) at start for the FA4 gate
