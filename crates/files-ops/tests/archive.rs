@@ -299,6 +299,48 @@ fn a_tar_gz_from_another_tool() {
     assert_eq!(contents(&fs, "C:\\open\\notes.txt"), b"hello\n");
 }
 
+/// The review's cases: a pick from a tar.gz bigger than the room left (only what is written counts, and it stops
+/// once the pick is met), Replace onto a folder skips that one, and sizes that would wrap a sum.
+#[test]
+fn review_cases() {
+    let fs = fs();
+    fs.add_file("C:\\big.bin", &vec![9u8; 4 << 20]).unwrap();
+    fs.add_file("C:\\a.txt", b"small").unwrap();
+    compress(
+        &fs,
+        &["C:\\a.txt", "C:\\big.bin"],
+        "C:\\x.tar.gz",
+        Packing::TarGz,
+    );
+    let small = MemFs::new();
+    small.add_drive('C', 1 << 26, false, false);
+    small.add_drive('E', 2 << 20, false, true);
+    small
+        .add_file("C:\\x.tar.gz", &contents(&fs, "C:\\x.tar.gz"))
+        .unwrap();
+    let pick = Pick {
+        base: String::new(),
+        names: vec!["a.txt".into()],
+    };
+    let mut job = Extract::new(&small, "C:\\x.tar.gz", Some(pick), "E:\\o\\").unwrap();
+    assert!(matches!(extract(&mut job, &small, Choice::Skip), Step::Done(s) if s.copied == 1));
+    assert_eq!(contents(&small, "E:\\o\\a.txt"), b"small");
+    // Replace where a folder has the file's name: skipped, the rest goes on
+    let fs2 = self::fs();
+    photos(&fs2);
+    compress(&fs2, &["C:\\Photos\\"], "C:\\p.zip", Packing::Zip);
+    fs2.add_dir("E:\\x\\Photos\\notes.txt\\").unwrap();
+    let mut job = Extract::new(&fs2, "C:\\p.zip", None, "E:\\x\\").unwrap();
+    assert!(
+        matches!(extract(&mut job, &fs2, Choice::Replace), Step::Done(s) if s.skipped == 1 && s.copied == 3)
+    );
+    let (_, mut members) = list(&fs2, "C:\\p.zip").unwrap();
+    for m in members.iter_mut() {
+        m.size = u64::MAX / 2 + 1;
+    }
+    assert_eq!(needed(&members, None).0, u64::MAX);
+}
+
 #[test]
 fn the_estimate() {
     let fs = fs();

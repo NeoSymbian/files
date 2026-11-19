@@ -265,6 +265,47 @@ fn host_tools_read_ours() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// The review's cases: a .gz named in another script, padding after a gzip, a count the directory can't hold, a pax
+/// size near u64::MAX.
+#[test]
+fn review_cases() {
+    let gz = data("multi.gz");
+    for n in ["Ա.gz", "ֆայլ.gz", "日日.gz", "ֆայլ.tar.gz"] {
+        assert!(detect(&gz, n).is_some(), "{n}");
+    }
+    let mut padded = gz.clone();
+    padded.extend([0u8; 4]);
+    let mut g = GzReader::new(At::all(&padded[..]), u64::MAX).unwrap();
+    assert_eq!(drain(&mut g).unwrap(), b"first second");
+    // an end record claiming 65,535 members with an empty directory
+    let mut eocd = vec![0x50, 0x4b, 5, 6, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff];
+    eocd.extend([0u8; 10]);
+    assert_eq!(zip::list(&eocd[..]).err(), Some(Error::Corrupt));
+    // a pax size of u64::MAX
+    let mut t = TarWriter::new(Vec::new());
+    t.start("a", 1, 0).unwrap();
+    t.write(b"x").unwrap();
+    let mut b = t.finish().unwrap();
+    let rec = b"29 size=18446744073709551615\n";
+    let mut pax = vec![0u8; 512];
+    pax[..9].copy_from_slice(b"PaxHeader");
+    pax[100..108].copy_from_slice(b"0000644\0");
+    pax[124..136].copy_from_slice(format!("{:011o}\0", rec.len()).as_bytes());
+    pax[136..148].copy_from_slice(b"00000000000\0");
+    pax[156] = b'x';
+    pax[257..263].copy_from_slice(b"ustar\0");
+    pax[148..156].fill(b' ');
+    let sum: u32 = pax.iter().map(|&c| c as u32).sum();
+    pax[148..155].copy_from_slice(format!("{sum:06o}\0").as_bytes());
+    let mut data_block = rec.to_vec();
+    data_block.resize(512, 0);
+    let mut tar = pax;
+    tar.extend(data_block);
+    tar.append(&mut b);
+    let r = untar(At::all(&tar[..]));
+    assert!(r.is_err());
+}
+
 #[test]
 fn errors_are_typed() {
     assert_eq!(

@@ -261,8 +261,11 @@ impl Format {
 /// What the file is, from its first bytes (at least 512 for a tar) and then its name. A gzip is a tar.gz when its
 /// name says so; [`gzip::holds_tar`] can look inside.
 pub fn detect(head: &[u8], name: &str) -> Option<Format> {
-    let lower =
-        |s: &str| name.len() >= s.len() && name[name.len() - s.len()..].eq_ignore_ascii_case(s);
+    // bytes: the name may end in any script (Ա.gz)
+    let lower = |s: &str| {
+        let n = name.as_bytes();
+        n.len() >= s.len() && n[n.len() - s.len()..].eq_ignore_ascii_case(s.as_bytes())
+    };
     if head.starts_with(b"PK\x03\x04") || head.starts_with(b"PK\x05\x06") {
         Some(Format::Zip)
     } else if head.starts_with(&[0x1f, 0x8b]) {

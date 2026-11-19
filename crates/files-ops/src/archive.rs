@@ -142,6 +142,8 @@ fn gz_member(archive: &str, stored: Option<&str>, mtime: i64) -> Member {
         .unwrap_or(stem);
     let (name, kind) = match ar::name::safe(raw) {
         Some(n) if !n.contains('/') => (n, Kind::File),
+        // ".gz" alone: no stem to name the file by
+        _ if stem.is_empty() => (String::from("file"), Kind::File),
         _ => (String::from(stem), Kind::File),
     };
     Member {
@@ -228,7 +230,8 @@ pub fn needed(members: &[Member], pick: Option<&Pick>) -> (u64, usize) {
         .iter()
         .filter(|m| m.kind == Kind::File && m.extractable())
         .filter(|m| pick.is_none_or(|p| p.place(&m.name).is_some()))
-        .fold((0, 0), |(b, n), m| (b + m.size, n + 1))
+        // a Zip64 can declare sizes that would wrap a sum
+        .fold((0u64, 0), |(b, n), m| (b.saturating_add(m.size), n + 1))
 }
 
 /// Where the members come from.
@@ -279,6 +282,11 @@ pub struct Extract<'a, F: Fs + 'a> {
     /// A tar.gz: progress counts compressed bytes read.
     read: Option<Rc<Cell<u64>>>,
     buf: Vec<u8>,
+    /// The room on the destination drive, and what was written there so far.
+    room: u64,
+    written: u64,
+    /// Picked files not met yet: at 0 the rest of a tar.gz needn't be inflated.
+    wanted: Option<usize>,
 }
 
 impl<'a, F: Fs + 'a> Extract<'a, F> {
@@ -338,7 +346,8 @@ impl<'a, F: Fs + 'a> Extract<'a, F> {
             Format::TarGz => {
                 read = Some(src.read.clone());
                 progress.bytes_total = src.size;
-                let gz = GzReader::new(At::all(src), room).map_err(err)?;
+                // the room is checked against what is written (unpicked members and headers take none)
+                let gz = GzReader::new(At::all(src), u64::MAX).map_err(err)?;
                 Source::Tar(TarReader::new(Box::new(gz)))
             }
             Format::Gz => {
@@ -369,6 +378,7 @@ impl<'a, F: Fs + 'a> Extract<'a, F> {
             }
         }
         made.insert(dest.to_lowercase());
+        let wanted = pick.as_ref().map(|p| p.names.len());
         Ok(Extract {
             source,
             dest,
@@ -384,6 +394,9 @@ impl<'a, F: Fs + 'a> Extract<'a, F> {
             terminal: None,
             read,
             buf: vec![0; 64 * 1024],
+            room,
+            written: 0,
+            wanted,
         })
     }
 
@@ -457,6 +470,10 @@ impl<'a, F: Fs + 'a> Extract<'a, F> {
             let Waiting { member, target, .. } = self.waiting.take().ok_or(Error::Other(-2))?;
             return self.choose(fs, member, target, choice).map(|_| false);
         }
+        // every picked file met: the rest of a tar.gz isn't inflated for nothing
+        if self.wanted == Some(0) {
+            return Ok(true);
+        }
         let Some(m) = self.next_member()? else {
             return Ok(true);
         };
@@ -469,6 +486,7 @@ impl<'a, F: Fs + 'a> Extract<'a, F> {
         };
         if !m.extractable() {
             if m.kind != Kind::Dir {
+                self.met(&m.name);
                 self.summary.skipped += 1;
             }
             return Ok(false);
@@ -567,14 +585,18 @@ impl<'a, F: Fs + 'a> Extract<'a, F> {
     fn choose(&mut self, fs: &'a F, m: Member, target: String, choice: Choice) -> Result<()> {
         match choice {
             Choice::Skip => {
+                self.met(&m.name);
                 self.summary.skipped += 1;
                 self.progress.files_done += 1;
                 self.progress.bytes_done += m.size;
                 Ok(())
             }
             Choice::Replace => {
+                // a folder isn't replaced by a file: this one is skipped
                 if fs.entry(&target)?.is_dir() {
-                    return Err(Error::Exists);
+                    self.met(&m.name);
+                    self.summary.skipped += 1;
+                    return Ok(());
                 }
                 self.start(fs, m, target, true)
             }
@@ -630,6 +652,10 @@ impl<'a, F: Fs + 'a> Extract<'a, F> {
             if n == 0 {
                 break;
             }
+            self.written += n as u64;
+            if self.written > self.room {
+                return Err(Error::Full);
+            }
             w.out.write_at(w.offset, &self.buf[..n])?;
             w.offset += n as u64;
             self.progress.current_done = w.offset;
@@ -641,17 +667,20 @@ impl<'a, F: Fs + 'a> Extract<'a, F> {
                 return Ok(());
             }
         }
-        let w = self.writing.take().ok_or(Error::Other(-2))?;
-        w.out.flush()?;
         let Writing {
             part,
             target,
             out,
             offset,
             replace,
-        } = w;
+        } = self.writing.take().ok_or(Error::Other(-2))?;
+        let flushed = out.flush();
         // e32 refuses a rename while the file is open
         drop(out);
+        if let Err(e) = flushed {
+            let _ = fs.delete(&part);
+            return Err(e);
+        }
         let done = if replace {
             fs.replace(&part, &target)
         } else {
@@ -661,11 +690,22 @@ impl<'a, F: Fs + 'a> Extract<'a, F> {
             let _ = fs.delete(&part);
             return Err(e);
         }
-        self.current = None;
+        if let Some((m, _)) = self.current.take() {
+            self.met(&m.name);
+        }
         self.summary.copied += 1;
         self.summary.bytes += offset;
         self.progress.files_done += 1;
         Ok(())
+    }
+
+    /// A picked file is done (extracted or skipped).
+    fn met(&mut self, name: &str) {
+        if let (Some(w), Some(p)) = (self.wanted.as_mut(), self.pick.as_ref())
+            && p.names.iter().any(|n| n == name)
+        {
+            *w = w.saturating_sub(1);
+        }
     }
 }
 

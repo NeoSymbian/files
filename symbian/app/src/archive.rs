@@ -29,7 +29,10 @@ const OPEN_MAX: u64 = 64 << 20;
 
 /// A path in the open cache (its viewer is read-only).
 pub fn in_cache(p: &str) -> bool {
-    p.len() >= OPEN_CACHE.len() && p[..OPEN_CACHE.len()].eq_ignore_ascii_case(OPEN_CACHE)
+    // bytes: a path in any script may be cut inside a character here
+    p.as_bytes()
+        .get(..OPEN_CACHE.len())
+        .is_some_and(|h| h.eq_ignore_ascii_case(OPEN_CACHE.as_bytes()))
 }
 
 /// The archive the sheet is about.
@@ -76,6 +79,8 @@ pub struct CompressForm {
     sources: Vec<String>,
     dir: String,
     packing: Packing,
+    /// The name typed, kept while the picker (and its New folder form, which shares the field) is open.
+    name: String,
 }
 
 /// A running archive job, as poll_job reports it.
@@ -84,7 +89,7 @@ pub enum ArcJob {
     Extract { archive: String, dest: String },
     Compress { out: String },
     List { archive: String },
-    Unpack { path: String },
+    Unpack { path: String, from: String },
 }
 
 impl ArcJob {
@@ -107,14 +112,20 @@ pub fn is_archive(name: &str) -> bool {
 }
 
 /// The name without its archive extension (backup-2026.zip → backup-2026).
-fn stem(name: &str) -> &str {
+fn stem(name: &str) -> String {
     let l = name.to_ascii_lowercase();
+    let mut s = name;
     for e in [".tar.gz", ".tgz", ".zip", ".tar", ".gz"] {
         if l.ends_with(e) && name.len() > e.len() {
-            return &name[..name.len() - e.len()];
+            s = &name[..name.len() - e.len()];
+            break;
         }
     }
-    name
+    // a folder's name: `...zip` would give `..`
+    match neo_format_archive::name::safe(s) {
+        Some(n) if !n.contains('/') => n,
+        _ => String::from("Archive"),
+    }
 }
 
 fn kind_label(f: Format) -> &'static str {
@@ -136,6 +147,10 @@ fn free_of(st: &State, letter: char) -> Option<u64> {
 }
 
 fn writable(st: &State, p: &str) -> bool {
+    // the open cache is Files' own: an archive opened from it is extracted elsewhere
+    if in_cache(p) {
+        return false;
+    }
     let letter = p.chars().next().unwrap_or('Z');
     st.drives
         .iter()
@@ -201,7 +216,12 @@ pub fn sheet(app: &App, ui: &FilesApp, st: &mut State, archive: &str) {
                 );
             }
         },
-        _ => None,
+        // a tar.gz listed before keeps its list
+        _ => st
+            .sheet
+            .as_ref()
+            .filter(|s| s.path == archive)
+            .and_then(|s| s.members.clone()),
     };
     let size = st.fs.entry(archive).map_or(0, |e| e.size);
     let dir = path::parent(archive).unwrap_or_default();
@@ -286,6 +306,7 @@ fn extract_here(app: &App, ui: &FilesApp, st: &mut State, archive: &str, pick: O
     let format = st
         .sheet
         .as_ref()
+        .filter(|s| s.path == archive)
         .map(|s| s.format)
         .or_else(|| format_of(&*st.fs, archive).ok());
     let dest = if format == Some(Format::Gz) {
@@ -323,7 +344,7 @@ fn extract_to(
     };
     if let (Some(m), Some(free)) = (members, free_of(st, letter)) {
         let (bytes, _) = needed(&m, pick.as_ref());
-        if bytes + (1 << 20) > free {
+        if bytes.saturating_add(1 << 20) > free {
             return note_with(
                 app,
                 &format!(
@@ -515,6 +536,18 @@ pub fn row(app: &App, ui: &FilesApp, st: &mut State, i: usize) {
     }
     let member = full(b, &name);
     let archive = b.path.clone();
+    let archive_path = archive.clone();
+    if !b
+        .members
+        .iter()
+        .any(|m| m.name == member && m.extractable())
+    {
+        return note_with(
+            app,
+            "Files can't open this one: it is encrypted or packed in an unknown way",
+            "",
+        );
+    }
     if size > OPEN_MAX {
         return note_with(app, "Too big to open from the archive: extract it", "");
     }
@@ -529,7 +562,11 @@ pub fn row(app: &App, ui: &FilesApp, st: &mut State, i: usize) {
     // only this one in the cache (the image viewer lists the cache's images)
     if let Ok(old) = st.fs.read_dir(OPEN_CACHE) {
         for e in old.iter().filter(|e| !e.is_dir()) {
-            let _ = st.fs.delete(&path::join_file(OPEN_CACHE, &e.name));
+            let p = path::join_file(OPEN_CACHE, &e.name);
+            // an archive opened from an archive is the one being browsed: it stays
+            if !p.eq_ignore_ascii_case(&archive) {
+                let _ = st.fs.delete(&p);
+            }
         }
     } else {
         let _ = st.fs.mkdir(OPEN_CACHE);
@@ -546,6 +583,7 @@ pub fn row(app: &App, ui: &FilesApp, st: &mut State, i: usize) {
     };
     let job = ArcJob::Unpack {
         path: path::join_file(OPEN_CACHE, &leaf),
+        from: archive_path,
     };
     start(app, ui, st, work, job, false);
 }
@@ -738,7 +776,8 @@ pub fn picker_cancel(app: &App, ui: &FilesApp, st: &mut State) {
 fn leave_picker(app: &App, ui: &FilesApp, st: &mut State, from: View, from_dir: String) {
     st.view = from;
     st.dir = from_dir;
-    if st.compress.is_some() {
+    if let Some(c) = st.compress.as_ref() {
+        ui.set_name_text(c.name.as_str().into());
         ui.set_form("compress".into());
     }
     match from {
@@ -762,7 +801,13 @@ pub fn picker_done(app: &App, ui: &FilesApp, st: &mut State) {
     match p.purpose {
         Purpose::Extract(archive, pick) => {
             // everything goes into a folder of its own, unless it is one file or a pick
-            let dest = match (&pick, st.sheet.as_ref().map(|s| s.format)) {
+            let format = st
+                .sheet
+                .as_ref()
+                .filter(|s| s.path == archive)
+                .map(|s| s.format)
+                .or_else(|| format_of(&*st.fs, &archive).ok());
+            let dest = match (&pick, format) {
                 (None, f) if f != Some(Format::Gz) => {
                     let base = stem(path::name_of(&archive)).to_string();
                     let mut name = base.clone();
@@ -896,6 +941,7 @@ pub fn compress_open(app: &App, ui: &FilesApp, st: &mut State, sources: Vec<Stri
         sources,
         dir,
         packing: Packing::Zip,
+        name: String::new(),
     });
     ui.set_compress_format(0);
     compress_show(ui, st);
@@ -944,6 +990,10 @@ pub fn save_in(app: &App, ui: &FilesApp, st: &mut State) {
         return;
     };
     let dir = c.dir.clone();
+    let name = ui.get_name_text().to_string();
+    if let Some(c) = st.compress.as_mut() {
+        c.name = name;
+    }
     open_picker(app, ui, st, Purpose::SaveIn, dir);
 }
 
@@ -1045,17 +1095,39 @@ pub fn done(
             if let Some(s) = st.sheet.as_mut().filter(|s| s.path == archive) {
                 s.members = Some(members.clone());
             }
-            browse(app, ui, st, &archive, Format::TarGz, members);
+            // only where the user still is: not over an editor, a viewer, a form or the picker
+            if settled(st)
+                && matches!(
+                    st.view,
+                    View::Folder | View::Browse | View::Recent | View::Type | View::Types
+                )
+            {
+                browse(app, ui, st, &archive, Format::TarGz, members);
+            } else {
+                note_with(
+                    app,
+                    &format!(
+                        "{} is read: open it again to browse",
+                        path::name_of(&archive)
+                    ),
+                    "",
+                );
+            }
         }
-        (ArcJob::Unpack { path }, Ok(_)) => {
+        (ArcJob::Unpack { path, from }, Ok(_)) => {
             dprintln!("files: unpack {} done", path);
-            open_path(app, ui, st, &path);
+            if settled(st)
+                && st.view == View::Archive
+                && st.archive.as_ref().is_some_and(|b| b.path == from)
+            {
+                open_path(app, ui, st, &path);
+            }
         }
         (job, Err(e)) => {
             let what = match &job {
                 ArcJob::Extract { archive, .. } | ArcJob::List { archive } => archive.clone(),
                 ArcJob::Compress { out } => out.clone(),
-                ArcJob::Unpack { path } => path.clone(),
+                ArcJob::Unpack { path, .. } => path.clone(),
             };
             dprintln!("files: {} {} failed {}", job.verb(), what, e.code());
             if !cancelled {
@@ -1076,6 +1148,11 @@ pub fn done(
             }
         }
     }
+}
+
+/// No form, picker or Compress form open: a finished job may change the screen.
+fn settled(st: &State) -> bool {
+    st.form.is_none() && st.compress.is_none() && st.picker.is_none()
 }
 
 /// The sheet's card and the toast while an archive job runs: "128 of 412 files · Documents/x · about 2 min left".

@@ -104,7 +104,8 @@ impl<S: Stream> TarReader<S> {
         if self.ended {
             return Ok(None);
         }
-        self.skip(self.left + self.pad)?;
+        // a pax size near u64::MAX: corrupt, not an overflow
+        self.skip(self.left.checked_add(self.pad).ok_or(Error::Corrupt)?)?;
         (self.left, self.pad) = (0, 0);
         let (mut long, mut pax_path, mut pax_size) = (None, None, None);
         let mut h = [0u8; 512];

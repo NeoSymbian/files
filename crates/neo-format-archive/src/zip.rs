@@ -74,7 +74,8 @@ pub fn list<R: ReadAt + ?Sized>(r: &R) -> Result<Vec<Member>> {
     }
     let mut cd = vec![0u8; cd_size as usize];
     read_full(r, cd_at, &mut cd)?;
-    let mut out = Vec::with_capacity(count as usize);
+    // a central entry is at least 46 bytes: a count bigger than the directory holds is a lie
+    let mut out = Vec::with_capacity((count as usize).min(cd.len() / 46));
     let mut i = 0usize;
     for _ in 0..count {
         if i + 46 > cd.len() || le32(&cd, i) != CEN {

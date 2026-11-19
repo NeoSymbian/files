@@ -33,7 +33,10 @@ fn header<S: Stream>(inf: &mut Inflate<S>, first: bool) -> Result<Option<(Option
             Ok(None)
         };
     }
-    read_exact(&mut s, &mut h[1..])?;
+    if let Err(e) = read_exact(&mut s, &mut h[1..]) {
+        // after a member, a few bytes of padding or garbage end the stream (as gzip ignores them)
+        return if first { Err(e) } else { Ok(None) };
+    }
     if h[0] != 0x1f || h[1] != 0x8b || h[2] != 8 {
         return if first {
             Err(Error::NotArchive)
