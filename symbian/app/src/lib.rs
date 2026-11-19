@@ -6,11 +6,12 @@
 //! ([`job`]) with a progress toast and a shade entry (Cancel); Delete moves into the drive's Recycle bin
 //! (`files_ops::trash`) with Undo; Rename keeps the extension. Z: and other read-only drives open and copy only.
 //! FA3 ([`fa3`]): Favourites and Recent, the Types tab and search over a file index kept by a worker ([`scan`]), the
-//! Recycle bin, Free up space and Details.
+//! Recycle bin, Free up space and Details. FA4 ([`edit`]): the text viewer and the editors (code, Markdown, CSV).
 #![no_std]
 
 extern crate alloc;
 
+mod edit;
 mod fa3;
 mod job;
 mod scan;
@@ -32,10 +33,10 @@ use files_ops::{Choice, Kind, trash};
 use fs_e32::E32Fs;
 use neo_fs::{Fs as _, Open};
 use neoapp::{App, AppEvent, Page, Query};
-use neoui_proto::Rect;
 use neoui_proto::ipc as proto;
 use neoui_proto::page::Notification;
 use neoui_proto::settings::Value;
+use neoui_proto::{InputEvent, Rect};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use files_ui::{FileRow, FilesApp, KeyboardFocus, Kit, Scroll, Theme};
@@ -103,6 +104,23 @@ enum Action {
     Review(usize),
     DetailsReadOnly(bool),
     DetailsHidden(bool),
+    TextScrolled(usize),
+    TextTapped(usize, usize),
+    TextHeld(usize, usize),
+    HandleMoved(i32, usize, usize),
+    Edit,
+    UndoEdit,
+    Save,
+    CodeKey(String),
+    WrapToggled,
+    FindEdited(String),
+    FindStep(bool),
+    Replace(bool),
+    MdPicked(usize),
+    TaskToggled(usize),
+    CellPicked(usize, usize),
+    CellDone,
+    NewType(usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -117,6 +135,7 @@ enum View {
     Cleanup,
     Review,
     Favs,
+    Edit,
 }
 
 /// The form page over the folder.
@@ -134,6 +153,8 @@ enum Ask {
     Trash(Vec<String>),
     /// Recycle bin items to delete for good.
     Purge(Vec<String>),
+    /// Leave the editor: Save / Discard / Cancel.
+    Unsaved,
 }
 
 /// Files picked for Copy or Move, waiting in the paste bar for a folder.
@@ -207,6 +228,10 @@ struct State {
     details: String,
     /// The keyboard last asked of the UI server: (open, KeyboardFocus.seq, mode), as Contacts keeps it.
     kb: (bool, i32, i32),
+    /// The file open in the viewer or an editor.
+    open: Option<edit::Open>,
+    /// New file's type (files2-new-file): 0 .txt, 1 .md, 2 .csv, 3 .json, 4 Code… (the name carries it).
+    new_type: usize,
 }
 
 fn run() -> Result<(), i32> {
@@ -261,9 +286,13 @@ fn run() -> Result<(), i32> {
         search: fa3::Search::default(),
         details: String::new(),
         kb: (false, 0, 0),
+        open: None,
+        new_type: 0,
     };
     load_settings(&app, &ui, &mut st);
     fa3::load(&mut st);
+    #[cfg(feature = "test-files")]
+    test_files(&st);
     show_drives(&app, &ui, &mut st);
     // a trash cut short by a power cut is finished or rolled back (files-ops' journal)
     for &(d, ro) in &st.drives {
@@ -324,6 +353,14 @@ fn run() -> Result<(), i32> {
                         Either::Right(Either::Right(())) => {
                             poll_job(&app, &ui, &mut st);
                             poll_scan(&app, &ui, &mut st);
+                            // a flick goes on without events: its scroll callbacks wait here
+                            loop {
+                                let next = actions.borrow_mut().pop_front();
+                                match next {
+                                    Some(a) => act(&app, &ui, &mut st, a),
+                                    None => break,
+                                }
+                            }
                         }
                     }
                     describe(&app, &ui, &mut st)?;
@@ -335,12 +372,20 @@ fn run() -> Result<(), i32> {
             let Some(e) = AppEvent::decode(&ev) else {
                 continue;
             };
-            app.handle(&e);
+            // the editor reads keys itself (as Terminal does); fields (find, a cell) get them through Slint
+            match e {
+                AppEvent::Input(InputEvent::Key { code, down: true })
+                    if editor_has_keys(&ui, &st) =>
+                {
+                    editor_key(&app, &ui, &mut st, code)
+                }
+                _ => app.handle(&e),
+            }
             match e {
                 AppEvent::Quit => break,
                 AppEvent::Back if neoapp::kit_back!(ui) => {}
                 AppEvent::Back => back(&app, &ui, &mut st),
-                AppEvent::Answer { i } => answer(&app, &ui, &mut st, i == 0),
+                AppEvent::Answer { i } => answer(&app, &ui, &mut st, i as usize),
                 AppEvent::Keyboard { h } => {
                     // 0 while a field keeps the focus: the user put it away; a tap on the field asks again
                     let kf = ui.global::<KeyboardFocus>();
@@ -368,6 +413,11 @@ fn run() -> Result<(), i32> {
         }
         Ok::<(), i32>(())
     })?;
+    if let Some(o) = st.open.as_ref().filter(|o| o.dirty()) {
+        // what was typed survives a Quit (a later phase offers it back)
+        o.keep_copy(&st.fs);
+        dprintln!("files: kept unsaved {}", o.path);
+    }
     if st.running.is_some() {
         // the worker dies with the process: let it stop between steps and remove its unfinished file first
         st.slot.cancel();
@@ -403,6 +453,27 @@ fn bind(ui: &FilesApp, actions: &Rc<RefCell<VecDeque<Action>>>) {
     ui.on_filter_size(index(Action::FilterSize));
     ui.on_filter_modified(index(Action::FilterModified));
     ui.on_review(index(Action::Review));
+    ui.on_text_scrolled(index(Action::TextScrolled));
+    ui.on_md_picked(index(Action::MdPicked));
+    ui.on_task_toggled(index(Action::TaskToggled));
+    ui.on_new_type_picked(index(Action::NewType));
+    let pair = |a: fn(usize, usize) -> Action| {
+        let q = actions.clone();
+        move |x: i32, y: i32| {
+            q.borrow_mut()
+                .push_back(a(x.max(0) as usize, y.max(0) as usize))
+        }
+    };
+    ui.on_text_tapped(pair(Action::TextTapped));
+    ui.on_text_held(pair(Action::TextHeld));
+    ui.on_cell_picked(pair(Action::CellPicked));
+    {
+        let q = actions.clone();
+        ui.on_handle_moved(move |w, r, x| {
+            q.borrow_mut()
+                .push_back(Action::HandleMoved(w, r.max(0) as usize, x.max(0) as usize))
+        });
+    }
     ui.on_selection_action(index(Action::Pick));
     ui.on_sort_chosen(index(Action::SortKey));
     ui.on_clash_answer(index(Action::Clash));
@@ -413,6 +484,8 @@ fn bind(ui: &FilesApp, actions: &Rc<RefCell<VecDeque<Action>>>) {
     ui.on_menu(text(Action::Menu));
     ui.on_selection_menu(text(Action::PickMenu));
     ui.on_searched(text(Action::Searched));
+    ui.on_code_key(text(Action::CodeKey));
+    ui.on_find_edited(text(Action::FindEdited));
     let flag = |a: fn(bool) -> Action| {
         let q = actions.clone();
         move |v: bool| q.borrow_mut().push_back(a(v))
@@ -439,6 +512,17 @@ fn bind(ui: &FilesApp, actions: &Rc<RefCell<VecDeque<Action>>>) {
     ui.on_favs_edit(plain(|| Action::FavsEdit));
     ui.on_see_all(plain(|| Action::SeeAll));
     ui.on_filters_reset(plain(|| Action::FiltersReset));
+    ui.on_edit(plain(|| Action::Edit));
+    ui.on_undo(plain(|| Action::UndoEdit));
+    ui.on_save(plain(|| Action::Save));
+    ui.on_wrap_toggled(plain(|| Action::WrapToggled));
+    ui.on_find_next(plain(|| Action::FindStep(false)));
+    ui.on_find_prev(plain(|| Action::FindStep(true)));
+    ui.on_replace_one(plain(|| Action::Replace(false)));
+    ui.on_replace_all(plain(|| Action::Replace(true)));
+    ui.on_cell_done(plain(|| Action::CellDone));
+    // a handle let go: the selection stays as it was dragged
+    ui.on_handle_done(|| {});
 }
 
 /// The page: Back stays in the app below the Browse tab, in a form, with a dialog, or with a kit layer open.
@@ -732,6 +816,113 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
         },
         Action::DetailsReadOnly(on) => fa3::set_attribute(app, ui, st, neo_fs::att::READ_ONLY, on),
         Action::DetailsHidden(on) => fa3::set_attribute(app, ui, st, neo_fs::att::HIDDEN, on),
+        Action::TextScrolled(r) => {
+            if let Some(o) = st.open.as_mut() {
+                o.scrolled(ui, r);
+            }
+        }
+        Action::TextTapped(r, x) => {
+            if let Some(o) = st.open.as_mut()
+                && st.view == View::Edit
+            {
+                // a tap in the text leaves the find bar (its field had the keys)
+                if ui.get_find_open() {
+                    ui.set_find_open(false);
+                    o.find(ui, "");
+                }
+                o.tapped(ui, r, x);
+                editor_keyboard(ui);
+            }
+        }
+        Action::TextHeld(r, x) => {
+            if let Some(o) = st.open.as_mut()
+                && st.view == View::Edit
+            {
+                o.held(ui, r, x);
+            }
+        }
+        Action::HandleMoved(w, r, x) => {
+            if let Some(o) = st.open.as_mut() {
+                o.handle_moved(ui, w, r, x);
+            }
+        }
+        Action::Edit => {
+            if let Some(o) = st.open.take() {
+                open_text(app, ui, st, &o.path, true);
+            }
+        }
+        Action::UndoEdit => {
+            if let Some(o) = st.open.as_mut() {
+                o.undo(ui);
+            }
+        }
+        Action::Save => save_open(app, ui, st),
+        Action::CodeKey(k) => {
+            if let Some(o) = st.open.as_mut() {
+                o.code_key(ui, &k);
+            }
+        }
+        Action::WrapToggled => {
+            if let Some(o) = st.open.as_mut() {
+                o.toggle_wrap(ui);
+                save(app, "files.wrap", Value::Bool(o.wrap));
+            }
+        }
+        Action::FindEdited(t) => {
+            if let Some(o) = st.open.as_mut() {
+                o.find(ui, &t);
+            }
+        }
+        Action::FindStep(back) => {
+            if let Some(o) = st.open.as_mut() {
+                o.find_step(ui, back);
+            }
+        }
+        Action::Replace(all) => {
+            if let Some(o) = st.open.as_mut() {
+                o.replace(
+                    ui,
+                    all,
+                    ui.get_replace_text().as_str(),
+                    ui.get_find_text().as_str(),
+                );
+            }
+        }
+        Action::MdPicked(i) => {
+            if let Some(o) = st.open.as_mut() {
+                o.preview = i == 1;
+                o.show(ui);
+                if o.preview {
+                    ui.global::<KeyboardFocus>().invoke_close();
+                } else {
+                    editor_keyboard(ui);
+                }
+            }
+        }
+        Action::TaskToggled(i) => {
+            if let Some(o) = st.open.as_mut() {
+                o.toggle_task(ui, i);
+                o.show(ui);
+            }
+        }
+        Action::CellPicked(r, c) => {
+            if let Some(o) = st.open.as_mut() {
+                o.cell_picked(ui, r, c);
+                // the cell bar sits on the keyboard
+                editor_keyboard(ui);
+            }
+        }
+        Action::CellDone => {
+            if let Some(o) = st.open.as_mut() {
+                o.cell_done(ui);
+                ui.global::<KeyboardFocus>().invoke_close();
+            }
+        }
+        Action::NewType(i) => {
+            st.new_type = i.min(4);
+            ui.set_new_type(st.new_type as i32);
+            ui.set_name_suffix([".txt", ".md", ".csv", ".json", ""][st.new_type].into());
+        }
     }
 }
 
@@ -849,8 +1040,20 @@ fn menu(app: &App, ui: &FilesApp, st: &mut State, m: &str) {
             }
         }
         "Details" => {
-            let d = st.dir.clone();
-            fa3::details(app, ui, st, &d);
+            let target = match (&st.open, st.view) {
+                (Some(o), View::Text | View::Edit) => o.path.clone(),
+                _ => st.dir.clone(),
+            };
+            fa3::details(app, ui, st, &target);
+        }
+        "Find and replace" => {
+            ui.set_find_open(true);
+        }
+        "Wrap lines" | "No wrap" => act(app, ui, st, Action::WrapToggled),
+        "Add row" | "Add column" | "Delete row" => {
+            if let Some(o) = st.open.as_mut() {
+                o.table_menu(ui, m);
+            }
         }
         "Empty bin" => fa3::ask_empty(app, st),
         "Select" => ui.set_picking(true),
@@ -878,6 +1081,30 @@ fn back(app: &App, ui: &FilesApp, st: &mut State) {
         act(app, ui, st, Action::Clash(2));
     } else if st.form.is_some() {
         cancel_form(app, ui, st);
+    } else if st.view == View::Edit {
+        if ui.get_find_open() {
+            ui.set_find_open(false);
+            if let Some(o) = st.open.as_mut() {
+                o.find(ui, "");
+            }
+        } else if let Some(o) = st.open.as_ref().filter(|o| o.dirty()) {
+            let text = format!(
+                "Save changes to {}? You edited {} line{}. Discard drops them; the file stays as it was.",
+                o.name,
+                o.edited(),
+                if o.edited() == 1 { "" } else { "s" }
+            );
+            let q = Query {
+                text: cut(&text, neoui_proto::page::TEXT_MAX),
+                buttons: alloc::vec!["Save".into(), "Discard".into(), "Cancel".into()],
+                destructive: false,
+            };
+            if app.query(&q).is_ok() {
+                st.asking = Some(Ask::Unsaved);
+            }
+        } else {
+            leave_editor(app, ui, st);
+        }
     } else if st.view == View::Text {
         match st.text_from {
             View::Recent => fa3::show_recent(ui, st),
@@ -941,8 +1168,24 @@ fn ask(app: &App, st: &mut State, text: String, yes: &str, what: Ask) {
 }
 
 /// The shell's dialog was answered (`yes`: its first button). Back answers the last, Cancel.
-fn answer(app: &App, ui: &FilesApp, st: &mut State, yes: bool) {
+fn answer(app: &App, ui: &FilesApp, st: &mut State, i: usize) {
+    let yes = i == 0;
     match st.asking.take() {
+        Some(Ask::Unsaved) => match i {
+            0 => {
+                save_open(app, ui, st);
+                if !st.open.as_ref().is_some_and(edit::Open::dirty) {
+                    leave_editor(app, ui, st);
+                }
+            }
+            1 => {
+                if let Some(o) = &st.open {
+                    dprintln!("files: discard {}", o.path);
+                }
+                leave_editor(app, ui, st);
+            }
+            _ => {}
+        },
         Some(Ask::Discard) if yes => close_form(app, ui, st),
         Some(Ask::Purge(items)) if yes => {
             ui.set_picking(false);
@@ -1506,34 +1749,145 @@ fn view_file(app: &App, ui: &FilesApp, st: &mut State, item: &Item) {
         note_with(app, &format!("No viewer for {} yet", item.name), "");
         return;
     }
-    let mut bytes = alloc::vec![0u8; model::PREVIEW_MAX + 1];
-    let read = st.fs.open(&path, Open::Read).and_then(|f| {
-        use neo_fs::File as _;
-        let mut n = 0;
-        while n < bytes.len() {
-            let got = f.read_at(n as u64, &mut bytes[n..])?;
-            if got == 0 {
-                break;
-            }
-            n += got;
-        }
-        Ok(n)
-    });
-    let n = match read {
-        Ok(n) => n,
-        Err(e) => return toast(app, "", e.code()),
+    open_text(app, ui, st, &path, false);
+}
+
+/// A text file in the viewer (`edit` false) or its editor; the folder under it stays `st.dir`.
+fn open_text(app: &App, ui: &FilesApp, st: &mut State, path: &str, edit: bool) {
+    let letter = path.chars().next().unwrap_or('C');
+    let ro_drive = st.drives.iter().any(|&(d, ro)| d == letter && ro);
+    let mut o = match edit::Open::new(&st.fs, path, edit, ro_drive) {
+        Ok(o) => o,
+        Err(msg) => return note_with(app, &msg, ""),
     };
-    dprintln!("files: view {} {}", path, n);
-    fa3::opened(st, &path);
-    ui.set_text(model::text_preview(&bytes[..n]).into());
-    ui.set_name(item.name.as_str().into());
-    ui.set_crumbs(crumbs(&st.dir, Some(&item.name)));
-    st.file = path;
-    if st.view != View::Text {
+    o.wrap = flag(app, "files.wrap", true);
+    dprintln!(
+        "files: {} {} {}",
+        if edit { "edit" } else { "view" },
+        path,
+        o.ed.doc.lines.len()
+    );
+    fa3::opened(st, path);
+    if let Some(dir) = model::parent(path) {
+        st.dir = dir;
+    }
+    st.file = String::from(path);
+    if !matches!(st.view, View::Text | View::Edit) {
         st.text_from = st.view;
     }
-    st.view = View::Text;
-    ui.set_view("text".into());
+    st.view = if edit { View::Edit } else { View::Text };
+    ui.set_find_open(false);
+    ui.set_view(if edit { "edit" } else { "text" }.into());
+    // the pane takes its new header's size before it is measured for wrapping
+    let _ = app.redraw();
+    o.relayout(ui);
+    ui.invoke_text_top();
+    o.show(ui);
+    if edit && o.mode != edit::Mode::Table {
+        editor_keyboard(ui);
+    } else {
+        ui.global::<KeyboardFocus>().invoke_close();
+    }
+    st.open = Some(o);
+}
+
+/// Back out of the editor: the viewer of the same file (a table goes back to its folder).
+fn leave_editor(app: &App, ui: &FilesApp, st: &mut State) {
+    ui.global::<KeyboardFocus>().invoke_close();
+    ui.set_find_open(false);
+    let Some(o) = st.open.take() else { return };
+    if o.mode == edit::Mode::Table || !is_text(&o.name) {
+        let dir = o.path_dir();
+        open_dir(app, ui, st, dir);
+    } else {
+        open_text(app, ui, st, &o.path, false);
+    }
+}
+
+fn save_open(app: &App, ui: &FilesApp, st: &mut State) {
+    let Some(o) = st.open.as_mut() else { return };
+    let r = o.save(&st.fs);
+    dprintln!(
+        "files: save {} {} {}",
+        o.path,
+        r.as_ref().map_or(0, |n| *n),
+        r.as_ref().err().map_or(0, |e| *e)
+    );
+    match r {
+        Ok(_) => {
+            o.show(ui);
+            note_with(app, &format!("Saved {}", o.name), "");
+        }
+        Err(-21) => note_with(app, "This file is read-only", ""),
+        Err(e) => toast(app, "", e),
+    }
+}
+
+/// Test images only (`--features test-files`): a 5 MB log to open on the phone (files-app.md FA4's gate).
+#[cfg(feature = "test-files")]
+fn test_files(st: &State) {
+    const BIG: &str = "C:\\Data\\big.log";
+    if st.fs.entry(BIG).is_ok() {
+        return;
+    }
+    let mut s = String::with_capacity(5 << 20);
+    let mut i = 0u32;
+    while s.len() < 5 << 20 {
+        s.push_str(&format!(
+            "10:{:02}:{:02}.{:03} EFILE line {i}: Mounted E: FAT32, 41.8 GB, label MASS\r\n",
+            (i / 3600) % 60,
+            (i / 60) % 60,
+            i % 1000
+        ));
+        i += 1;
+    }
+    let r = files_ops::store::write(&*st.fs, BIG, s.as_bytes());
+    dprintln!(
+        "files: test big.log {} lines {}",
+        i,
+        r.err().map_or(0, |e| e.code())
+    );
+}
+
+/// The editor wants the system keyboard: the text one, for its Select all · Copy · Paste bar.
+fn editor_keyboard(ui: &FilesApp) {
+    let kf = ui.global::<KeyboardFocus>();
+    kf.set_mode(proto::KEYBOARD_TEXT);
+    kf.set_dismissed(false);
+    kf.set_open(true);
+    kf.set_seq(kf.get_seq() + 1);
+}
+
+/// Keys go to the editor's text (not to a find field or a table cell).
+fn editor_has_keys(ui: &FilesApp, st: &State) -> bool {
+    st.view == View::Edit
+        && !ui.get_find_open()
+        && st
+            .open
+            .as_ref()
+            .is_some_and(|o| o.mode == edit::Mode::Code || (o.mode == edit::Mode::Md && !o.preview))
+}
+
+fn editor_key(app: &App, ui: &FilesApp, st: &mut State, code: u32) {
+    let Some(o) = st.open.as_mut() else { return };
+    match o.key(ui, code) {
+        edit::Clip::None => {}
+        edit::Clip::Copy(t) => {
+            let mut end = t.len().min(proto::CLIP_MAX);
+            while !t.is_char_boundary(end) {
+                end -= 1;
+            }
+            app.set_clipboard(&t[..end]);
+            if end < t.len() {
+                note_with(app, "Copied the first 2 KB", "");
+            }
+        }
+        edit::Clip::Paste => {
+            if let Some(t) = app.clipboard() {
+                o.paste(ui, &t);
+            }
+        }
+    }
 }
 
 // ── forms ────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1565,11 +1919,17 @@ fn open_form(app: &App, ui: &FilesApp, st: &mut State, form: Form) {
     let names: Vec<&str> = st.items.iter().map(|i| i.name.as_str()).collect();
     let (kind, name, suffix) = match &form {
         Form::NewFolder => ("folder", String::new(), String::new()),
-        Form::NewFile => (
-            "file",
-            model::free_name(&names, "New file", ".txt"),
-            String::new(),
-        ),
+        // files2-new-file: the name, its type's extension after it (Text .txt to start)
+        Form::NewFile => {
+            st.new_type = 0;
+            ui.set_new_type(0);
+            let free = model::free_name(&names, "New file", ".txt");
+            (
+                "file",
+                free.trim_end_matches(".txt").to_string(),
+                String::from(".txt"),
+            )
+        }
         Form::Rename(item, ext) => (
             "rename",
             item.name[..item.name.len() - ext.len()].to_string(),
@@ -1623,7 +1983,11 @@ fn close_form(app: &App, ui: &FilesApp, st: &mut State) {
 /// ✓: make or rename, then show the folder again (a new file opens in the viewer).
 fn save_form(app: &App, ui: &FilesApp, st: &mut State) {
     let suffix = ui.get_name_suffix();
-    let name = format!("{}{}", ui.get_name_text().trim(), suffix);
+    let mut name = format!("{}{}", ui.get_name_text().trim(), suffix);
+    // Code… takes the extension in the name; none typed makes a text file
+    if matches!(st.form, Some(Form::NewFile)) && neo_view::ext_of(&name).is_empty() {
+        name.push_str(".txt");
+    }
     if !model::valid_name(&name) {
         return note_with(app, "That name can't be used", "");
     }
@@ -1659,11 +2023,8 @@ fn save_form(app: &App, ui: &FilesApp, st: &mut State) {
     match r {
         Err(e) => toast(app, "", e.code()),
         Ok(()) if matches!(form, Form::NewFile) => {
-            let item = Item {
-                name,
-                ..Item::default()
-            };
-            view_file(app, ui, st, &item);
+            let p = model::join_file(&st.dir, &name);
+            open_text(app, ui, st, &p, true);
         }
         Ok(()) => {}
     }
