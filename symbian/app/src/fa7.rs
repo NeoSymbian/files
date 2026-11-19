@@ -114,6 +114,9 @@ pub(crate) struct Open7 {
     from: View,
     kind: Kind,
     form: Option<Form>,
+    /// The cards' bytes weren't UTF-8 (a Latin-1 or UTF-16 vCard): shown, never written back (a save would lose
+    /// what the decoding replaced).
+    lossy: bool,
 }
 
 pub(crate) fn bind(
@@ -175,26 +178,44 @@ fn read(st: &State, path: &str, size: u64, max: u64) -> Result<Vec<u8>, String> 
     store::read(&*st.fs, path).map_err(|e| files_core::error_text(e.code()))
 }
 
-/// Text from bytes: UTF-8, or UTF-16 with a byte order mark (some phones export vCards so).
-fn text_of(b: &[u8]) -> String {
+/// Text from bytes: UTF-8, or UTF-16 with a byte order mark (some phones export vCards so); and whether writing it
+/// back as UTF-8 would change the file (not UTF-8, or replaced characters).
+fn text_of(b: &[u8]) -> (String, bool) {
+    let utf16 = |units: &mut dyn Iterator<Item = u16>| -> String {
+        char::decode_utf16(units)
+            .map(|r| r.unwrap_or('\u{fffd}'))
+            .collect()
+    };
     match b {
-        [0xff, 0xfe, rest @ ..] => char::decode_utf16(
-            rest.as_chunks::<2>()
-                .0
-                .iter()
-                .map(|c| u16::from_le_bytes(*c)),
-        )
-        .map(|r| r.unwrap_or('\u{fffd}'))
-        .collect(),
-        [0xfe, 0xff, rest @ ..] => char::decode_utf16(
-            rest.as_chunks::<2>()
-                .0
-                .iter()
-                .map(|c| u16::from_be_bytes(*c)),
-        )
-        .map(|r| r.unwrap_or('\u{fffd}'))
-        .collect(),
-        _ => String::from_utf8_lossy(b.strip_prefix(b"\xef\xbb\xbf").unwrap_or(b)).into_owned(),
+        [0xff, 0xfe, rest @ ..] => (
+            utf16(
+                &mut rest
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| u16::from_le_bytes(*c)),
+            ),
+            true,
+        ),
+        [0xfe, 0xff, rest @ ..] => (
+            utf16(
+                &mut rest
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| u16::from_be_bytes(*c)),
+            ),
+            true,
+        ),
+        _ => {
+            let body = b.strip_prefix(b"\xef\xbb\xbf").unwrap_or(b);
+            match core::str::from_utf8(body) {
+                Ok(t) if body.len() == b.len() => (t.to_string(), false),
+                // a UTF-8 BOM: the text is fine, but a save would drop the mark
+                Ok(t) => (t.to_string(), true),
+                Err(_) => (String::from_utf8_lossy(body).into_owned(), true),
+            }
+        }
     }
 }
 
@@ -217,6 +238,7 @@ pub(crate) fn open(app: &App, ui: &FilesApp, st: &mut State, path: &str) {
         from,
         kind: Kind::Hex,
         form: None,
+        lossy: false,
     };
     let ext = neo_view::ext_of(&o.name).to_ascii_lowercase();
     let r = match neo_view::family_of(&o.name) {
@@ -371,7 +393,8 @@ fn show(app: &App, ui: &FilesApp, st: &mut State) {
         &["Show as hex…", "Details"]
     }));
     let ro = st.drives.iter().any(|&(d, ro)| ro && o.path.starts_with(d))
-        || crate::archive::in_cache(&o.path);
+        || crate::archive::in_cache(&o.path)
+        || o.lossy;
     ui.set_read_only(ro);
     match &o.kind {
         Kind::Vcf { .. } => show_vcf(ui, st),
@@ -417,7 +440,8 @@ fn known_cards(v: &Vcf, book: Option<&contacts::Book>) -> Vec<bool> {
 }
 
 fn cards(st: &State, o: &mut Open7, ext: &str) -> Result<&'static str, String> {
-    let text = text_of(&read(st, &o.path, o.size, CARDS_MAX)?);
+    let (text, lossy) = text_of(&read(st, &o.path, o.size, CARDS_MAX)?);
+    o.lossy = lossy;
     if ext == "ics" {
         let ics = Ics::parse(&text).map_err(|e| e.to_string())?;
         o.kind = Kind::Ics(ics);
@@ -527,10 +551,12 @@ fn edit_card(ui: &FilesApp, st: &mut State, i: usize) {
     ui.set_c_phones(ModelRc::from(phones.clone()));
     ui.set_c_emails(ModelRc::from(emails.clone()));
     ui.set_pim_form("vcf".into());
+    // what the form shows, read back the way Save reads it (trimmed, empty rows dropped): Back asks only after edits
+    let start = card_fields(ui, &phones, &emails);
     if let Some(o) = st.fa7.as_mut() {
         o.form = Some(Form::Card {
             i,
-            start: f,
+            start,
             phones,
             emails,
             label: (false, 0),
@@ -613,7 +639,10 @@ fn edit_event(ui: &FilesApp, st: &mut State, i: usize) {
     if ui.get_read_only() || i >= ics.len() {
         return;
     }
-    let start = ics.event(i);
+    let mut start = ics.event(i);
+    // as changed() reads the fields back
+    start.summary = start.summary.trim().to_string();
+    start.location = start.location.trim().to_string();
     ui.set_form_line(format!("{name} · {}", pim::count(ics.len(), "event", "events")).into());
     ui.set_e_title(start.summary.as_str().into());
     ui.set_e_place(start.location.as_str().into());
@@ -808,25 +837,38 @@ fn date_set(ui: &FilesApp, st: &mut State, y: i32, m: i32, d: i32) {
 
 fn time_set(ui: &FilesApp, st: &mut State, h: i32, m: i32) {
     ui.set_time_open(false);
+    let today = today();
     let Some((ev, picking)) = ev_mut(st) else {
         return;
     };
     let t = Some((h.clamp(0, 23) as u8, m.clamp(0, 59) as u8, 0));
     match picking {
         Picking::StartTime => {
-            if let Some(s) = ev.start.as_mut() {
-                let len = ev.end.as_ref().map(|e| e.seconds() - s.seconds());
-                s.time = t;
-                ev.end = len.map(|l| s.plus(l));
-            }
+            let mut s = ev.start.clone().unwrap_or(When {
+                date: today,
+                time: t,
+                utc: false,
+                tzid: None,
+            });
+            let len = ev.end.as_ref().map(|e| e.seconds() - s.seconds());
+            s.time = t;
+            ev.end = len.map(|l| s.plus(l));
+            ev.start = Some(s);
         }
         Picking::EndTime => {
-            if let (Some(e), Some(s)) = (ev.end.as_mut(), ev.start.as_ref()) {
-                e.time = t;
-                if e.seconds() < s.seconds() {
-                    *e = s.clone();
-                }
+            let s = ev.start.clone().unwrap_or(When {
+                date: today,
+                time: Some((9, 0, 0)),
+                utc: false,
+                tzid: None,
+            });
+            let mut e = ev.end.clone().unwrap_or_else(|| s.clone());
+            e.time = t;
+            if e.seconds() < s.seconds() {
+                e = s.clone();
             }
+            ev.start = Some(s);
+            ev.end = Some(e);
         }
         _ => {}
     }
@@ -938,20 +980,28 @@ fn close_form(ui: &FilesApp, st: &mut State) {
 fn save(app: &App, ui: &FilesApp, st: &mut State) {
     changed(ui, st);
     let Some(o) = st.fa7.as_mut() else { return };
-    let text = match (&mut o.kind, &o.form) {
+    // edited on a copy: a failed write leaves the model as the file is (Add to Contacts reads it)
+    let (text, kind) = match (&o.kind, &o.form) {
         (
-            Kind::Vcf { v, .. },
+            Kind::Vcf { v, checked, known },
             Some(Form::Card {
                 i, phones, emails, ..
             }),
         ) => {
-            let f = card_fields(ui, phones, emails);
-            v.set(*i, &f);
-            v.write()
+            let mut v = v.clone();
+            v.set(*i, &card_fields(ui, phones, emails));
+            let text = v.write();
+            let kind = Kind::Vcf {
+                checked: checked.clone(),
+                known: known.clone(),
+                v,
+            };
+            (text, kind)
         }
         (Kind::Ics(ics), Some(Form::Event { i, ev, .. })) => {
+            let mut ics = ics.clone();
             ics.set(*i, ev);
-            ics.write()
+            (ics.write(), Kind::Ics(ics))
         }
         _ => return,
     };
@@ -962,6 +1012,7 @@ fn save(app: &App, ui: &FilesApp, st: &mut State) {
             dprintln!("files: saved {} {}", path, text.len());
             if let Some(o) = st.fa7.as_mut() {
                 o.size = text.len() as u64;
+                o.kind = kind;
                 if let Kind::Vcf { v, checked, known } = &mut o.kind {
                     checked.resize(v.len(), true);
                     known.resize(v.len(), false);
@@ -1075,7 +1126,7 @@ fn package(ui: &FilesApp, st: &State, o: &mut Open7, ext: &str) -> Result<&'stat
             )
         }
         "jad" => {
-            let m = jad::parse(&text_of(&read(st, &o.path, o.size, SMALL_MAX)?))
+            let m = jad::parse(&text_of(&read(st, &o.path, o.size, SMALL_MAX)?).0)
                 .map_err(|e| e.to_string())?;
             inspect::midlet_screen(&m, o.size, "JAD")
         }

@@ -58,8 +58,10 @@ const SCRIPTS: &[(&str, &[(u32, u32)])] = &[
 const PX_MAX: f32 = 512.0;
 /// The largest bitmap side (a line's width is the caller's `max_width`, also capped).
 const SIDE_MAX: u32 = 4096;
-/// Glyphs kept; the cache starts over past this.
+/// Glyphs kept, and their bytes; the cache starts over past either (a crafted bounding box makes every glyph
+/// 4 em square).
 const CACHE_MAX: usize = 1024;
+const CACHE_BYTES: usize = 8 << 20;
 
 struct Glyph {
     /// The bitmap's top-left from the pen on the baseline (y down).
@@ -72,8 +74,12 @@ struct Glyph {
 
 pub struct Font<'a> {
     face: Face<'a>,
+    /// One Unicode cmap subtable, chosen once: `Face::glyph_index` searches every subtable on each call, and a
+    /// crafted cmap with 65,535 records makes that a hang.
+    sub: Option<cmap::Subtable<'a>>,
     faces: u32,
     cache: BTreeMap<(u16, u32), Glyph>,
+    cached: usize,
 }
 
 impl<'a> Font<'a> {
@@ -85,10 +91,21 @@ impl<'a> Font<'a> {
             ttf_parser::FaceParsingError::UnknownMagic => Error::Bad("Not a font"),
             _ => Error::Bad("Not a font: a table is missing or broken"),
         })?;
+        let sub = face.tables().cmap.and_then(|t| {
+            let uni = || t.subtables.into_iter().filter(|s| s.is_unicode());
+            uni()
+                .find(|s| matches!(s.format, cmap::Format::SegmentedCoverage(_)))
+                .or_else(|| {
+                    uni().find(|s| matches!(s.format, cmap::Format::SegmentMappingToDeltaValues(_)))
+                })
+                .or_else(|| uni().next())
+        });
         Ok(Font {
             face,
+            sub,
             faces,
             cache: BTreeMap::new(),
+            cached: 0,
         })
     }
 
@@ -165,7 +182,7 @@ impl<'a> Font<'a> {
             if pen >= max_width as f32 {
                 break;
             }
-            let gid = self.face.glyph_index(c).unwrap_or(GlyphId(0));
+            let gid = self.gid(c).unwrap_or(GlyphId(0));
             glyphs.push((gid, libm::roundf(pen) as i32));
             pen += self.face.glyph_hor_advance(gid).unwrap_or(0) as f32 * scale;
         }
@@ -192,7 +209,7 @@ impl<'a> Font<'a> {
         let scale = px / self.face.units_per_em() as f32;
         let asc = self.face.ascender() as f32 * scale;
         let desc = self.face.descender() as f32 * scale;
-        let gid = self.face.glyph_index(c).unwrap_or(GlyphId(0));
+        let gid = self.gid(c).unwrap_or(GlyphId(0));
         let adv = self.face.glyph_hor_advance(gid).unwrap_or(0) as f32 * scale;
         let x = libm::roundf((cell as f32 - adv) / 2.0) as i32;
         let baseline = libm::roundf((cell as f32 - (asc - desc)) / 2.0 + asc) as i32;
@@ -201,15 +218,20 @@ impl<'a> Font<'a> {
             height: cell,
             alpha: vec![0; cell as usize * cell as usize],
         };
-        if let Some(g) = self.glyph(gid, px) {
-            blit(&mut out, g, x, baseline);
+        // drawn once each (the Glyphs tab): not kept, so a grid of big glyphs isn't held twice
+        if let Some(g) = self.draw(gid, px) {
+            blit(&mut out, &g, x, baseline);
         }
         out
     }
 
+    fn gid(&self, c: char) -> Option<GlyphId> {
+        self.sub.and_then(|s| s.glyph_index(u32::from(c)))
+    }
+
     fn has(&self, c: u32) -> bool {
         char::from_u32(c)
-            .and_then(|c| self.face.glyph_index(c))
+            .and_then(|c| self.gid(c))
             .is_some_and(|g| g.0 != 0)
     }
 
@@ -260,10 +282,12 @@ impl<'a> Font<'a> {
     fn glyph(&mut self, gid: GlyphId, px: f32) -> Option<&Glyph> {
         let key = (gid.0, px.to_bits());
         if !self.cache.contains_key(&key) {
-            if self.cache.len() >= CACHE_MAX {
-                self.cache.clear();
-            }
             let g = self.draw(gid, px)?;
+            if self.cache.len() >= CACHE_MAX || self.cached + g.alpha.len() > CACHE_BYTES {
+                self.cache.clear();
+                self.cached = 0;
+            }
+            self.cached += g.alpha.len();
             self.cache.insert(key, g);
         }
         self.cache.get(&key)

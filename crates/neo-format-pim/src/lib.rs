@@ -127,21 +127,25 @@ pub fn lines(text: &str) -> Vec<Line> {
     let mut out = Vec::new();
     let mut raw = String::new();
     let mut logical = String::new();
+    // decided once, from the line's first physical line (a rescan per fold would be quadratic)
+    let mut qp = false;
     for p in physical(text) {
         let body = trim_eol(p);
+        // a soft break first: the line after it is taken whole, a leading space included
+        let soft = !raw.is_empty() && qp && logical.ends_with('=');
         let folded = !raw.is_empty() && (body.starts_with(' ') || body.starts_with('\t'));
-        let soft = !raw.is_empty() && logical.ends_with('=') && is_qp_head(&logical);
-        if folded {
-            logical.push_str(&body[1..]);
-        } else if soft {
+        if soft {
             logical.pop();
             logical.push_str(body);
+        } else if folded {
+            logical.push_str(&body[1..]);
         } else {
             if !raw.is_empty() {
                 out.push(parse_line(core::mem::take(&mut raw), &logical));
             }
             logical.clear();
             logical.push_str(body);
+            qp = is_qp_head(body);
         }
         raw.push_str(p);
     }

@@ -394,36 +394,66 @@ impl Editor {
         new: &[(Label, String)],
     ) {
         let email = name == "EMAIL";
+        // `old[j]` is line `at[j]` (fields() reads them in order)
         let at: Vec<usize> = card
             .iter()
             .enumerate()
             .filter(|(_, l)| l.name == name)
             .map(|(i, _)| i)
             .collect();
+        // each new entry takes the old line with its value (a removed first number doesn't shift the others into
+        // its line), then the rest pair up in order
+        let mut pair: Vec<Option<usize>> = alloc::vec![None; new.len()];
+        let mut used = alloc::vec![false; at.len()];
         for (k, (label, value)) in new.iter().enumerate() {
-            if let Some(&i) = at.get(k) {
-                if old.get(k) == Some(&(*label, value.clone())) {
-                    continue;
-                }
-                let line = &card[i];
-                let params = if Label::of(line) == *label {
-                    line.params.clone()
-                } else {
-                    self.typed(*label, email, &line.params)
-                };
-                let g = line.group.clone();
-                card[i] = made(self.text(&g, name, &params, &self.esc(value)));
+            let same = |j: usize| !used[j] && old.get(j).is_some_and(|o| o.1 == *value);
+            let hit = (0..at.len())
+                .find(|&j| same(j) && old[j].0 == *label)
+                .or_else(|| (0..at.len()).find(|&j| same(j)));
+            if let Some(j) = hit {
+                used[j] = true;
+                pair[k] = Some(j);
             }
         }
-        // the lines past the new list's end go; the new list's extra entries follow the last kept line
-        for &i in at.iter().skip(new.len()).rev() {
+        for p in pair.iter_mut().filter(|p| p.is_none()) {
+            if let Some(j) = (0..at.len()).find(|&j| !used[j]) {
+                used[j] = true;
+                *p = Some(j);
+            }
+        }
+        for (k, (label, value)) in new.iter().enumerate() {
+            let Some(j) = pair[k] else { continue };
+            if old.get(j) == Some(&(*label, value.clone())) {
+                continue;
+            }
+            let line = &card[at[j]];
+            let params = if Label::of(line) == *label {
+                line.params.clone()
+            } else {
+                self.typed(*label, email, &line.params)
+            };
+            let g = line.group.clone();
+            card[at[j]] = made(self.text(&g, name, &params, &self.esc(value)));
+        }
+        // the old lines no entry took go, with their group's other lines (Apple's item1.X-ABLabel)
+        let gone: Vec<usize> = (0..at.len()).filter(|&j| !used[j]).map(|j| at[j]).collect();
+        let groups: Vec<String> = gone
+            .iter()
+            .map(|&i| card[i].group.clone())
+            .filter(|g| !g.is_empty())
+            .collect();
+        for &i in gone.iter().rev() {
             card.remove(i);
         }
+        card.retain(|l| !groups.contains(&l.group) || l.name == name);
         let mut pos = Self::insert_at(card, &[name]);
         if !card.iter().any(|l| l.name == name) {
             pos = Self::insert_at(card, &["TEL", "ORG", "FN", "N"]);
         }
-        for (label, value) in new.iter().skip(at.len()) {
+        for (k, (label, value)) in new.iter().enumerate() {
+            if pair[k].is_some() {
+                continue;
+            }
             let params = self.typed(*label, email, &[]);
             card.insert(pos, made(self.text("", name, &params, &self.esc(value))));
             pos += 1;

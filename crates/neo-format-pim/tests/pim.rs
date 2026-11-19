@@ -509,3 +509,34 @@ fn broken_files_never_panic() {
         }
     }
 }
+
+/// Review fixes: a soft break before a space, an overflowing DURATION, removing the first number.
+#[test]
+fn review_cases() {
+    // a 2.1 quoted-printable value whose soft break falls right before a space
+    let mut n = Vcf::parse(&data("nokia21.vcf")).unwrap();
+    let mut f = n.fields(1);
+    f.last = format!("é{} b", "a".repeat(27));
+    n.set(1, &f);
+    let out = n.write();
+    assert_eq!(Vcf::parse(&out).unwrap().fields(1).last, f.last, "{out}");
+    let raw = "BEGIN:VCARD\r\nVERSION:2.1\r\nNOTE;ENCODING=QUOTED-PRINTABLE:one=\r\n two\r\nEND:VCARD\r\n";
+    let v = Vcf::parse(raw).unwrap();
+    assert_eq!(v.write(), raw);
+
+    // DTSTART + a huge DURATION: no overflow
+    let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nDTSTART:20261121T190000Z\r\nDURATION:PT9223372036854775807S\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    let _ = Ics::parse(ics).unwrap().event(0);
+
+    // removing the first of two numbers keeps the second in its own line, and the first's label line goes
+    let t = "BEGIN:VCARD\r\nVERSION:3.0\r\nN:C;S;;;\r\nitem1.TEL;TYPE=CELL:+1 111\r\nitem1.X-ABLabel:UK\r\n\
+TEL;TYPE=WORK;TYPE=PREF:+2 222\r\nEND:VCARD\r\n";
+    let mut v = Vcf::parse(t).unwrap();
+    let mut f = v.fields(0);
+    f.phones.remove(0);
+    v.set(0, &f);
+    let out = v.write();
+    assert!(out.contains("TEL;TYPE=WORK;TYPE=PREF:+2 222\r\n"), "{out}");
+    assert!(!out.contains("item1"), "{out}");
+    assert_eq!(Vcf::parse(&out).unwrap().fields(0), f);
+}

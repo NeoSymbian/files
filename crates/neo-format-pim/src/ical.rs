@@ -81,7 +81,7 @@ impl When {
 
     /// `secs` later (a DURATION's end).
     pub fn plus(&self, secs: i64) -> When {
-        let t = self.seconds() + secs;
+        let t = self.seconds().saturating_add(secs);
         let day = t.div_euclid(86_400);
         let rem = t.rem_euclid(86_400);
         When {

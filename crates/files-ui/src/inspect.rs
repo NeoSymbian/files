@@ -52,9 +52,10 @@ const SAMPLES: [(&str, &str); 7] = [
     ("ARABIC", "نص حكيم له سر قاطع وذو شأن عظيم"),
 ];
 const SIZES: [f32; 4] = [12.0, 16.0, 24.0, 32.0];
-/// shortcut: the Glyphs tab draws the first 600 characters at once; a lazily drawn grid when fonts with thousands
+/// shortcut: the Glyphs tab draws the first 240 characters at once (each cell is RGBA: 240 are 14 MB at 3x); a lazily
+/// drawn grid when fonts with thousands
 /// (CJK) need all of them
-pub const GLYPHS_MAX: usize = 600;
+pub const GLYPHS_MAX: usize = 240;
 
 /// What the font view shows.
 pub struct FontScreen {
