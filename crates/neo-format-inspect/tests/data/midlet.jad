@@ -1,0 +1,11 @@
+MIDlet-Name: Pocket Chess
+MIDlet-Vendor: NeoSymbian Tests
+MIDlet-Version: 2.1.0
+MIDlet-Jar-URL: midlet.jar
+MIDlet-Jar-Size: 48213
+MIDlet-1: Pocket Chess, /icon.png, chess.Main
+MicroEdition-Profile: MIDP-2.0
+MicroEdition-Configuration: CLDC-1.1
+MIDlet-Permissions: javax.microedition.io.Connector.http,javax.microedi
+ tion.io.Connector.https
+MIDlet-Permissions-Opt: javax.microedition.io.Connector.sms
