@@ -76,7 +76,12 @@ fn info_tags(list: &[u8], tags: &mut Tags) {
             b"IPRD" => tags.album = text(body),
             _ => {}
         }
-        i = i + 8 + len + (len & 1);
+        // in u64: a length near u32::MAX would wrap a 32-bit index back to where it was
+        let next = i as u64 + 8 + len as u64 + (len & 1) as u64;
+        if next > list.len() as u64 {
+            break;
+        }
+        i = next as usize;
     }
 }
 
@@ -400,6 +405,20 @@ mod tests {
         assert_eq!(t.tags.title, "Yerevan Nights");
         assert_eq!(t.tags.artist, "Lusine Trio");
         assert_eq!(t.tags.album, "Live");
+    }
+
+    #[test]
+    fn huge_info_lengths_end_the_walk() {
+        let l = b"INFO".to_vec();
+        for len in [0xffff_fff8u32, u32::MAX] {
+            let mut list = l.clone();
+            list.extend_from_slice(b"INAM");
+            list.extend_from_slice(&len.to_le_bytes());
+            list.extend_from_slice(b"abc");
+            let mut tags = Tags::default();
+            info_tags(&list, &mut tags);
+            assert_eq!(tags.title, "abc");
+        }
     }
 
     #[test]

@@ -225,9 +225,6 @@ fn text_of(b: &[u8]) -> (String, bool) {
 pub(crate) fn open(app: &App, ui: &FilesApp, st: &mut State, path: &str) {
     let name = neo_fs::path::name_of(path).to_string();
     let size = st.fs.entry(path).map(|e| e.size).unwrap_or(0);
-    if let Some(dir) = neo_fs::path::parent(path) {
-        st.dir = dir;
-    }
     crate::fa3::opened(st, path);
     let from = match st.view {
         View::Fa7 => st.fa7.as_ref().map_or(View::Folder, |o| o.from),
@@ -255,6 +252,10 @@ pub(crate) fn open(app: &App, ui: &FilesApp, st: &mut State, path: &str) {
         _ => Err(String::new()),
     };
     dprintln!("files: fa7 {} {}", path, r.as_ref().map_or("hex", |_| "ok"));
+    // after the viewer: the player compares it with the file's folder to reuse that folder's rows
+    if let Some(dir) = neo_fs::path::parent(path) {
+        st.dir = dir;
+    }
     st.view = View::Fa7;
     st.fa7 = Some(o);
     match r {

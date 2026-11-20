@@ -502,6 +502,10 @@ fn run() -> Result<(), i32> {
                         && image::touch(&app, &ui, &mut st, id, x, y, phase) => {}
                 _ => app.handle(&e),
             }
+            // the player: "Stops when you leave Files"
+            if let AppEvent::Visible(shown) = e {
+                audio::visible(&mut st, shown);
+            }
             match e {
                 AppEvent::Quit => break,
                 AppEvent::Back if neoapp::kit_back!(ui) => {}
@@ -521,8 +525,6 @@ fn run() -> Result<(), i32> {
                     fa8::restore_clip(&app, &ui, &mut st);
                 }
                 AppEvent::Visible(true) => fa8::restore_clip(&app, &ui, &mut st),
-                // "Stops when you leave Files"
-                AppEvent::Visible(false) => audio::hidden(&mut st),
                 // another app asks for a file (the picker) or a name to save one
                 AppEvent::Open { page } => fa8::opened(&app, &ui, &mut st, page),
                 AppEvent::Notified {

@@ -29,8 +29,10 @@ use neoaudio::{Info, op, state};
 
 /// The decoders keep their tables on it (as the picture worker's).
 const STACK: i32 = 256 * 1024;
-/// PCM in one WRITE: 46 ms of 44.1 kHz stereo, so a tap reaches the worker within about that.
+/// The most PCM in one WRITE (bytes); a WRITE carries about [`WRITE_MS`] of the track, so a tap reaches the worker
+/// within about that.
 const CHUNK: usize = 8192;
+const WRITE_MS: usize = 50;
 /// How often a held stream asks whether the call is over.
 const CALL_POLL_US: i32 = 100_000;
 /// How often the end of a track is looked for while its queue plays out.
@@ -61,6 +63,8 @@ enum Cmd {
     Load(u32, String, u64, bool),
     Play,
     Pause,
+    /// Files went to the background: pause, unless a call has the speaker (then held, to resume after it).
+    Hide,
     Seek(u64),
     Stop,
 }
@@ -100,24 +104,32 @@ fn open_track<'a>(fs: &'a E32Fs, path: &str) -> Result<(Track<'a>, u64), Error> 
     Ok((neo_format_media::open(At(f, size))?, size))
 }
 
+/// A file system's code `c` is `FILE + c`; the decoders' are below `MEDIA`; NeoAudio's stay as they are.
+const FILE: i32 = -1000;
+const MEDIA: i32 = -2000;
+
 fn media_code(e: Error) -> i32 {
     match e {
-        Error::NotAudio => -10,
-        Error::Unsupported => -11,
-        Error::Corrupt => -12,
-        Error::Io(c) => c,
+        Error::NotAudio => MEDIA - 1,
+        Error::Unsupported => MEDIA - 2,
+        Error::Corrupt => MEDIA - 3,
+        Error::Io(c) => FILE + c,
     }
 }
 
 /// The sentence for a code the worker or the opener gave.
 pub fn why(code: i32) -> String {
     match code {
-        -10 => "It isn't audio Files knows.".into(),
-        -11 => "Files can't play this kind of audio yet.".into(),
-        -12 => "The file is broken.".into(),
-        -6 => "NeoAudio can't play its sample rate.".into(),
-        -1 | -18 => "The audio service isn't running.".into(),
-        c => format!("It couldn't be read ({c})."),
+        c if c == MEDIA - 1 => "It isn't audio Files knows.".into(),
+        c if c == MEDIA - 2 => "Files can't play this kind of audio yet.".into(),
+        c if c == MEDIA - 3 => "The file is broken.".into(),
+        c if c == FILE - 1 => "The file isn't there any more.".into(),
+        c if c == FILE - 18 => "Its drive isn't ready.".into(),
+        c if c <= FILE => format!("It couldn't be read ({}).", c - FILE),
+        neoaudio::err::ARGUMENT => "NeoAudio can't play its sample rate.".into(),
+        -1 => "The audio service isn't running.".into(),
+        neoaudio::err::NOT_READY => "The audio service isn't ready yet.".into(),
+        c => format!("NeoAudio couldn't play it ({c})."),
     }
 }
 
@@ -197,6 +209,8 @@ struct Now<'a> {
     state: Play,
     /// The decoder has nothing more: the queue plays out.
     drained: bool,
+    /// Samples a WRITE carries: about [`WRITE_MS`], whole frames.
+    chunk: usize,
 }
 
 impl Worker {
@@ -283,7 +297,11 @@ impl Worker {
         );
         let state = if play { Play::Playing } else { Play::Paused };
         self.set(n, state, Some(at_ms));
+        let ch = track.info.channels.max(1) as usize;
+        let frames = (track.info.rate as usize * WRITE_MS / 1000).max(64);
+        let chunk = (frames * ch).min(CHUNK / 2) / ch * ch;
         Some(Now {
+            chunk,
             n,
             track,
             out,
@@ -321,6 +339,19 @@ impl Worker {
                             p.state = Play::Paused;
                         }
                     }
+                    Cmd::Hide => {
+                        if let Some(p) = now
+                            .as_mut()
+                            .filter(|p| matches!(p.state, Play::Playing | Play::Held))
+                        {
+                            p.out.call(op::PAUSE, 1);
+                            p.state = if p.out.info().state == state::PREEMPTED {
+                                Play::Held
+                            } else {
+                                Play::Paused
+                            };
+                        }
+                    }
                     Cmd::Seek(ms) => {
                         if let Some(p) = now.as_mut() {
                             let f = p
@@ -343,7 +374,7 @@ impl Worker {
             };
             match p.state {
                 Play::Playing if !p.drained => {
-                    let n = match p.track.read(&mut pcm) {
+                    let n = match p.track.read(&mut pcm[..p.chunk]) {
                         Ok(n) => n,
                         Err(e) => {
                             // a broken frame mid-file: what came before plays out
@@ -423,6 +454,8 @@ pub struct Audio {
     w: Option<&'static Worker>,
     p: Option<Player>,
     n: u32,
+    /// Files is in the background: a track that ends doesn't start the next.
+    hidden: bool,
 }
 
 impl Audio {
@@ -431,15 +464,13 @@ impl Audio {
             w: Worker::new().ok(),
             p: None,
             n: 0,
+            hidden: false,
         }
     }
 
-    /// A track is loaded and not paused or ended: the UI polls faster.
+    /// The player is open: the UI polls (a state change right after a tap shows within a poll).
     pub fn busy(&self) -> bool {
         self.p.is_some()
-            && self
-                .w
-                .is_some_and(|w| matches!(w.now().1, Play::Playing | Play::Held))
     }
 }
 
@@ -519,11 +550,16 @@ fn describe(ui: &FilesApp, st: &mut State) -> Result<(), i32> {
         return Ok(());
     };
     let path = p.list[p.at].clone();
+    let name = neo_fs::path::name_of(&path);
+    ui.set_name(name.into());
+    ui.set_audio_title(words::title("", name).into());
+    ui.set_audio_sub("".into());
+    ui.set_audio_meta("".into());
+    ui.set_audio_total(words::time(0).into());
+    p.ms = 0;
     let (t, size) = open_track(&st.fs, &path).map_err(media_code)?;
     p.ms = t.info.ms();
-    let name = neo_fs::path::name_of(&path);
     let dir = neo_fs::path::parent(&path).unwrap_or_default();
-    ui.set_name(name.into());
     ui.set_audio_title(words::title(&t.tags.title, name).into());
     ui.set_audio_sub(words::sub(&t.tags.artist, &t.tags.album).into());
     ui.set_audio_meta(words::meta(t.format.name(), t.info.kbps, t.info.rate, size, &dir).into());
@@ -555,15 +591,29 @@ fn load(st: &mut State, w: &'static Worker, at_ms: u64, play: bool) {
 }
 
 /// Go to track `to` of the list and play it (or show it paused).
-fn go(app: &App, ui: &FilesApp, st: &mut State, to: usize, play: bool) {
+fn go(ui: &FilesApp, st: &mut State, to: usize, play: bool) {
     let Some(w) = st.audio.w else { return };
     if let Some(p) = st.audio.p.as_mut() {
         p.at = to;
     }
-    if let Err(e) = describe(ui, st) {
-        crate::note_with(app, &why(e), "");
+    match describe(ui, st) {
+        Ok(()) => load(st, w, 0, play),
+        Err(e) => fail(st, w, e),
     }
-    load(st, w, 0, play);
+}
+
+/// The track can't play: the old one stops and the page shows why (once, from [`poll`]).
+fn fail(st: &mut State, w: &'static Worker, code: i32) {
+    let Some(p) = st.audio.p.as_mut() else { return };
+    st.audio.n = st.audio.n.wrapping_add(1);
+    p.n = st.audio.n;
+    {
+        let mut q = w.q.lock();
+        q.n = p.n;
+        q.state = Play::Failed(code);
+        q.pos_ms = 0;
+    }
+    w.post(Cmd::Stop);
 }
 
 /// The next track by shuffle and repeat; None at the end of the folder without repeat.
@@ -610,12 +660,12 @@ pub(crate) fn act(app: &App, ui: &FilesApp, st: &mut State, a: Act) {
                 }
             } else {
                 let to = (p.at + p.list.len() - 1) % p.list.len();
-                go(app, ui, st, to, true);
+                go(ui, st, to, true);
             }
         }
         Act::Next => {
             if let Some(to) = next_of(p, false) {
-                go(app, ui, st, to, true);
+                go(ui, st, to, true);
             }
         }
         Act::Shuffle => {
@@ -655,11 +705,14 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
     }
     if state == Play::Ended {
         match next_of(p, true) {
-            Some(to) => return go(app, ui, st, to, true),
+            Some(to) => {
+                let play = !st.audio.hidden;
+                return go(ui, st, to, play);
+            }
             None => {
                 // the folder played through: back to its first track, paused
                 p.shown = (Play::Idle, u64::MAX);
-                return go(app, ui, st, 0, false);
+                return go(ui, st, 0, false);
             }
         }
     }
@@ -688,10 +741,12 @@ pub(crate) fn close(st: &mut State) {
     }
 }
 
-/// Files went to the background: playback stops where it is.
-pub(crate) fn hidden(st: &mut State) {
-    if let (Some(w), Some(_)) = (st.audio.w, st.audio.p.as_ref()) {
-        w.post(Cmd::Pause);
+/// Files went to the background ("Stops when you leave Files") or came back. A call that brings Phone to the front
+/// has the speaker already: the worker holds the track and resumes it after the call.
+pub(crate) fn visible(st: &mut State, shown: bool) {
+    st.audio.hidden = !shown;
+    if let (false, Some(w), Some(_)) = (shown, st.audio.w, st.audio.p.as_ref()) {
+        w.post(Cmd::Hide);
     }
 }
 
