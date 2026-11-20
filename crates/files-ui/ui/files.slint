@@ -23,6 +23,7 @@ import { TypeTile, Seg, CleanCard, Detail, Pick, UsedCard, GroupTile, CleanItem,
 import { TSpan, TRow, Mark, TextPane, TextMetrics } from "text.slint";
 import { PackItem, WayRow, JobCard, ArchiveBar, ViewOnly, CompressForm, FolderPicker } from "fa6.slint";
 import { PimLine, PimCard, PimField, EvRow, EvCard, Sample, SampleGroup, GlyphRow, InfoGroup, VcfView, VcfEdit, IcsView, IcsEdit, FontView, CertView, AppView, UnknownView } from "fa7.slint";
+import { AudioView } from "audio.slint";
 import { MdSpan, MdRow, CellRow, Col, CodeKeys, StatusLine, FindBar, Segments, MdView, TableGrid, CellBar, TypeChips } from "editor.slint";
 export { TSpan, TRow, Mark, MdSpan, MdRow, CellRow, Col, TextMetrics, StripItem }
 export { PimLine, PimCard, PimField, EvRow, EvCard, Sample, SampleGroup, GlyphRow, InfoGroup }
@@ -702,7 +703,7 @@ export component FilesApp inherits Window {
     in property <string> cell-name;
     in property <int> new-type;
 
-    // FA7: views "vcf", "ics", "font", "cert", "app", "unknown"; `pim-form` "vcf" or "ics" is the form over them.
+    // FA7: views "vcf", "ics", "font", "cert", "app", "unknown" (and FA9's "audio"); `pim-form` "vcf" or "ics" is the form over them.
     // The header's ⋮ (Show as hex…, Details) is `fa7-menu`.
     in property <[string]> fa7-menu;
     in property <string> pim-form;
@@ -778,6 +779,26 @@ export component FilesApp inherits Window {
     in property <string> hex-info;
     in property <[TRow]> hex-rows;
     in property <int> hex-total;
+    // FA9: view "audio" (files2-view-audio), under FA7's header (Share, ⋮)
+    in property <image> audio-cover;
+    in property <bool> audio-has-cover;
+    in property <string> audio-title;
+    in property <string> audio-sub;
+    in property <float> audio-pos;
+    in property <string> audio-elapsed;
+    in property <string> audio-total;
+    in property <bool> audio-playing;
+    in property <bool> audio-shuffle;
+    in property <int> audio-repeat;
+    in property <bool> audio-has-prev;
+    in property <bool> audio-has-next;
+    in property <string> audio-meta;
+    callback audio-toggle();
+    callback audio-prev();
+    callback audio-next();
+    callback audio-shuffle-tapped();
+    callback audio-repeat-tapped();
+    callback audio-seek(float);
     callback fa7-menu-picked(string);
     callback vcf-toggle(int);
     callback vcf-open(int);
@@ -1195,7 +1216,7 @@ export component FilesApp inherits Window {
             }
         }
         // FA7 (files2-spec-headers): [← name · share · edit (cards and events) · ⋮]
-        if root.view == "vcf" || root.view == "ics" || root.view == "font" || root.view == "cert" || root.view == "app" || root.view == "unknown": SubHeader {
+        if root.view == "vcf" || root.view == "ics" || root.view == "font" || root.view == "cert" || root.view == "app" || root.view == "unknown" || root.view == "audio": SubHeader {
             title: root.name;
             title-font: "DejaVu Sans";
             search: false;
@@ -2170,6 +2191,40 @@ export component FilesApp inherits Window {
                 note: root.app-note;
                 cancel => {
                     root.up();
+                }
+            }
+            if root.view == "audio": AudioView {
+                cover: root.audio-cover;
+                has-cover: root.audio-has-cover;
+                title: root.audio-title;
+                sub: root.audio-sub;
+                pos: root.audio-pos;
+                elapsed: root.audio-elapsed;
+                total: root.audio-total;
+                playing: root.audio-playing;
+                shuffle: root.audio-shuffle;
+                repeat: root.audio-repeat;
+                has-prev: root.audio-has-prev;
+                has-next: root.audio-has-next;
+                meta: root.audio-meta;
+                footer: root.fa7-footer;
+                toggle => {
+                    root.audio-toggle();
+                }
+                prev => {
+                    root.audio-prev();
+                }
+                next => {
+                    root.audio-next();
+                }
+                shuffle-tapped => {
+                    root.audio-shuffle-tapped();
+                }
+                repeat-tapped => {
+                    root.audio-repeat-tapped();
+                }
+                seek(v) => {
+                    root.audio-seek(v);
                 }
             }
             if root.view == "unknown": UnknownView {

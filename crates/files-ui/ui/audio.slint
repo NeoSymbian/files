@@ -1,0 +1,317 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// FA9 (audio): files2-view-audio. The cover (or the purple "no cover art" tile with its record), the title and
+// "Artist · Album", the seek bar with the times, shuffle / previous / play-pause / next / repeat, the format line,
+// and the footer: playback stops when you leave Files; Open in Music waits for a Music app (drawn disabled).
+
+import { Theme, Glyph, Button } from "@neoui/kit.slint";
+import { Footer } from "fa7.slint";
+
+// Tags are often in accented Latin ("Café", "Tunç"): Slint bakes only the glyphs its .slint literals use (plus ASCII and
+// the kit's keyboard Alphabets), so the player carries Latin-1 and Latin Extended-A letters here.
+component TagLetters inherits Text {
+    visible: false;
+    font-family: "DejaVu Sans";
+    text: "ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿ"
+        + "ĀāĂăĄąĆćĈĉĊċČčĎďĐđĒēĔĕĖėĘęĚěĜĝĞğĠġĢģĤĥĦħĨĩĪīĬĭĮįİıĲĳĴĵĶķĸĹĺĻļĽľĿŀŁłŃńŅņŇňŉŊŋŌōŎŏŐőŒœŔŕŖŗŘřŚśŜŝŞşŠšŢţŤťŦŧŨũŪūŬŭŮůŰűŲųŴŵŶŷŸŹźŻżŽžſ";
+}
+
+// the record sliding out of the no-cover tile
+component Record inherits Rectangle {
+    border-radius: self.width / 2;
+    background: #15121c;
+    for r in [0.92, 0.82, 0.72, 0.62, 0.52]: Rectangle {
+        width: root.width * r;
+        height: self.width;
+        border-radius: self.width / 2;
+        border-width: max(1px, Theme.dp / 2);
+        border-color: #ffffff10;
+    }
+    Rectangle {
+        width: root.width * 0.36;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: #e5a832;
+    }
+}
+
+component Art inherits Rectangle {
+    in property <image> cover;
+    in property <bool> has-cover;
+    border-radius: 18 * Theme.dp;
+    clip: true;
+    // the Audio family's colour (a gradient isn't rounded by the software renderer)
+    background: #8656e8;
+    if root.has-cover: Image {
+        width: root.width;
+        height: root.height;
+        source: root.cover;
+        image-fit: ImageFit.cover;
+    }
+    if !root.has-cover: Glyph {
+        x: 24 * Theme.dp;
+        y: 26 * Theme.dp;
+        source: @image-url("@neoui/icons/sys/note.svg");
+        size: 52 * Theme.dp;
+        colorize: #ffffffe6;
+    }
+    if !root.has-cover: Text {
+        x: 24 * Theme.dp;
+        y: 102 * Theme.dp;
+        text: "NO COVER ART";
+        color: #ffffffcc;
+        font-size: 12 * Theme.dp;
+        font-weight: 700;
+        letter-spacing: 1.2px;
+    }
+    if !root.has-cover: Record {
+        x: root.width * 0.36;
+        y: root.height * 0.36;
+        width: root.width * 0.72;
+        height: self.width;
+    }
+}
+
+// the seek bar: the knob follows the finger; the new place is sent when it lifts
+component SeekBar inherits Rectangle {
+    in property <float> value;
+    callback seek(float);
+    property <bool> dragging: touch.pressed;
+    property <float> drag;
+    property <float> shown: self.dragging ? self.drag : self.value;
+    height: 28 * Theme.dp;
+    Rectangle {
+        height: 4 * Theme.dp;
+        border-radius: self.height / 2;
+        background: Theme.track;
+    }
+    Rectangle {
+        x: 0;
+        width: root.width * root.shown;
+        height: 4 * Theme.dp;
+        border-radius: self.height / 2;
+        background: Theme.text;
+    }
+    Rectangle {
+        x: root.width * root.shown - self.width / 2;
+        width: (root.dragging ? 20 : 14) * Theme.dp;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: Theme.text;
+    }
+    touch := TouchArea {
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down || e.kind == PointerEventKind.move {
+                root.drag = max(0, min(1, self.mouse-x / root.width));
+            } else if e.kind == PointerEventKind.up {
+                root.seek(root.drag);
+            }
+        }
+    }
+}
+
+// a transport button: its icon, lit (shuffle, repeat on) or dimmed
+component Control inherits Rectangle {
+    in property <image> icon;
+    in property <length> size: 26 * Theme.dp;
+    in property <bool> lit: true;
+    in property <string> badge;
+    callback clicked;
+    width: 52 * Theme.dp;
+    height: 52 * Theme.dp;
+    border-radius: self.width / 2;
+    background: touch.pressed ? Theme.pressed : transparent;
+    Glyph {
+        source: root.icon;
+        size: root.size;
+        colorize: root.lit ? Theme.text : Theme.text-dim;
+    }
+    if root.badge != "": Text {
+        x: parent.width * 0.62;
+        y: parent.height * 0.18;
+        text: root.badge;
+        color: Theme.text;
+        font-size: 10 * Theme.dp;
+        font-weight: 700;
+    }
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component AudioView inherits Rectangle {
+    in property <image> cover;
+    in property <bool> has-cover;
+    in property <string> title;
+    in property <string> sub;
+    // 0..1 of the track, and the times either side
+    in property <float> pos;
+    in property <string> elapsed;
+    in property <string> total;
+    in property <bool> playing;
+    in property <bool> shuffle;
+    // 0 off, 1 the folder, 2 this track
+    in property <int> repeat;
+    in property <bool> has-prev;
+    in property <bool> has-next;
+    // "MP3 · 320 kbps · 44.1 kHz · 4.1 MB · E:\Music"
+    in property <string> meta;
+    in property <string> footer;
+    callback toggle();
+    callback prev();
+    callback next();
+    callback shuffle-tapped();
+    callback repeat-tapped();
+    callback seek(float);
+    background: Theme.bg;
+    TagLetters { }
+    VerticalLayout {
+        Rectangle {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding-left: 24 * Theme.dp;
+                padding-right: 24 * Theme.dp;
+                padding-top: 24 * Theme.dp;
+                spacing: 0;
+                alignment: start;
+                HorizontalLayout {
+                    alignment: center;
+                    Art {
+                        width: min(248 * Theme.dp, root.width - 48 * Theme.dp);
+                        height: self.width;
+                        cover: root.cover;
+                        has-cover: root.has-cover;
+                    }
+                }
+                Rectangle {
+                    height: 22 * Theme.dp;
+                }
+                Text {
+                    text: root.title;
+                    color: Theme.text;
+                    font-family: "DejaVu Sans";
+                    font-size: 22 * Theme.dp;
+                    font-weight: 700;
+                    overflow: elide;
+                }
+                Text {
+                    text: root.sub;
+                    color: Theme.text-secondary;
+                    font-family: "DejaVu Sans";
+                    font-size: 15 * Theme.dp;
+                    overflow: elide;
+                }
+                Rectangle {
+                    height: 22 * Theme.dp;
+                }
+                SeekBar {
+                    value: root.pos;
+                    seek(v) => {
+                        root.seek(v);
+                    }
+                }
+                HorizontalLayout {
+                    Text {
+                        text: root.elapsed;
+                        color: Theme.text-secondary;
+                        font-size: 12 * Theme.dp;
+                    }
+                    Text {
+                        horizontal-stretch: 1;
+                        text: root.total;
+                        color: Theme.text-secondary;
+                        font-size: 12 * Theme.dp;
+                        horizontal-alignment: right;
+                    }
+                }
+                Rectangle {
+                    height: 14 * Theme.dp;
+                }
+                HorizontalLayout {
+                    alignment: space-between;
+                    VerticalLayout {
+                        alignment: center;
+                        Control {
+                            icon: @image-url("@neoui/icons/sys/shuffle.svg");
+                            size: 22 * Theme.dp;
+                            lit: root.shuffle;
+                            clicked => {
+                                root.shuffle-tapped();
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Control {
+                            icon: @image-url("@neoui/icons/sys/prev.svg");
+                            lit: root.has-prev;
+                            clicked => {
+                                root.prev();
+                            }
+                        }
+                    }
+                    Rectangle {
+                        width: 76 * Theme.dp;
+                        height: self.width;
+                        border-radius: self.width / 2;
+                        background: play.pressed ? #d9d9d9 : #ffffff;
+                        Glyph {
+                            source: root.playing ? @image-url("@neoui/icons/sys/pause.svg") : @image-url("@neoui/icons/sys/play.svg");
+                            size: 32 * Theme.dp;
+                            colorize: #000000;
+                        }
+                        play := TouchArea {
+                            clicked => {
+                                root.toggle();
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Control {
+                            icon: @image-url("@neoui/icons/sys/next.svg");
+                            lit: root.has-next;
+                            clicked => {
+                                root.next();
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Control {
+                            icon: @image-url("@neoui/icons/sys/repeat.svg");
+                            size: 22 * Theme.dp;
+                            lit: root.repeat != 0;
+                            badge: root.repeat == 2 ? "1" : "";
+                            clicked => {
+                                root.repeat-tapped();
+                            }
+                        }
+                    }
+                }
+                Rectangle {
+                    height: 18 * Theme.dp;
+                }
+                Text {
+                    text: root.meta;
+                    color: Theme.text-dim;
+                    font-size: 13 * Theme.dp;
+                    horizontal-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+
+        Footer {
+            text: root.footer;
+            Button {
+                text: "Open in Music";
+                primary: false;
+                enabled: false;
+                icon: @image-url("@neoui/icons/sys/note.svg");
+                has-icon: true;
+            }
+        }
+    }
+}

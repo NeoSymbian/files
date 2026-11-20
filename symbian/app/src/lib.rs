@@ -13,6 +13,7 @@
 extern crate alloc;
 
 mod archive;
+mod audio;
 mod edit;
 mod fa3;
 mod fa7;
@@ -165,6 +166,8 @@ enum Action {
     Fa7(fa7::Act),
     // FA8
     Fa8(fa8::Act),
+    // FA9
+    Audio(audio::Act),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -308,6 +311,8 @@ struct State {
     // FA8
     with: Option<fa8::With>,
     share: Option<fa8::Share>,
+    // FA9
+    audio: audio::Audio,
 }
 
 fn run() -> Result<(), i32> {
@@ -381,6 +386,7 @@ fn run() -> Result<(), i32> {
         fa7: None,
         with: None,
         share: None,
+        audio: audio::Audio::new(),
     };
     load_settings(&app, &ui, &mut st);
     fa3::load(&mut st);
@@ -392,6 +398,7 @@ fn run() -> Result<(), i32> {
         test_zips(&st);
         fa7::test_files(&st);
         fa8::test_files(&st);
+        audio::test_files(&st);
     }
     show_drives(&app, &ui, &mut st);
     fa8::restore_clip(&app, &ui, &mut st);
@@ -427,6 +434,9 @@ fn run() -> Result<(), i32> {
                     if st.pics.busy() {
                         wait = wait.min(PICS_POLL_US);
                     }
+                    if st.audio.busy() {
+                        wait = wait.min(audio::POLL_US);
+                    }
                     let watch_dir =
                         (st.view == View::Folder && st.dir != st.unwatched).then(|| st.dir.clone());
                     let watch = async {
@@ -458,6 +468,7 @@ fn run() -> Result<(), i32> {
                             poll_job(&app, &ui, &mut st);
                             poll_scan(&app, &ui, &mut st);
                             image::poll(&app, &ui, &mut st);
+                            audio::poll(&app, &ui, &mut st);
                             // a flick goes on without events: its scroll callbacks wait here
                             loop {
                                 let next = actions.borrow_mut().pop_front();
@@ -510,6 +521,8 @@ fn run() -> Result<(), i32> {
                     fa8::restore_clip(&app, &ui, &mut st);
                 }
                 AppEvent::Visible(true) => fa8::restore_clip(&app, &ui, &mut st),
+                // "Stops when you leave Files"
+                AppEvent::Visible(false) => audio::hidden(&mut st),
                 // another app asks for a file (the picker) or a name to save one
                 AppEvent::Open { page } => fa8::opened(&app, &ui, &mut st, page),
                 AppEvent::Notified {
@@ -526,6 +539,7 @@ fn run() -> Result<(), i32> {
                 }
             }
             image::poll(&app, &ui, &mut st);
+            audio::poll(&app, &ui, &mut st);
             thumbs_tick(&app, &ui, &mut st);
             describe(&app, &ui, &mut st)?;
             sync_keyboard(&app, &ui, &mut st);
@@ -692,6 +706,7 @@ fn bind(ui: &FilesApp, actions: &Rc<RefCell<VecDeque<Action>>>) {
     ui.on_picker_new_folder(plain(|| Action::PickerNewFolder));
     fa7::bind(ui, actions);
     fa8::bind(ui, actions);
+    audio::bind(ui, actions);
     {
         let q = actions.clone();
         ui.on_group_picked(move |g, i| {
@@ -836,6 +851,7 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
         Action::PickerNewFolder => archive::picker_new_folder(app, ui, st),
         Action::Fa7(a) => fa7::act(app, ui, st, a),
         Action::Fa8(a) => fa8::act(app, ui, st, a),
+        Action::Audio(a) => audio::act(app, ui, st, a),
         Action::Edit if st.view == View::Fa7 => fa7::edit(ui, st),
         Action::Row(i) if st.view == View::Folder => {
             let Some(item) = st.items.get(i).cloned() else {
@@ -2126,6 +2142,43 @@ fn show_rows(ui: &FilesApp, st: &State) {
     ui.set_rows(ModelRc::from(Rc::new(VecModel::from(rows))));
     // new rows: the thumbnails already made go straight back in
     image::patch_rows(ui, st);
+}
+
+/// The files of `dir` that `keep` takes, as (path, size, modified) in the folder's order (the open folder's own rows
+/// when it is that folder): the image viewer's swipe, the player's next and previous.
+pub(crate) fn folder_files(
+    st: &State,
+    dir: &str,
+    keep: fn(&str) -> bool,
+) -> Vec<(String, u64, i64)> {
+    if dir == st.dir && !st.items.is_empty() {
+        return st
+            .items
+            .iter()
+            .filter(|i| !i.is_dir && keep(&i.name))
+            .map(|i| (model::join_file(dir, &i.name), i.size, i.modified))
+            .collect();
+    }
+    let mut items: Vec<Item> = st
+        .fs
+        .read_dir(dir)
+        .map(|v| {
+            v.into_iter()
+                .filter(|e| !e.is_dir() && keep(&e.name))
+                .map(|e| Item {
+                    name: e.name,
+                    size: e.size,
+                    modified: e.modified,
+                    ..Item::default()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    model::sort(&mut items, st.sort);
+    items
+        .into_iter()
+        .map(|i| (model::join_file(dir, &i.name), i.size, i.modified))
+        .collect()
 }
 
 /// Text-like types open in the text viewer (FA4 brings the editors and the other viewers).

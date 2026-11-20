@@ -197,7 +197,7 @@ pub const TYPES: [FileType; 55] = [
 ];
 
 /// Other spellings of a type (the board lists "sis / sisx", "ttf / otf"…).
-const ALIASES: [(&str, &str); 12] = [
+const ALIASES: [(&str, &str); 13] = [
     ("jpeg", "jpg"),
     ("htm", "html"),
     ("yml", "yaml"),
@@ -210,6 +210,8 @@ const ALIASES: [(&str, &str); 12] = [
     ("cer", "pem"),
     ("crt", "pem"),
     ("midi", "mid"),
+    // AAC in ADTS frames: the M4A row (the audio player; the board lists M4A only)
+    ("aac", "m4a"),
 ];
 
 /// The extension of `name` without the dot ("" for none, or a name that starts with its only dot).
