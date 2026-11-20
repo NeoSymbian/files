@@ -13,7 +13,7 @@ fn fa8_boards() {
     // files2-open-with: contacts.vcf from its card viewer; Files, Contacts (by name), the kit (by handle)
     ui.set_view("unknown".into());
     ui.set_name("contacts.vcf".into());
-    ui.set_with_title("Open contacts.vcf with".into());
+    ui.set_with_title("Open with".into());
     ui.set_with_rows(model_of(vec![
         WithRow {
             title: "Files".into(),
@@ -37,7 +37,7 @@ fn fa8_boards() {
     ui.set_with_open(false);
 
     // files2-share: a short note, so Copy to clipboard copies its text
-    ui.set_share_title("Share trip-notes.txt".into());
+    ui.set_share_title("Share".into());
     ui.set_share_clip("The text, to paste anywhere".into());
     ui.set_share_open(true);
     s.shoot("files2-share");

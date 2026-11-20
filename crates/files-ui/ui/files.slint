@@ -525,7 +525,9 @@ component RadioRow inherits Rectangle {
 component SwitchRow inherits Rectangle {
     in property <string> label;
     in property <string> hint;
-    in property <bool> on;
+    // two-way: the kit's Switch sets its own `on` when tapped, which would cut a one-way binding (the app's later
+    // resets, such as the Open with sheet's Always, would no longer show)
+    in-out property <bool> on;
     in property <bool> enabled: true;
     callback toggled(bool);
     height: 56 * Theme.dp;
@@ -553,7 +555,7 @@ component SwitchRow inherits Rectangle {
         VerticalLayout {
             alignment: center;
             Switch {
-                on: root.on;
+                on <=> root.on;
                 opacity: root.enabled ? 1 : 0.4;
                 toggled(v) => {
                     root.toggled(v);
@@ -2893,10 +2895,7 @@ export component FilesApp inherits Window {
         SwitchRow {
             label: "Always";
             hint: "Open this type with the app you pick";
-            on: root.with-always;
-            toggled(v) => {
-                root.with-always = v;
-            }
+            on <=> root.with-always;
         }
     }
 

@@ -116,7 +116,8 @@ pub(crate) fn open_with(ui: &FilesApp, st: &mut State, p: String) {
             colour: files_ui::colour(0x8a63d2),
         }
     }));
-    ui.set_with_title(format!("Open {name} with").into());
+    // the name is in the header behind the sheet; a long one would not fit the sheet's title
+    ui.set_with_title("Open with".into());
     ui.set_with_rows(ModelRc::new(VecModel::from(rows)));
     ui.set_with_always(false);
     ui.set_share_open(false);
@@ -216,7 +217,7 @@ fn share(ui: &FilesApp, st: &mut State) {
         }
         .into(),
     );
-    ui.set_share_title(format!("Share {name}").into());
+    ui.set_share_title("Share".into());
     ui.set_with_open(false);
     ui.set_share_open(true);
     st.share = Some(Share { path: p, text });
