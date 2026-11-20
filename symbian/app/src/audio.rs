@@ -156,6 +156,14 @@ impl Out {
         let mut a = TIpcArgs::new();
         a.int(0, rate as i32).int(1, channels as i32).int(2, 0);
         s.send_receive(op::OPEN, &a)?;
+        // Pixel test images play muted (the stream's own gain; the media volume stays): the PCM still goes through
+        // the ADSP and the underruns still count
+        #[cfg(feature = "test-files")]
+        {
+            let mut v = TIpcArgs::new();
+            v.int(0, 0);
+            s.send_receive(op::VOLUME, &v)?;
+        }
         Ok(Out {
             s,
             rate,
