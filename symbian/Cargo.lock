@@ -2816,6 +2816,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "neo-format-media"
+version = "0.1.0"
+dependencies = [
+ "neo-format-archive",
+]
+
+[[package]]
 name = "neo-format-pim"
 version = "0.1.0"
 
@@ -2846,6 +2853,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "neoaudio"
+version = "0.1.0"
+source = "git+https://github.com/NeoSymbian/neohw?rev=99cdeb32adceb968bda06ecc39a0e4286f8eb4cc#99cdeb32adceb968bda06ecc39a0e4286f8eb4cc"
+
+[[package]]
 name = "neofiles"
 version = "0.1.0"
 dependencies = [
@@ -2859,11 +2871,13 @@ dependencies = [
  "neo-format-archive",
  "neo-format-image",
  "neo-format-inspect",
+ "neo-format-media",
  "neo-format-pim",
  "neo-format-text",
  "neo-fs",
  "neo-view",
  "neoapp",
+ "neoaudio",
  "neoui-proto",
  "slint",
 ]

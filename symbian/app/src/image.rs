@@ -135,34 +135,7 @@ pub fn open(app: &App, ui: &FilesApp, st: &mut State, path: &str) {
     let Some(dir) = neo_fs::path::parent(path) else {
         return;
     };
-    let list: Vec<(String, u64, i64)> = if dir == st.dir && !st.items.is_empty() {
-        st.items
-            .iter()
-            .filter(|i| !i.is_dir && is_image(&i.name))
-            .map(|i| (model::join_file(&dir, &i.name), i.size, i.modified))
-            .collect()
-    } else {
-        let mut items: Vec<Item> = st
-            .fs
-            .read_dir(&dir)
-            .map(|v| {
-                v.into_iter()
-                    .filter(|e| !e.is_dir() && is_image(&e.name))
-                    .map(|e| Item {
-                        name: e.name,
-                        size: e.size,
-                        modified: e.modified,
-                        ..Item::default()
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        model::sort(&mut items, st.sort);
-        items
-            .into_iter()
-            .map(|i| (model::join_file(&dir, &i.name), i.size, i.modified))
-            .collect()
-    };
+    let list = crate::folder_files(st, &dir, is_image);
     let at = list.iter().position(|e| e.0 == path).unwrap_or(0);
     let list = if list.is_empty() {
         alloc::vec![(String::from(path), 0, 0)]

@@ -56,8 +56,8 @@ component Frame inherits Rectangle {
     border-color: Theme.card-border;
 }
 
-// the bar under a viewer (76 dp): its status text, then its buttons
-component Footer inherits Rectangle {
+// the bar under a viewer (76 dp): its status text, then its buttons (FA9's player has it too)
+export component Footer inherits Rectangle {
     in property <string> text;
     height: 76 * Theme.dp;
     background: #0b0c0e;

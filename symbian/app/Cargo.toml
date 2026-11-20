@@ -2,7 +2,7 @@
 # The Files app (NEOFILES.EXE), v2: browse, copy and move, the Recycle bin (docs files-app.md FA1 + FA2).
 [package]
 name = "neofiles"
-description = "The Files app: drives and folders as a list or a grid, copy and move on a worker, the Recycle bin with Undo"
+description = "The Files app: drives and folders as a list or a grid, copy and move on a worker, the Recycle bin with Undo, the audio player"
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-only"
@@ -27,6 +27,8 @@ neo-format-image.workspace = true
 neo-format-archive.workspace = true
 neo-format-pim.workspace = true
 neo-format-inspect.workspace = true
+neo-format-media.workspace = true
+neoaudio.workspace = true
 # NEOCONT's book format and import rule (Apache): the cards Contacts has are marked before Add to Contacts
 contacts.workspace = true
 fs-e32.workspace = true
@@ -34,5 +36,6 @@ fs-e32.workspace = true
 libm = "0.2"
 
 [features]
-# Pixel test images only: writes C:\Data\big.log (5 MB, FA4), C:\Data\photos\ (FA5) and C:\Data\zips\ (FA6) at start
+# Pixel test images only: writes C:\Data\big.log (5 MB, FA4), C:\Data\photos\ (FA5), C:\Data\zips\ (FA6), C:\Data\fa7\,
+# C:\Data\fa8\ and C:\Data\fa9\ (WAVs) at start
 test-files = []

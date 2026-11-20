@@ -79,6 +79,8 @@ enum Kind {
     },
     /// The certificate, the package: drawn once.
     Fixed,
+    /// FA9's player (audio.rs keeps its state).
+    Audio,
     Hex,
 }
 
@@ -223,9 +225,6 @@ fn text_of(b: &[u8]) -> (String, bool) {
 pub(crate) fn open(app: &App, ui: &FilesApp, st: &mut State, path: &str) {
     let name = neo_fs::path::name_of(path).to_string();
     let size = st.fs.entry(path).map(|e| e.size).unwrap_or(0);
-    if let Some(dir) = neo_fs::path::parent(path) {
-        st.dir = dir;
-    }
     crate::fa3::opened(st, path);
     let from = match st.view {
         View::Fa7 => st.fa7.as_ref().map_or(View::Folder, |o| o.from),
@@ -246,9 +245,17 @@ pub(crate) fn open(app: &App, ui: &FilesApp, st: &mut State, path: &str) {
         Family::Font => font(ui, st, &mut o),
         Family::Cert => certificate(ui, st, &mut o),
         Family::App => package(ui, st, &mut o, &ext),
+        Family::Audio => {
+            o.kind = Kind::Audio;
+            crate::audio::open(ui, st, &o)
+        }
         _ => Err(String::new()),
     };
     dprintln!("files: fa7 {} {}", path, r.as_ref().map_or("hex", |_| "ok"));
+    // after the viewer: the player compares it with the file's folder to reuse that folder's rows
+    if let Some(dir) = neo_fs::path::parent(path) {
+        st.dir = dir;
+    }
     st.view = View::Fa7;
     st.fa7 = Some(o);
     match r {
@@ -265,6 +272,7 @@ pub(crate) fn back(app: &App, ui: &FilesApp, st: &mut State) {
     if st.fa7.as_ref().is_some_and(|o| o.form.is_some()) {
         return cancel(app, ui, st);
     }
+    crate::audio::close(st);
     let from = st.fa7.take().map_or(View::Folder, |o| o.from);
     return_to(app, ui, st, from);
 }
@@ -1153,6 +1161,7 @@ fn package(ui: &FilesApp, st: &State, o: &mut Open7, ext: &str) -> Result<&'stat
 /// The bytes (files2-view-unknown); `why` is the reason a viewer couldn't read the file ("" none: no viewer, or
 /// Show as hex…).
 fn hex(app: &App, ui: &FilesApp, st: &mut State, why: &str) {
+    crate::audio::close(st);
     let Some(o) = st.fa7.as_mut() else { return };
     let had_viewer = !matches!(o.kind, Kind::Hex);
     o.kind = Kind::Hex;

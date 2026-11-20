@@ -31,3 +31,6 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --release --locked --target armv5te-none-eabi -Zbuild-std=core,alloc,compiler_builtins -- -D warnings
       - run: cargo arm --locked
+      # The phone build (FA9): ARMv7 with VFP/NEON, softfp. Syborg's kernel doesn't switch VFP, so neoui's syborg job keeps `cargo arm`.
+      - run: cargo clippy --workspace --release --locked --target targets/armv7a-neosymbian-eabi.json -Zjson-target-spec -Zbuild-std=core,alloc,compiler_builtins -- -D warnings
+      - run: cargo arm7 --locked

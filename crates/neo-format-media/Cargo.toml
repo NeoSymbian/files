@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "neo-format-media"
+description = "Audio for Files: probe, tags and decoders to 16-bit PCM (WAV first), streamed from the file"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# its ReadAt: random access to the file, shared with the archives
+neo-format-archive.workspace = true

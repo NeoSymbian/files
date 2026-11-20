@@ -9,4 +9,4 @@ license.workspace = true
 neo-fs.workspace = true
 neo-view.workspace = true
 neo-format-archive.workspace = true
-xxhash-rust = { version = "0.8", default-features = false, features = ["xxh3"] }
+xxhash-rust = { version = "0.8", default-features = false, features = ["xxh64"] }

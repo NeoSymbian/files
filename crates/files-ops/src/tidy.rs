@@ -7,7 +7,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 use neo_fs::{File, Fs, Open};
-use xxhash_rust::xxh3::Xxh3;
+use xxhash_rust::xxh64::Xxh64;
 
 /// Smaller files aren't worth offering.
 pub const DUPLICATE_MIN: u64 = 4 * 1024;
@@ -22,11 +22,11 @@ pub struct Dupes {
     /// Items whose whole file still needs hashing, and the ones done.
     full: Vec<(usize, u64)>,
     next_full: usize,
-    cur: Option<(Xxh3, u64)>,
+    cur: Option<(Xxh64, u64)>,
     done_full: Vec<(usize, u64, u64)>,
 }
 
-fn hash_range(fs: &impl Fs, path: &str, from: u64, len: usize, h: &mut Xxh3) -> Option<usize> {
+fn hash_range(fs: &impl Fs, path: &str, from: u64, len: usize, h: &mut Xxh64) -> Option<usize> {
     let f = fs.open(path, Open::Read).ok()?;
     let mut buf = vec![0u8; len];
     let n = f.read_at(from, &mut buf).ok()?;
@@ -60,7 +60,7 @@ impl Dupes {
         let mut budget = budget.max(1);
         while budget > 0 && self.next_head < self.heads.len() {
             let (i, size, _) = self.heads[self.next_head];
-            let mut h = Xxh3::new();
+            let mut h = Xxh64::new(0);
             let want = size.min(HEAD) as usize;
             // a file that shrank since the walk drops out (a short read would hash as if whole)
             if hash_range(fs, &index.path(i), 0, want, &mut h) == Some(want) {
@@ -74,7 +74,7 @@ impl Dupes {
         }
         while budget > 0 && self.next_full < self.full.len() {
             let (i, size) = self.full[self.next_full];
-            let (mut h, at) = self.cur.take().unwrap_or((Xxh3::new(), 0));
+            let (mut h, at) = self.cur.take().unwrap_or((Xxh64::new(0), 0));
             let len = (size - at).min(CHUNK as u64) as usize;
             budget -= 1;
             match hash_range(fs, &index.path(i), at, len, &mut h) {
