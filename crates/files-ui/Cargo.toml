@@ -16,6 +16,10 @@ neo-view = { workspace = true }
 neo-format-text = { workspace = true }
 # images as pixels (FA5): the viewer, the editor and the thumbnails become slint::Images here
 neo-format-image = { workspace = true }
+# cards and events (FA7): the vCard and iCal views and forms are made from them here
+neo-format-pim = { workspace = true }
+# fonts, certificates, packages and hex (FA7)
+neo-format-inspect = { workspace = true }
 
 [build-dependencies]
 # the neoui kit (@neoui/kit.slint): theme, fonts, glyphs and components

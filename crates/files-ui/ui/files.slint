@@ -22,8 +22,10 @@ import { StripItem, ImageView, ImageEdit } from "image.slint";
 import { TypeTile, Seg, CleanCard, Detail, Pick, UsedCard, GroupTile, CleanItem, InfoCard, DetailRow } from "fa3.slint";
 import { TSpan, TRow, Mark, TextPane, TextMetrics } from "text.slint";
 import { PackItem, WayRow, JobCard, ArchiveBar, ViewOnly, CompressForm, FolderPicker } from "fa6.slint";
+import { PimLine, PimCard, PimField, EvRow, EvCard, Sample, SampleGroup, GlyphRow, InfoGroup, VcfView, VcfEdit, IcsView, IcsEdit, FontView, CertView, AppView, UnknownView } from "fa7.slint";
 import { MdSpan, MdRow, CellRow, Col, CodeKeys, StatusLine, FindBar, Segments, MdView, TableGrid, CellBar, TypeChips } from "editor.slint";
 export { TSpan, TRow, Mark, MdSpan, MdRow, CellRow, Col, TextMetrics, StripItem }
+export { PimLine, PimCard, PimField, EvRow, EvCard, Sample, SampleGroup, GlyphRow, InfoGroup }
 
 export { Theme, Scroll, Kit, KeyboardFocus }
 
@@ -696,6 +698,102 @@ export component FilesApp inherits Window {
     in property <string> cell-name;
     in property <int> new-type;
 
+    // FA7: views "vcf", "ics", "font", "cert", "app", "unknown"; `pim-form` "vcf" or "ics" is the form over them.
+    // The header's ⋮ (Show as hex…, Details) is `fa7-menu`.
+    in property <[string]> fa7-menu;
+    in property <string> pim-form;
+    in property <string> vcf-title;
+    in property <string> vcf-sub;
+    in property <[PimCard]> vcf-cards;
+    in property <string> vcf-note;
+    in property <string> vcf-footer;
+    in property <bool> vcf-can-add;
+    in property <string> form-line;
+    in property <string> form-initials;
+    in property <color> form-tint;
+    in-out property <string> c-first;
+    in-out property <string> c-last;
+    in-out property <string> c-company;
+    in-out property <[PimField]> c-phones;
+    in-out property <[PimField]> c-emails;
+    in-out property <bool> sheet-open;
+    in property <[string]> sheet-choices;
+    in property <int> sheet-current;
+    in property <[EvCard]> ics-events;
+    in property <string> ics-footer;
+    in-out property <string> e-title;
+    in-out property <string> e-place;
+    in property <string> e-start-date;
+    in property <string> e-start-time;
+    in property <string> e-end-date;
+    in property <string> e-end-time;
+    in property <bool> e-all-day;
+    in property <string> e-reminder;
+    in property <string> e-repeat;
+    in property <string> e-zone;
+    in-out property <bool> date-open;
+    in-out property <int> date-y;
+    in-out property <int> date-m;
+    in-out property <int> date-d;
+    in-out property <bool> time-open;
+    in-out property <int> time-h;
+    in-out property <int> time-m;
+    in-out property <bool> choice-open;
+    in property <string> choice-title;
+    in property <[string]> choices;
+    in property <int> choice;
+    in property <image> font-aa;
+    in property <image> font-family-art;
+    in property <string> font-family;
+    in property <string> font-line1;
+    in property <string> font-line2;
+    in property <int> font-tab;
+    in property <[SampleGroup]> font-groups;
+    in property <[GlyphRow]> font-glyphs;
+    in property <string> font-glyphs-note;
+    in property <string> fa7-footer;
+    in property <string> cert-title;
+    in property <string> cert-status;
+    in property <bool> cert-ok;
+    in property <[InfoGroup]> info-groups;
+    in property <string> cert-fp1;
+    in property <string> cert-fp2;
+    in property <string> app-title;
+    in property <string> app-vendor;
+    in property <string> app-meta;
+    in property <string> app-info-title;
+    in property <string> app-info-text;
+    in property <string> app-caps-title;
+    in property <[Detail]> app-caps;
+    in property <string> app-note;
+    in property <string> hex-badge;
+    in property <color> hex-colour;
+    in property <string> hex-meta;
+    in property <string> hex-heading;
+    in property <string> hex-text;
+    in property <string> hex-info;
+    in property <[TRow]> hex-rows;
+    in property <int> hex-total;
+    callback fa7-menu-picked(string);
+    callback vcf-toggle(int);
+    callback vcf-open(int);
+    callback vcf-add();
+    callback pim-cancel();
+    callback pim-save();
+    callback label-tap(bool, int);
+    callback label-chosen(int);
+    callback field-remove(bool, int);
+    callback field-add(bool);
+    callback ics-open(int);
+    callback e-pick(string);
+    callback e-all-day-toggled(bool);
+    callback date-set(int, int, int);
+    callback time-set(int, int);
+    callback chosen(int);
+    callback font-tab-picked(int);
+    callback hex-scrolled(int);
+    callback hex-as-text();
+
     callback drive(int);
     callback open-row(int);
     callback toggle(int);
@@ -1066,6 +1164,28 @@ export component FilesApp inherits Window {
             search: false;
             back => {
                 root.up();
+            }
+        }
+        // FA7 (files2-spec-headers): [← name · share · edit (cards and events) · ⋮]; Share waits for FA8
+        if root.view == "vcf" || root.view == "ics" || root.view == "font" || root.view == "cert" || root.view == "app" || root.view == "unknown": SubHeader {
+            title: root.name;
+            title-font: "DejaVu Sans";
+            search: false;
+            actions: root.view == "vcf" || root.view == "ics" ? [
+                { icon: @image-url("@neoui/icons/sys/share.svg"), label: "Share", disabled: true },
+                { icon: @image-url("@neoui/icons/sys/edit.svg"), label: "Edit", disabled: root.read-only },
+            ] : [{ icon: @image-url("@neoui/icons/sys/share.svg"), label: "Share", disabled: true }];
+            menu: root.fa7-menu;
+            back => {
+                root.up();
+            }
+            action(i) => {
+                if i == 1 {
+                    root.edit();
+                }
+            }
+            menu-picked(i) => {
+                root.fa7-menu-picked(root.fa7-menu[i]);
             }
         }
 
@@ -1960,6 +2080,86 @@ export component FilesApp inherits Window {
                 }
             }
 
+            if root.view == "vcf": VcfView {
+                title: root.vcf-title;
+                sub: root.vcf-sub;
+                cards: root.vcf-cards;
+                note: root.vcf-note;
+                footer: root.vcf-footer;
+                can-add: root.vcf-can-add;
+                toggle(i) => {
+                    root.vcf-toggle(i);
+                }
+                open(i) => {
+                    root.vcf-open(i);
+                }
+                add => {
+                    root.vcf-add();
+                }
+            }
+            if root.view == "ics": IcsView {
+                events: root.ics-events;
+                footer: root.ics-footer;
+                open(i) => {
+                    root.ics-open(i);
+                }
+            }
+            if root.view == "font": FontView {
+                aa: root.font-aa;
+                family-art: root.font-family-art;
+                family: root.font-family;
+                line1: root.font-line1;
+                line2: root.font-line2;
+                tab: root.font-tab;
+                groups: root.font-groups;
+                glyphs: root.font-glyphs;
+                glyphs-note: root.font-glyphs-note;
+                footer: root.fa7-footer;
+                tab-picked(i) => {
+                    root.font-tab-picked(i);
+                }
+            }
+            if root.view == "cert": CertView {
+                title: root.cert-title;
+                status: root.cert-status;
+                ok: root.cert-ok;
+                groups: root.info-groups;
+                fp1: root.cert-fp1;
+                fp2: root.cert-fp2;
+                footer: root.fa7-footer;
+            }
+            if root.view == "app": AppView {
+                title: root.app-title;
+                vendor: root.app-vendor;
+                meta: root.app-meta;
+                info-title: root.app-info-title;
+                info-text: root.app-info-text;
+                groups: root.info-groups;
+                caps-title: root.app-caps-title;
+                caps: root.app-caps;
+                note: root.app-note;
+                cancel => {
+                    root.up();
+                }
+            }
+            if root.view == "unknown": UnknownView {
+                badge: root.hex-badge;
+                colour: root.hex-colour;
+                title: root.name;
+                meta: root.hex-meta;
+                heading: root.hex-heading;
+                text: root.hex-text;
+                bytes-info: root.hex-info;
+                rows: root.hex-rows;
+                total: root.hex-total;
+                scrolled(r) => {
+                    root.hex-scrolled(r);
+                }
+                as-text => {
+                    root.hex-as-text();
+                }
+            }
+
             // a copy or move (files2-progress): over the bottom of the list, Hide moves it to the shade only
             if root.job-text != "": Rectangle {
                 x: 12 * Theme.dp;
@@ -2466,6 +2666,84 @@ export component FilesApp inherits Window {
         }
         save-in => {
             root.save-in();
+        }
+    }
+
+    if root.pim-form == "vcf": VcfEdit {
+        file-line: root.form-line;
+        initials: root.form-initials;
+        tint: root.form-tint;
+        first <=> root.c-first;
+        last <=> root.c-last;
+        company <=> root.c-company;
+        phones <=> root.c-phones;
+        emails <=> root.c-emails;
+        sheet-open <=> root.sheet-open;
+        sheet-choices: root.sheet-choices;
+        sheet-current: root.sheet-current;
+        cancel => {
+            root.pim-cancel();
+        }
+        save => {
+            root.pim-save();
+        }
+        label-tap(m, i) => {
+            root.label-tap(m, i);
+        }
+        label-chosen(i) => {
+            root.label-chosen(i);
+        }
+        remove(m, i) => {
+            root.field-remove(m, i);
+        }
+        add(m) => {
+            root.field-add(m);
+        }
+    }
+
+    if root.pim-form == "ics": IcsEdit {
+        file-line: root.form-line;
+        title <=> root.e-title;
+        place <=> root.e-place;
+        start-date: root.e-start-date;
+        start-time: root.e-start-time;
+        end-date: root.e-end-date;
+        end-time: root.e-end-time;
+        all-day: root.e-all-day;
+        reminder: root.e-reminder;
+        repeat: root.e-repeat;
+        zone: root.e-zone;
+        date-open <=> root.date-open;
+        year <=> root.date-y;
+        month <=> root.date-m;
+        day <=> root.date-d;
+        time-open <=> root.time-open;
+        hour <=> root.time-h;
+        minute <=> root.time-m;
+        choice-open <=> root.choice-open;
+        choice-title: root.choice-title;
+        choices: root.choices;
+        choice: root.choice;
+        cancel => {
+            root.pim-cancel();
+        }
+        save => {
+            root.pim-save();
+        }
+        pick(w) => {
+            root.e-pick(w);
+        }
+        all-day-toggled(on) => {
+            root.e-all-day-toggled(on);
+        }
+        date-set(y, m, d) => {
+            root.date-set(y, m, d);
+        }
+        time-set(h, m) => {
+            root.time-set(h, m);
+        }
+        chosen(i) => {
+            root.chosen(i);
         }
     }
 

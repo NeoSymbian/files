@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "neo-format-inspect"
+description = "Inspectors for Files: fonts (with a rasteriser), X.509 certificates, app packages (.sis, .jad, .jar) and hex"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+neo-format-archive.workspace = true
+miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
+ttf-parser = { version = "0.25", default-features = false, features = ["no-std-float"] }
+x509-cert = { version = "0.3", default-features = false, features = ["pem"] }
+der = { version = "0.8", default-features = false, features = ["alloc", "oid", "pem"] }
+pem-rfc7468 = { version = "1", default-features = false, features = ["alloc"] }
+sha2 = { version = "0.11", default-features = false }
+libm = "0.2"

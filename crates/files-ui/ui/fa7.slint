@@ -1,0 +1,1572 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// FA7 (cards and inspectors): the contact cards of a .vcf and their form (files2-view-vcf, -edit-vcf), the event card
+// of an .ics and its form (files2-view-ics, -edit-ics), the font sample (files2-view-font), the certificate
+// (files2-view-cert), the app package (files2-view-app) and the bytes of any file (files2-view-unknown). Buttons
+// whose work comes in a later phase (Install, Open with…) are drawn disabled, with the reason in the footer.
+
+import { Theme, Glyph, Button, FormHeader, TextField, NeoList, Switch, ChoiceSheet, DatePicker, TimePicker } from "@neoui/kit.slint";
+import { FTile } from "tiles.slint";
+import { Detail } from "fa3.slint";
+import { TRow, TextPane } from "text.slint";
+import { Segments } from "editor.slint";
+
+// a card's number or email (files2-view-vcf)
+export struct PimLine { mail: bool, text: string, label: string }
+// a contact: initials on its colour, ticked for Add to Contacts, or already in Contacts (`known`)
+export struct PimCard { initials: string, tint: color, name: string, lines: [PimLine], checked: bool, known: bool }
+// a labelled value of the contact form (a number or an email; the label's dropdown)
+export struct PimField { label: string, value: string }
+// an event row: 0 time, 1 place, 2 reminder, 3 notes
+export struct EvRow { icon: int, main: string, sub: string }
+export struct EvCard { month: string, day: string, weekday: string, title: string, sub: string, tint: color, rows: [EvRow] }
+// a font sample line: its size ("16") and the line drawn in the font
+export struct Sample { size: string, line: image, h: float }
+export struct SampleGroup { title: string, lines: [Sample] }
+export struct GlyphRow { cells: [image] }
+// a titled group of key/value rows (the certificate, the package)
+export struct InfoGroup { title: string, rows: [Detail] }
+
+component Label inherits Text {
+    color: Theme.text-dim;
+    font-size: 12 * Theme.dp;
+    font-weight: 600;
+    letter-spacing: 0.78px;
+}
+
+component SectionTitle inherits VerticalLayout {
+    in property <string> text;
+    height: 34 * Theme.dp;
+    padding-left: 16 * Theme.dp;
+    padding-bottom: 6 * Theme.dp;
+    alignment: end;
+    Label {
+        text: root.text;
+    }
+}
+
+component Line inherits Rectangle {
+    height: max(1px, Theme.dp / 2);
+    background: #ffffff12;
+}
+
+component Frame inherits Rectangle {
+    border-radius: 14 * Theme.dp;
+    background: Theme.card;
+    border-width: max(1px, Theme.dp / 2);
+    border-color: Theme.card-border;
+}
+
+// the bar under a viewer (76 dp): its status text, then its buttons
+component Footer inherits Rectangle {
+    in property <string> text;
+    height: 76 * Theme.dp;
+    background: #0b0c0e;
+    Line {
+        y: 0;
+        width: parent.width;
+    }
+
+    HorizontalLayout {
+        padding-left: 16 * Theme.dp;
+        padding-right: 12 * Theme.dp;
+        spacing: 10 * Theme.dp;
+        alignment: stretch;
+        if root.text != "": Text {
+            horizontal-stretch: 1;
+            text: root.text;
+            color: Theme.text-secondary;
+            font-size: 13 * Theme.dp;
+            wrap: word-wrap;
+            vertical-alignment: center;
+        }
+        HorizontalLayout {
+            spacing: 10 * Theme.dp;
+            alignment: end;
+            padding-top: 16 * Theme.dp;
+            padding-bottom: 16 * Theme.dp;
+            @children
+        }
+    }
+}
+
+// a key and its value, the value wrapping (the certificate's and the package's rows)
+component KeyValue inherits Rectangle {
+    in property <Detail> d;
+    in property <bool> last;
+    height: lay.preferred-height;
+    lay := HorizontalLayout {
+        padding-left: 16 * Theme.dp;
+        padding-right: 16 * Theme.dp;
+        padding-top: 9 * Theme.dp;
+        padding-bottom: 9 * Theme.dp;
+        spacing: 8 * Theme.dp;
+        Text {
+            width: 100 * Theme.dp;
+            text: root.d.key;
+            color: Theme.text-dim;
+            font-size: 13.5 * Theme.dp;
+        }
+
+        Text {
+            horizontal-stretch: 1;
+            text: root.d.value;
+            font-family: root.d.mono ? "DejaVu Sans Mono" : "DejaVu Sans";
+            color: Theme.text;
+            font-size: root.d.mono ? 13 * Theme.dp : 15 * Theme.dp;
+            wrap: word-wrap;
+        }
+    }
+
+    if !root.last: Line {
+        x: 16 * Theme.dp;
+        y: parent.height - self.height;
+        width: parent.width - 16 * Theme.dp;
+    }
+}
+
+component Groups inherits VerticalLayout {
+    in property <[InfoGroup]> groups;
+    for g in root.groups: VerticalLayout {
+        SectionTitle {
+            text: g.title;
+        }
+
+        for d[i] in g.rows: KeyValue {
+            d: d;
+            last: i == g.rows.length - 1;
+        }
+    }
+}
+
+component Avatar inherits Rectangle {
+    in property <string> initials;
+    in property <color> tint;
+    in property <length> size: 48 * Theme.dp;
+    width: root.size;
+    height: root.size;
+    border-radius: root.size / 2;
+    background: root.tint;
+    Text {
+        text: root.initials;
+        font-family: "DejaVu Sans";
+        color: white;
+        font-size: root.size * 0.375;
+        font-weight: 600;
+    }
+}
+
+component Check inherits Rectangle {
+    in property <bool> on;
+    callback toggled();
+    width: 40 * Theme.dp;
+    height: 40 * Theme.dp;
+    Rectangle {
+        width: 24 * Theme.dp;
+        height: 24 * Theme.dp;
+        border-radius: 12 * Theme.dp;
+        background: root.on ? Theme.accent : transparent;
+        border-width: root.on ? 0 : 2px;
+        border-color: Theme.text-dim;
+        if root.on: Glyph {
+            source: @image-url("@neoui/icons/sys/check.svg");
+            size: 16 * Theme.dp;
+            colorize: white;
+        }
+    }
+
+    TouchArea {
+        clicked => {
+            root.toggled();
+        }
+    }
+}
+
+// files2-view-vcf: "3 contacts", a card each (tick to add; "✓ In Contacts" when the book has it), Add to Contacts
+export component VcfView inherits Rectangle {
+    in property <string> title;
+    in property <string> sub;
+    in property <[PimCard]> cards;
+    in property <string> note;
+    in property <string> footer;
+    in property <bool> can-add;
+    callback toggle(int);
+    callback open(int);
+    callback add();
+    background: Theme.bg;
+    VerticalLayout {
+        NeoList {
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                padding-bottom: 14 * Theme.dp;
+                spacing: 10 * Theme.dp;
+                VerticalLayout {
+                    padding-left: 16 * Theme.dp;
+                    padding-right: 16 * Theme.dp;
+                    padding-top: 14 * Theme.dp;
+                    padding-bottom: 2 * Theme.dp;
+                    spacing: 2 * Theme.dp;
+                    Text {
+                        text: root.title;
+                        color: Theme.text;
+                        font-size: 20 * Theme.dp;
+                        font-weight: 600;
+                    }
+
+                    Text {
+                        text: root.sub;
+                        font-family: "DejaVu Sans";
+                        color: Theme.text-dim;
+                        font-size: 13.5 * Theme.dp;
+                    }
+                }
+
+                for c[i] in root.cards: HorizontalLayout {
+                    padding-left: 12 * Theme.dp;
+                    padding-right: 12 * Theme.dp;
+                    Frame {
+                        height: card.preferred-height;
+                        opacity: c.known ? 0.62 : 1;
+                        TouchArea {
+                            clicked => {
+                                root.open(i);
+                            }
+                        }
+
+                        card := VerticalLayout {
+                            padding: 12 * Theme.dp;
+                            padding-right: 6 * Theme.dp;
+                            spacing: 4 * Theme.dp;
+                            HorizontalLayout {
+                                spacing: 14 * Theme.dp;
+                                Avatar {
+                                    initials: c.initials;
+                                    tint: c.tint;
+                                }
+
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: c.name;
+                                    font-family: "DejaVu Sans";
+                                    color: Theme.text;
+                                    font-size: 17 * Theme.dp;
+                                    font-weight: 600;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+
+                                if c.known: Text {
+                                    text: "✓ In Contacts";
+                                    color: #7fd1a3;
+                                    font-size: 12.5 * Theme.dp;
+                                    vertical-alignment: center;
+                                }
+                                if !c.known: Check {
+                                    on: c.checked;
+                                    toggled => {
+                                        root.toggle(i);
+                                    }
+                                }
+                            }
+
+                            for l in c.lines: HorizontalLayout {
+                                padding-left: 62 * Theme.dp;
+                                spacing: 8 * Theme.dp;
+                                height: 22 * Theme.dp;
+                                Glyph {
+                                    source: l.mail ? @image-url("icons/mail.svg") : @image-url("@neoui/icons/sys/call.svg");
+                                    size: 16 * Theme.dp;
+                                    colorize: Theme.text-dim;
+                                    y: (parent.height - self.height) / 2;
+                                }
+
+                                Text {
+                                    text: l.text;
+                                    font-family: "DejaVu Sans";
+                                    color: Theme.text-secondary;
+                                    font-size: 14 * Theme.dp;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: l.label;
+                                    color: Theme.text-dim;
+                                    font-size: 12.5 * Theme.dp;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+                if root.note != "": HorizontalLayout {
+                    padding-left: 16 * Theme.dp;
+                    padding-right: 16 * Theme.dp;
+                    Text {
+                        text: root.note;
+                        font-family: "DejaVu Sans";
+                        color: Theme.text-dim;
+                        font-size: 13 * Theme.dp;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        Footer {
+            text: root.footer;
+            Button {
+                text: "Add to Contacts";
+                icon: @image-url("@neoui/icons/sys/person_add.svg");
+                has-icon: true;
+                enabled: root.can-add;
+                clicked => {
+                    root.add();
+                }
+            }
+        }
+    }
+}
+
+// a label's dropdown (Mobile ▾), a value's field, its ✕
+component LabelBox inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+    height: Theme.field-h;
+    border-radius: 8 * Theme.dp;
+    background: Theme.field;
+    border-width: max(1px, Theme.dp / 2);
+    border-color: #ffffff2e;
+    HorizontalLayout {
+        padding-left: 12 * Theme.dp;
+        padding-right: 6 * Theme.dp;
+        Text {
+            horizontal-stretch: 1;
+            text: root.text;
+            color: Theme.text;
+            font-size: 15 * Theme.dp;
+            font-weight: 500;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        Glyph {
+            source: @image-url("@neoui/icons/sys/chevron_down.svg");
+            size: 18 * Theme.dp;
+            colorize: Theme.text-secondary;
+            y: (parent.height - self.height) / 2;
+        }
+    }
+
+    TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+component Remove inherits Rectangle {
+    callback clicked();
+    width: 40 * Theme.dp;
+    height: Theme.field-h;
+    Glyph {
+        source: @image-url("@neoui/icons/sys/close.svg");
+        size: 20 * Theme.dp;
+        colorize: Theme.text-secondary;
+    }
+
+    TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+component AddLink inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+    height: 40 * Theme.dp;
+    HorizontalLayout {
+        padding-left: 16 * Theme.dp;
+        spacing: 8 * Theme.dp;
+        alignment: start;
+        Glyph {
+            source: @image-url("@neoui/icons/sys/add.svg");
+            size: 20 * Theme.dp;
+            colorize: Theme.accent;
+            y: (parent.height - self.height) / 2;
+        }
+
+        Text {
+            text: root.text;
+            color: Theme.accent;
+            font-size: 15 * Theme.dp;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+
+    TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+component FileLine inherits HorizontalLayout {
+    in property <string> badge;
+    in property <string> text;
+    height: 36 * Theme.dp;
+    padding-left: 16 * Theme.dp;
+    spacing: 10 * Theme.dp;
+    VerticalLayout {
+        alignment: center;
+        FTile {
+            badge: root.badge;
+            colour: #e0457b;
+            size: 24 * Theme.dp;
+        }
+    }
+
+    Text {
+        horizontal-stretch: 1;
+        text: root.text;
+        font-family: "DejaVu Sans";
+        color: Theme.text-dim;
+        font-size: 13.5 * Theme.dp;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+// files2-edit-vcf: [✕ Edit contact ✓], the photo (initials) and names, the company, the numbers and emails
+export component VcfEdit inherits Rectangle {
+    in property <string> file-line;
+    in property <string> initials;
+    in property <color> tint;
+    in-out property <string> first;
+    in-out property <string> last;
+    in-out property <string> company;
+    in-out property <[PimField]> phones;
+    in-out property <[PimField]> emails;
+    // the label picker: which list (email), which row; the choices and the row's label
+    in-out property <bool> sheet-open;
+    in property <[string]> sheet-choices;
+    in property <int> sheet-current;
+    callback cancel();
+    callback save();
+    callback label-tap(bool, int);
+    callback label-chosen(int);
+    callback remove(bool, int);
+    callback add(bool);
+    background: Theme.bg;
+    TouchArea { }
+
+    VerticalLayout {
+        FormHeader {
+            title: "Edit contact";
+            cancel => {
+                root.cancel();
+            }
+            save => {
+                root.save();
+            }
+        }
+
+        NeoList {
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                padding-bottom: 16 * Theme.dp;
+                spacing: 8 * Theme.dp;
+                FileLine {
+                    badge: "VCF";
+                    text: root.file-line;
+                }
+
+                HorizontalLayout {
+                    padding-left: 12 * Theme.dp;
+                    padding-right: 12 * Theme.dp;
+                    spacing: 12 * Theme.dp;
+                    Rectangle {
+                        width: 96 * Theme.dp;
+                        height: 96 * Theme.dp;
+                        border-radius: 48 * Theme.dp;
+                        border-width: max(1px, Theme.dp);
+                        border-color: #ffffff4d;
+                        Avatar {
+                            size: 96 * Theme.dp;
+                            initials: root.initials;
+                            tint: root.tint;
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 8 * Theme.dp;
+                        TextField {
+                            text <=> root.first;
+                            placeholder: "First name";
+                        }
+
+                        TextField {
+                            text <=> root.last;
+                            placeholder: "Last name";
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    padding-left: 12 * Theme.dp;
+                    padding-right: 12 * Theme.dp;
+                    TextField {
+                        text <=> root.company;
+                        placeholder: "Company";
+                    }
+                }
+
+                SectionTitle {
+                    text: "PHONES";
+                }
+
+                for p[i] in root.phones: HorizontalLayout {
+                    padding-left: 12 * Theme.dp;
+                    padding-right: 4 * Theme.dp;
+                    spacing: 8 * Theme.dp;
+                    LabelBox {
+                        width: 108 * Theme.dp;
+                        text: p.label;
+                        clicked => {
+                            root.label-tap(false, i);
+                        }
+                    }
+
+                    TextField {
+                        text <=> p.value;
+                        keys: 2;
+                        placeholder: "Number";
+                    }
+
+                    Remove {
+                        clicked => {
+                            root.remove(false, i);
+                        }
+                    }
+                }
+                AddLink {
+                    text: "Add number";
+                    clicked => {
+                        root.add(false);
+                    }
+                }
+
+                SectionTitle {
+                    text: "EMAIL";
+                }
+
+                for e[i] in root.emails: HorizontalLayout {
+                    padding-left: 12 * Theme.dp;
+                    padding-right: 4 * Theme.dp;
+                    spacing: 8 * Theme.dp;
+                    LabelBox {
+                        width: 92 * Theme.dp;
+                        text: e.label;
+                        clicked => {
+                            root.label-tap(true, i);
+                        }
+                    }
+
+                    TextField {
+                        text <=> e.value;
+                        placeholder: "Email";
+                    }
+
+                    Remove {
+                        clicked => {
+                            root.remove(true, i);
+                        }
+                    }
+                }
+                AddLink {
+                    text: "Add email";
+                    clicked => {
+                        root.add(true);
+                    }
+                }
+            }
+        }
+    }
+
+    ChoiceSheet {
+        title: "Label";
+        open <=> root.sheet-open;
+        choices: root.sheet-choices;
+        current: root.sheet-current;
+        chosen(i) => {
+            root.label-chosen(i);
+        }
+    }
+}
+
+component EvIcon inherits Glyph {
+    in property <int> kind;
+    source: kind == 0 ? @image-url("@neoui/icons/sys/clock.svg")
+        : kind == 1 ? @image-url("@neoui/icons/sys/location.svg")
+        : kind == 2 ? @image-url("@neoui/icons/sys/bell.svg")
+        : @image-url("@neoui/icons/sys/doc.svg");
+    size: 22 * Theme.dp;
+    colorize: Theme.text-secondary;
+}
+
+// files2-view-ics: a card per event (the date tile, the title, then time, place, reminder and notes)
+export component IcsView inherits Rectangle {
+    in property <[EvCard]> events;
+    in property <string> footer;
+    callback open(int);
+    background: Theme.bg;
+    VerticalLayout {
+        NeoList {
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                padding-top: 12 * Theme.dp;
+                padding-bottom: 14 * Theme.dp;
+                spacing: 12 * Theme.dp;
+                for ev[i] in root.events: HorizontalLayout {
+                    padding-left: 12 * Theme.dp;
+                    padding-right: 12 * Theme.dp;
+                    Frame {
+                        height: body.preferred-height;
+                        clip: true;
+                        TouchArea {
+                            clicked => {
+                                root.open(i);
+                            }
+                        }
+
+                        body := VerticalLayout {
+                            Rectangle {
+                                height: 6 * Theme.dp;
+                                background: ev.tint;
+                                border-top-left-radius: 14 * Theme.dp;
+                                border-top-right-radius: 14 * Theme.dp;
+                            }
+
+                            HorizontalLayout {
+                                padding: 16 * Theme.dp;
+                                padding-bottom: 8 * Theme.dp;
+                                spacing: 14 * Theme.dp;
+                                Rectangle {
+                                    width: 56 * Theme.dp;
+                                    height: 60 * Theme.dp;
+                                    border-radius: 12 * Theme.dp;
+                                    background: #ffffff0d;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Text {
+                                            text: ev.month;
+                                            color: #ff8fb1;
+                                            font-size: 11 * Theme.dp;
+                                            font-weight: 700;
+                                            horizontal-alignment: center;
+                                        }
+
+                                        Text {
+                                            text: ev.day;
+                                            color: Theme.text;
+                                            font-size: 24 * Theme.dp;
+                                            font-weight: 700;
+                                            horizontal-alignment: center;
+                                        }
+
+                                        Text {
+                                            text: ev.weekday;
+                                            color: Theme.text-secondary;
+                                            font-size: 11 * Theme.dp;
+                                            horizontal-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 3 * Theme.dp;
+                                    Text {
+                                        text: ev.title;
+                                        font-family: "DejaVu Sans";
+                                        color: Theme.text;
+                                        font-size: 19 * Theme.dp;
+                                        font-weight: 600;
+                                        wrap: word-wrap;
+                                    }
+
+                                    Text {
+                                        text: ev.sub;
+                                        color: Theme.text-dim;
+                                        font-size: 13.5 * Theme.dp;
+                                    }
+                                }
+                            }
+
+                            for r in ev.rows: HorizontalLayout {
+                                padding-left: 16 * Theme.dp;
+                                padding-right: 16 * Theme.dp;
+                                padding-top: 10 * Theme.dp;
+                                padding-bottom: 10 * Theme.dp;
+                                spacing: 14 * Theme.dp;
+                                VerticalLayout {
+                                    alignment: start;
+                                    EvIcon {
+                                        kind: r.icon;
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    spacing: 2 * Theme.dp;
+                                    Text {
+                                        text: r.main;
+                                        font-family: "DejaVu Sans";
+                                        color: Theme.text;
+                                        font-size: 15.5 * Theme.dp;
+                                        wrap: word-wrap;
+                                    }
+
+                                    if r.sub != "": Text {
+                                        text: r.sub;
+                                        font-family: "DejaVu Sans";
+                                        color: Theme.text-dim;
+                                        font-size: 13.5 * Theme.dp;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                height: 6 * Theme.dp;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Footer {
+            text: root.footer;
+        }
+    }
+}
+
+component Field inherits VerticalLayout {
+    in property <string> label;
+    spacing: 6 * Theme.dp;
+    padding-left: 16 * Theme.dp;
+    padding-right: 16 * Theme.dp;
+    Text {
+        text: root.label;
+        color: Theme.text-secondary;
+        font-size: 13 * Theme.dp;
+        font-weight: 600;
+    }
+
+    @children
+}
+
+component PickBox inherits Rectangle {
+    in property <string> text;
+    in property <image> icon;
+    callback clicked();
+    height: Theme.field-h;
+    border-radius: 8 * Theme.dp;
+    background: Theme.field;
+    border-width: max(1px, Theme.dp / 2);
+    border-color: #ffffff2e;
+    HorizontalLayout {
+        padding-left: 12 * Theme.dp;
+        padding-right: 12 * Theme.dp;
+        spacing: 8 * Theme.dp;
+        Glyph {
+            source: root.icon;
+            size: 18 * Theme.dp;
+            colorize: Theme.text-secondary;
+            y: (parent.height - self.height) / 2;
+        }
+
+        Text {
+            horizontal-stretch: 1;
+            text: root.text;
+            color: Theme.text;
+            font-size: 15 * Theme.dp;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+component ValueRow inherits Rectangle {
+    in property <string> title;
+    in property <string> value;
+    in property <bool> chevron: true;
+    in property <bool> last;
+    callback clicked();
+    height: 52 * Theme.dp;
+    background: t.pressed ? Theme.pressed : transparent;
+    t := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 16 * Theme.dp;
+        padding-right: 12 * Theme.dp;
+        spacing: 8 * Theme.dp;
+        Text {
+            horizontal-stretch: 1;
+            text: root.title;
+            color: Theme.text;
+            font-size: 16 * Theme.dp;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: root.value;
+            font-family: "DejaVu Sans";
+            color: Theme.text-secondary;
+            font-size: 15 * Theme.dp;
+            vertical-alignment: center;
+        }
+
+        if root.chevron: Glyph {
+            source: @image-url("@neoui/icons/sys/chevron_right.svg");
+            size: 20 * Theme.dp;
+            colorize: Theme.text-dim;
+            y: (parent.height - self.height) / 2;
+        }
+        @children
+    }
+
+    if !root.last: Line {
+        x: 16 * Theme.dp;
+        y: parent.height - self.height;
+        width: parent.width - 16 * Theme.dp;
+    }
+}
+
+// files2-edit-ics: [✕ Edit event ✓], Title, Starts, Ends, Place; All day, Reminder, Repeat, Time zone
+export component IcsEdit inherits Rectangle {
+    in property <string> file-line;
+    in-out property <string> title;
+    in-out property <string> place;
+    in property <string> start-date;
+    in property <string> start-time;
+    in property <string> end-date;
+    in property <string> end-time;
+    in property <bool> all-day;
+    in property <string> reminder;
+    in property <string> repeat;
+    in property <string> zone;
+    // the pickers, opened by Rust with the value to start from
+    in-out property <bool> date-open;
+    in-out property <int> year;
+    in-out property <int> month;
+    in-out property <int> day;
+    in-out property <bool> time-open;
+    in-out property <int> hour;
+    in-out property <int> minute;
+    in-out property <bool> choice-open;
+    in property <string> choice-title;
+    in property <[string]> choices;
+    in property <int> choice;
+    callback cancel();
+    callback save();
+    // "start-date", "start-time", "end-date", "end-time", "reminder", "repeat"
+    callback pick(string);
+    callback all-day-toggled(bool);
+    callback date-set(int, int, int);
+    callback time-set(int, int);
+    callback chosen(int);
+    background: Theme.bg;
+    TouchArea { }
+
+    VerticalLayout {
+        FormHeader {
+            title: "Edit event";
+            can-save: root.title != "";
+            cancel => {
+                root.cancel();
+            }
+            save => {
+                root.save();
+            }
+        }
+
+        NeoList {
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                padding-bottom: 16 * Theme.dp;
+                spacing: 12 * Theme.dp;
+                FileLine {
+                    badge: "ICS";
+                    text: root.file-line;
+                }
+
+                Field {
+                    label: "Title";
+                    TextField {
+                        text <=> root.title;
+                        placeholder: "Title";
+                    }
+                }
+
+                Field {
+                    label: "Starts";
+                    HorizontalLayout {
+                        spacing: 8 * Theme.dp;
+                        PickBox {
+                            text: root.start-date;
+                            icon: @image-url("@neoui/icons/sys/today.svg");
+                            clicked => {
+                                root.pick("start-date");
+                            }
+                        }
+
+                        if !root.all-day: PickBox {
+                            width: 96 * Theme.dp;
+                            text: root.start-time;
+                            icon: @image-url("@neoui/icons/sys/clock.svg");
+                            clicked => {
+                                root.pick("start-time");
+                            }
+                        }
+                    }
+                }
+
+                Field {
+                    label: "Ends";
+                    HorizontalLayout {
+                        spacing: 8 * Theme.dp;
+                        PickBox {
+                            text: root.end-date;
+                            icon: @image-url("@neoui/icons/sys/today.svg");
+                            clicked => {
+                                root.pick("end-date");
+                            }
+                        }
+
+                        if !root.all-day: PickBox {
+                            width: 96 * Theme.dp;
+                            text: root.end-time;
+                            icon: @image-url("@neoui/icons/sys/clock.svg");
+                            clicked => {
+                                root.pick("end-time");
+                            }
+                        }
+                    }
+                }
+
+                Field {
+                    label: "Place";
+                    TextField {
+                        text <=> root.place;
+                        placeholder: "Place";
+                    }
+                }
+
+                VerticalLayout {
+                    padding-top: 8 * Theme.dp;
+                    ValueRow {
+                        title: "All day";
+                        chevron: false;
+                        Switch {
+                            on: root.all-day;
+                            y: (parent.height - self.height) / 2;
+                            toggled(on) => {
+                                root.all-day-toggled(on);
+                            }
+                        }
+                    }
+
+                    ValueRow {
+                        title: "Reminder";
+                        value: root.reminder;
+                        clicked => {
+                            root.pick("reminder");
+                        }
+                    }
+
+                    ValueRow {
+                        title: "Repeat";
+                        value: root.repeat;
+                        clicked => {
+                            root.pick("repeat");
+                        }
+                    }
+
+                    ValueRow {
+                        title: "Time zone";
+                        value: root.zone;
+                        chevron: false;
+                        last: true;
+                    }
+                }
+            }
+        }
+    }
+
+    DatePicker {
+        open <=> root.date-open;
+        year <=> root.year;
+        month <=> root.month;
+        day <=> root.day;
+        set(y, m, d) => {
+            root.date-set(y, m, d);
+        }
+    }
+
+    TimePicker {
+        open <=> root.time-open;
+        hour <=> root.hour;
+        minute <=> root.minute;
+        set(h, m) => {
+            root.time-set(h, m);
+        }
+    }
+
+    ChoiceSheet {
+        title: root.choice-title;
+        open <=> root.choice-open;
+        choices: root.choices;
+        current: root.choice;
+        chosen(i) => {
+            root.chosen(i);
+        }
+    }
+}
+
+component Hero inherits HorizontalLayout {
+    in property <length> tile: 72 * Theme.dp;
+    in property <brush> tile-bg;
+    in property <image> icon;
+    in property <color> icon-tint: white;
+    in property <image> art;
+    in property <bool> has-art;
+    in property <string> title;
+    in property <image> title-art;
+    in property <bool> has-title-art;
+    in property <string> line1;
+    in property <color> line1-colour: Theme.text-secondary;
+    in property <string> line2;
+    padding-left: 16 * Theme.dp;
+    padding-right: 16 * Theme.dp;
+    padding-top: 16 * Theme.dp;
+    padding-bottom: 12 * Theme.dp;
+    spacing: 16 * Theme.dp;
+    Rectangle {
+        width: root.tile;
+        height: root.tile;
+        border-radius: root.tile * 0.22;
+        background: root.tile-bg;
+        if root.has-art: Image {
+            source: root.art;
+            width: root.tile * 0.8;
+            height: root.tile * 0.6;
+            image-fit: contain;
+        }
+        if !root.has-art: Glyph {
+            source: root.icon;
+            size: root.tile * 0.55;
+            colorize: root.icon-tint;
+        }
+    }
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 3 * Theme.dp;
+        if root.has-title-art: Image {
+            source: root.title-art;
+            height: 30 * Theme.dp;
+            image-fit: contain;
+            horizontal-alignment: left;
+        }
+        if !root.has-title-art: Text {
+            text: root.title;
+            font-family: "DejaVu Sans";
+            color: Theme.text;
+            font-size: 21 * Theme.dp;
+            font-weight: 600;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.line1;
+            font-family: "DejaVu Sans";
+            color: root.line1-colour;
+            font-size: 13.5 * Theme.dp;
+            wrap: word-wrap;
+        }
+
+        if root.line2 != "": Text {
+            text: root.line2;
+            font-family: "DejaVu Sans";
+            color: Theme.text-dim;
+            font-size: 13 * Theme.dp;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// files2-view-font: "Aa" and the family drawn in the font itself, Samples | Glyphs, Install font (disabled)
+export component FontView inherits Rectangle {
+    in property <image> aa;
+    in property <image> family-art;
+    in property <string> family;
+    in property <string> line1;
+    in property <string> line2;
+    in property <int> tab;
+    in property <[SampleGroup]> groups;
+    in property <[GlyphRow]> glyphs;
+    in property <string> glyphs-note;
+    in property <string> footer;
+    callback tab-picked(int);
+    background: Theme.bg;
+    VerticalLayout {
+        Hero {
+            tile-bg: Theme.field;
+            art: root.aa;
+            has-art: true;
+            title: root.family;
+            title-art: root.family-art;
+            has-title-art: root.family-art.width > 0;
+            line1: root.line1;
+            line2: root.line2;
+        }
+
+        Segments {
+            items: ["Samples", "Glyphs"];
+            current: root.tab;
+            picked(i) => {
+                root.tab-picked(i);
+            }
+        }
+
+        // `if`, not `visible`: a hidden list keeps its share of the layout's height
+        if root.tab == 0: NeoList {
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                padding-bottom: 12 * Theme.dp;
+                for g in root.groups: VerticalLayout {
+                    SectionTitle {
+                        text: g.title;
+                    }
+
+                    for s in g.lines: HorizontalLayout {
+                        padding-left: 12 * Theme.dp;
+                        spacing: 10 * Theme.dp;
+                        height: s.h * 1.25 * Theme.dp;
+                        Text {
+                            width: 22 * Theme.dp;
+                            text: s.size;
+                            color: Theme.text-dim;
+                            font-size: 11 * Theme.dp;
+                            font-weight: 500;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                        }
+
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            clip: true;
+                            Image {
+                                x: 0;
+                                source: s.line;
+                                height: s.h * 1.2 * Theme.dp;
+                                image-fit: contain;
+                                horizontal-alignment: left;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.tab == 1: NeoList {
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                padding: 12 * Theme.dp;
+                spacing: 6 * Theme.dp;
+                for r in root.glyphs: HorizontalLayout {
+                    spacing: 6 * Theme.dp;
+                    alignment: start;
+                    for c in r.cells: Rectangle {
+                        width: 50 * Theme.dp;
+                        height: 50 * Theme.dp;
+                        border-radius: 8 * Theme.dp;
+                        background: Theme.card;
+                        Image {
+                            source: c;
+                            width: 40 * Theme.dp;
+                            height: 40 * Theme.dp;
+                        }
+                    }
+                }
+                if root.glyphs-note != "": Text {
+                    text: root.glyphs-note;
+                    color: Theme.text-dim;
+                    font-size: 13 * Theme.dp;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        Footer {
+            text: root.footer;
+            Button {
+                text: "Install font";
+                primary: false;
+                enabled: false;
+                icon: @image-url("icons/font.svg");
+                has-icon: true;
+            }
+        }
+    }
+}
+
+// files2-view-cert: the shield, the name, "✓ Valid · self-signed root"; Subject, Issuer, Validity, the fingerprint
+export component CertView inherits Rectangle {
+    in property <string> title;
+    in property <string> status;
+    in property <bool> ok;
+    in property <[InfoGroup]> groups;
+    in property <string> fp1;
+    in property <string> fp2;
+    in property <string> footer;
+    background: Theme.bg;
+    VerticalLayout {
+        NeoList {
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                padding-bottom: 14 * Theme.dp;
+                Hero {
+                    tile: 56 * Theme.dp;
+                    tile-bg: #c9a227;
+                    icon: @image-url("icons/shield.svg");
+                    title: root.title;
+                    line1: root.status;
+                    line1-colour: root.ok ? #7fd1a3 : #ff8a80;
+                }
+
+                Groups {
+                    groups: root.groups;
+                }
+
+                if root.fp1 != "": VerticalLayout {
+                    SectionTitle {
+                        text: "SHA-256 FINGERPRINT";
+                    }
+
+                    for l in [root.fp1, root.fp2]: Text {
+                        text: "    " + l;
+                        font-family: "DejaVu Sans Mono";
+                        color: Theme.text-secondary;
+                        font-size: 11 * Theme.dp;
+                        height: 18 * Theme.dp;
+                    }
+                }
+            }
+        }
+
+        Footer {
+            text: root.footer;
+            Button {
+                text: "Install as trusted";
+                enabled: false;
+                icon: @image-url("icons/shield.svg");
+                has-icon: true;
+            }
+        }
+    }
+}
+
+// files2-view-app: the package's tile, name, vendor; where it installs, its details and capabilities; Install
+// (disabled)
+export component AppView inherits Rectangle {
+    in property <string> title;
+    in property <string> vendor;
+    in property <string> meta;
+    in property <string> info-title;
+    in property <string> info-text;
+    in property <[InfoGroup]> groups;
+    in property <string> caps-title;
+    in property <[Detail]> caps;
+    in property <string> note;
+    callback cancel();
+    background: Theme.bg;
+    VerticalLayout {
+        NeoList {
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                padding-bottom: 14 * Theme.dp;
+                Hero {
+                    tile-bg: @linear-gradient(150deg, #ffcf4d 0%, #e08a12 100%);
+                    icon: @image-url("@neoui/icons/sys/apps.svg");
+                    icon-tint: #5a3505;
+                    title: root.title;
+                    line1: root.vendor;
+                    line2: root.meta;
+                }
+
+                if root.info-title != "": HorizontalLayout {
+                    padding-left: 12 * Theme.dp;
+                    padding-right: 12 * Theme.dp;
+                    padding-bottom: 4 * Theme.dp;
+                    Frame {
+                        height: info.preferred-height;
+                        info := HorizontalLayout {
+                            padding: 12 * Theme.dp;
+                            spacing: 12 * Theme.dp;
+                            Rectangle {
+                                width: 32 * Theme.dp;
+                                height: 32 * Theme.dp;
+                                border-radius: 7 * Theme.dp;
+                                background: #6b5cf0;
+                                Glyph {
+                                    source: @image-url("@neoui/icons/sys/apps.svg");
+                                    size: 20 * Theme.dp;
+                                    colorize: white;
+                                }
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: root.info-title;
+                                    color: Theme.text;
+                                    font-size: 15 * Theme.dp;
+                                    font-weight: 500;
+                                }
+
+                                Text {
+                                    text: root.info-text;
+                                    color: Theme.text-dim;
+                                    font-size: 13 * Theme.dp;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+                }
+                Groups {
+                    groups: root.groups;
+                }
+
+                if root.caps.length > 0: SectionTitle {
+                    text: root.caps-title;
+                }
+                for c in root.caps: HorizontalLayout {
+                    padding-left: 16 * Theme.dp;
+                    padding-right: 16 * Theme.dp;
+                    padding-top: 7 * Theme.dp;
+                    padding-bottom: 7 * Theme.dp;
+                    spacing: 12 * Theme.dp;
+                    VerticalLayout {
+                        alignment: start;
+                        Glyph {
+                            source: @image-url("icons/shield.svg");
+                            size: 20 * Theme.dp;
+                            colorize: #c9a227;
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 1 * Theme.dp;
+                        Text {
+                            text: c.key;
+                            font-family: "DejaVu Sans Mono";
+                            color: Theme.text;
+                            font-size: 14 * Theme.dp;
+                        }
+
+                        Text {
+                            text: c.value;
+                            color: Theme.text-dim;
+                            font-size: 13 * Theme.dp;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                if root.note != "": HorizontalLayout {
+                    padding-left: 16 * Theme.dp;
+                    padding-right: 16 * Theme.dp;
+                    Text {
+                        text: root.note;
+                        color: Theme.text-dim;
+                        font-size: 13 * Theme.dp;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        Footer {
+            Button {
+                width: 104 * Theme.dp;
+                text: "Cancel";
+                primary: false;
+                clicked => {
+                    root.cancel();
+                }
+            }
+
+            Button {
+                width: 200 * Theme.dp;
+                text: "Install";
+                enabled: false;
+                icon: @image-url("icons/install.svg");
+                has-icon: true;
+            }
+        }
+    }
+}
+
+// files2-view-unknown: the file's tile, name and facts, why there is no viewer, Open with… (disabled until FA8), then
+// its bytes: Text (the text viewer, read-only) | Hex
+export component UnknownView inherits Rectangle {
+    in property <string> badge;
+    in property <color> colour;
+    in property <string> title;
+    in property <string> meta;
+    in property <string> heading;
+    in property <string> text;
+    in property <string> bytes-info;
+    in property <[TRow]> rows;
+    in property <int> total;
+    callback scrolled(int);
+    callback as-text();
+    background: Theme.bg;
+    VerticalLayout {
+        VerticalLayout {
+            vertical-stretch: 0;
+            alignment: start;
+            padding-top: 24 * Theme.dp;
+            spacing: 6 * Theme.dp;
+            HorizontalLayout {
+                alignment: center;
+                FTile {
+                    badge: root.badge;
+                    colour: root.colour;
+                    size: 72 * Theme.dp;
+                }
+            }
+
+            Text {
+                text: root.title;
+                font-family: "DejaVu Sans";
+                color: Theme.text;
+                font-size: 20 * Theme.dp;
+                font-weight: 600;
+                horizontal-alignment: center;
+                overflow: elide;
+            }
+
+            Text {
+                text: root.meta;
+                font-family: "DejaVu Sans";
+                color: Theme.text-dim;
+                font-size: 13.5 * Theme.dp;
+                horizontal-alignment: center;
+            }
+
+            Rectangle {
+                height: 10 * Theme.dp;
+            }
+
+            Text {
+                text: root.heading;
+                color: Theme.text;
+                font-size: 17 * Theme.dp;
+                font-weight: 600;
+                horizontal-alignment: center;
+            }
+
+            HorizontalLayout {
+                padding-left: 32 * Theme.dp;
+                padding-right: 32 * Theme.dp;
+                Text {
+                    text: root.text;
+                    color: Theme.text-secondary;
+                    font-size: 14 * Theme.dp;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+
+            HorizontalLayout {
+                alignment: center;
+                padding-top: 12 * Theme.dp;
+                Button {
+                    text: "Open with…";
+                    enabled: false;
+                    icon: @image-url("@neoui/icons/sys/apps.svg");
+                    has-icon: true;
+                }
+            }
+        }
+
+        HorizontalLayout {
+            padding-top: 16 * Theme.dp;
+            padding-right: 16 * Theme.dp;
+            Segments {
+                width: 200 * Theme.dp;
+                items: ["Text", "Hex"];
+                current: 1;
+                picked(i) => {
+                    if i == 0 {
+                        root.as-text();
+                    }
+                }
+            }
+
+            Text {
+                horizontal-stretch: 1;
+                text: root.bytes-info;
+                color: Theme.text-dim;
+                font-size: 12.5 * Theme.dp;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+        }
+
+        HorizontalLayout {
+            vertical-stretch: 1;
+            padding-left: 8 * Theme.dp;
+            padding-right: 8 * Theme.dp;
+            padding-bottom: 10 * Theme.dp;
+            Rectangle {
+                border-radius: 12 * Theme.dp;
+                border-width: max(1px, Theme.dp / 2);
+                border-color: #ffffff14;
+                clip: true;
+                hex := TextPane {
+                    x: 2 * Theme.dp;
+                    width: parent.width - 4 * Theme.dp;
+                    height: parent.height;
+                    rows: root.rows;
+                    total-rows: root.total;
+                    scrolled(r) => {
+                        root.scrolled(r);
+                    }
+                }
+            }
+        }
+    }
+}

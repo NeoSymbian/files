@@ -1,0 +1,10 @@
+BEGIN:VCARD
+VERSION:4.0
+FN:Anahit Hakobyan
+N:Hakobyan;Anahit;;;
+ORG:Ararat Software
+TEL;VALUE=uri;TYPE=cell:tel:+374-91-234567
+TEL;VALUE=uri;TYPE="work,voice":tel:+374-10-512048
+EMAIL;TYPE=home:anahit@example.am
+KIND:individual
+END:VCARD
