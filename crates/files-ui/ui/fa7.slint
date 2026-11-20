@@ -2,7 +2,7 @@
 // FA7 (cards and inspectors): the contact cards of a .vcf and their form (files2-view-vcf, -edit-vcf), the event card
 // of an .ics and its form (files2-view-ics, -edit-ics), the font sample (files2-view-font), the certificate
 // (files2-view-cert), the app package (files2-view-app) and the bytes of any file (files2-view-unknown). Buttons
-// whose work comes in a later phase (Install, Open with…) are drawn disabled, with the reason in the footer.
+// whose work comes in a later phase (Install) are drawn disabled, with the reason in the footer.
 
 import { Theme, Glyph, Button, FormHeader, TextField, NeoList, Switch, ChoiceSheet, DatePicker, TimePicker } from "@neoui/kit.slint";
 import { FTile } from "tiles.slint";
@@ -1452,6 +1452,7 @@ export component UnknownView inherits Rectangle {
     in property <int> total;
     callback scrolled(int);
     callback as-text();
+    callback open-with();
     background: Theme.bg;
     VerticalLayout {
         VerticalLayout {
@@ -1515,9 +1516,11 @@ export component UnknownView inherits Rectangle {
                 padding-top: 12 * Theme.dp;
                 Button {
                     text: "Open with…";
-                    enabled: false;
                     icon: @image-url("@neoui/icons/sys/apps.svg");
                     has-icon: true;
+                    clicked => {
+                        root.open-with();
+                    }
                 }
             }
         }

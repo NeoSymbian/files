@@ -30,7 +30,7 @@ fn fa7_pim_boards() {
     let known = [false, false, true];
     ui.set_view("vcf".into());
     ui.set_name("contacts.vcf".into());
-    ui.set_fa7_menu(strings(&["Show as hex…", "Details"]));
+    ui.set_fa7_menu(strings(&["Show as hex…", "Open with…", "Details"]));
     ui.set_vcf_title(pim::count(v.len(), "contact", "contacts").into());
     ui.set_vcf_sub("vCard 3.0 · 18 KB · E:\\Downloads".into());
     ui.set_vcf_cards(model_of(
@@ -100,7 +100,7 @@ fn inspector_boards(s: &Shot) {
     use neo_format_inspect::{cert, font::Font, sis};
     let ui = &s.ui;
     let scale = 3.0;
-    ui.set_fa7_menu(strings(&["Show as hex…", "Details"]));
+    ui.set_fa7_menu(strings(&["Show as hex…", "Open with…", "Details"]));
 
     // files2-view-font: DejaVu Sans (the subset fixture)
     let data = fixture("DejaVuSans-subset.ttf");

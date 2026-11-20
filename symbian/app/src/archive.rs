@@ -62,6 +62,10 @@ pub struct Browse {
 pub enum Purpose {
     Extract(String, Option<Pick>),
     SaveIn,
+    /// FA8: a file for the app that opened Files (its filter: `crate::fa8::passes`).
+    PickFile(String),
+    /// FA8: a name and folder for a new file: for the app that opened Files (true), or the editor's Save as.
+    SaveAs(String, bool),
 }
 
 pub struct Picker {
@@ -69,6 +73,8 @@ pub struct Picker {
     pub dir: String,
     drives: Vec<char>,
     rows: Vec<String>,
+    /// PickFile: the files listed after the folders.
+    files: Vec<String>,
     from: View,
     /// Files' open folder then (the picker's New folder borrows `st.dir`).
     from_dir: String,
@@ -669,12 +675,21 @@ pub fn details(app: &App, ui: &FilesApp, st: &mut State) {
 // ── the folder picker ────────────────────────────────────────────────────────────────────────────────────────────
 
 pub fn open_picker(app: &App, ui: &FilesApp, st: &mut State, purpose: Purpose, start_dir: String) {
-    let drives: Vec<char> = st.drives.iter().filter(|d| !d.1).map(|d| d.0).collect();
+    let any = matches!(purpose, Purpose::PickFile(_));
+    let drives: Vec<char> = st
+        .drives
+        .iter()
+        .filter(|d| any || !d.1)
+        .map(|d| d.0)
+        .collect();
     let Some(&first) = drives.first() else {
         return note_with(app, "No drive to write to", "");
     };
-    let ok = writable(st, &start_dir)
+    let ok = (any || writable(st, &start_dir))
         && (path::parent(&start_dir).is_none() || st.fs.entry(&start_dir).is_ok());
+    if let Purpose::SaveAs(name, _) = &purpose {
+        ui.set_picker_name(name.as_str().into());
+    }
     let dir = if ok { start_dir } else { format!("{first}:\\") };
     let from = st.view;
     st.picker = Some(Picker {
@@ -682,6 +697,7 @@ pub fn open_picker(app: &App, ui: &FilesApp, st: &mut State, purpose: Purpose, s
         dir,
         drives,
         rows: Vec::new(),
+        files: Vec::new(),
         from,
         from_dir: st.dir.clone(),
     });
@@ -694,14 +710,24 @@ pub fn open_picker(app: &App, ui: &FilesApp, st: &mut State, purpose: Purpose, s
 pub fn picker_list(app: &App, ui: &FilesApp, st: &mut State) {
     let hidden = st.hidden;
     let Some(p) = st.picker.as_mut() else { return };
+    let filter = match &p.purpose {
+        Purpose::PickFile(f) => Some(f.clone()),
+        _ => None,
+    };
     let mut names: Vec<Item> = match st.fs.read_dir(&p.dir) {
         Ok(v) => v
             .into_iter()
-            .filter(|e| e.is_dir())
+            .filter(|e| {
+                e.is_dir()
+                    || filter
+                        .as_deref()
+                        .is_some_and(|f| crate::fa8::passes(f, &e.name))
+            })
             .map(|e| Item {
+                is_dir: e.is_dir(),
                 name: e.name,
-                is_dir: true,
                 att: e.att,
+                size: e.size,
                 ..Item::default()
             })
             .collect(),
@@ -712,10 +738,27 @@ pub fn picker_list(app: &App, ui: &FilesApp, st: &mut State) {
     };
     names = model::visible(names, hidden);
     names.sort_by_key(|a| a.name.to_lowercase());
-    p.rows = names.into_iter().map(|i| i.name).collect();
+    let (dirs, files): (Vec<Item>, Vec<Item>) = names.into_iter().partition(|i| i.is_dir);
+    p.rows = dirs.into_iter().map(|i| i.name).collect();
     let letter = p.dir.chars().next().unwrap_or('C');
-    let rows: Vec<files_ui::PackItem> = p.rows.iter().map(|n| pack_item(n, true, "")).collect();
-    ui.set_picker_title("Choose a folder".into());
+    let mut rows: Vec<files_ui::PackItem> = p.rows.iter().map(|n| pack_item(n, true, "")).collect();
+    rows.extend(
+        files
+            .iter()
+            .map(|f| pack_item(&f.name, false, &model::size_text(f.size))),
+    );
+    p.files = files.into_iter().map(|i| i.name).collect();
+    let (title, action, empty) = match p.purpose {
+        Purpose::Extract(..) => ("Choose a folder", "Extract here", "No folders here"),
+        Purpose::SaveIn => ("Choose a folder", "Save here", "No folders here"),
+        Purpose::PickFile(_) => ("Choose a file", "Tap a file", "Nothing to pick here"),
+        Purpose::SaveAs(..) => ("Save as", "Save", "No folders here"),
+    };
+    let picking = matches!(p.purpose, Purpose::PickFile(_));
+    ui.set_picker_naming(matches!(p.purpose, Purpose::SaveAs(..)));
+    ui.set_picker_empty(empty.into());
+    ui.set_picker_can_new_folder(!picking);
+    ui.set_picker_title(title.into());
     ui.set_picker_drives(ModelRc::from(Rc::new(VecModel::from(
         p.drives
             .iter()
@@ -729,17 +772,11 @@ pub fn picker_list(app: &App, ui: &FilesApp, st: &mut State) {
         .collect();
     ui.set_picker_crumbs(ModelRc::from(Rc::new(VecModel::from(crumbs))));
     ui.set_picker_rows(ModelRc::from(Rc::new(VecModel::from(rows))));
-    ui.set_picker_action(
-        match p.purpose {
-            Purpose::Extract(..) => "Extract here",
-            Purpose::SaveIn => "Save here",
-        }
-        .into(),
-    );
+    ui.set_picker_action(action.into());
     let free =
         free_of(st, letter).map_or(String::new(), |f| format!("{} free", model::size_text(f)));
     ui.set_picker_info(free.into());
-    ui.set_picker_can(true);
+    ui.set_picker_can(!picking);
     ui.set_view("pick-folder".into());
 }
 
@@ -747,8 +784,19 @@ pub fn picker_open(app: &App, ui: &FilesApp, st: &mut State, i: usize) {
     let Some(p) = st.picker.as_mut() else { return };
     if let Some(n) = p.rows.get(i) {
         p.dir = path::join_dir(&p.dir, n);
-        picker_list(app, ui, st);
+        return picker_list(app, ui, st);
     }
+    // a file (PickFile lists them after the folders): picked
+    let Some(f) = p
+        .files
+        .get(i - p.rows.len())
+        .map(|n| path::join_file(&p.dir, n))
+    else {
+        return;
+    };
+    let Some(p) = st.picker.take() else { return };
+    leave_picker(app, ui, st, p.from, p.from_dir);
+    crate::fa8::picked(app, st, &f);
 }
 
 pub fn picker_crumb(app: &App, ui: &FilesApp, st: &mut State, i: usize) {
@@ -771,6 +819,10 @@ pub fn picker_drive(app: &App, ui: &FilesApp, st: &mut State, i: usize) {
 pub fn picker_cancel(app: &App, ui: &FilesApp, st: &mut State) {
     let Some(p) = st.picker.take() else { return };
     leave_picker(app, ui, st, p.from, p.from_dir);
+    // the app that asked gets the screen back, without a file
+    if matches!(p.purpose, Purpose::PickFile(_) | Purpose::SaveAs(_, true)) {
+        let _ = app.done();
+    }
 }
 
 fn leave_picker(app: &App, ui: &FilesApp, st: &mut State, from: View, from_dir: String) {
@@ -827,6 +879,11 @@ pub fn picker_done(app: &App, ui: &FilesApp, st: &mut State) {
                 c.dir = dir;
             }
             compress_show(ui, st);
+        }
+        Purpose::PickFile(_) => {}
+        Purpose::SaveAs(_, caller) => {
+            let name = ui.get_picker_name().to_string();
+            crate::fa8::save_as(app, ui, st, &dir, &name, caller);
         }
     }
 }
