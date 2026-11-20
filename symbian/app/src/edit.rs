@@ -576,6 +576,24 @@ impl Open {
         Ok(bytes.len())
     }
 
+    /// Save as (FA8): the text goes to `to` (a new name the picker made free), which becomes this file.
+    pub fn save_as(&mut self, fs: &E32Fs, to: &str) -> Result<usize, i32> {
+        let bytes = match &self.table {
+            Some(t) => t.encode(),
+            None => self.ed.doc.encode(),
+        };
+        store::write(fs, to, &bytes).map_err(|e| e.code())?;
+        self.path = to.to_string();
+        self.name = neo_fs::path::name_of(to).to_string();
+        self.read_only = false;
+        self.ed.saved();
+        if let Some(t) = self.table.as_mut() {
+            t.saved();
+        }
+        self.size = bytes.len() as u64;
+        Ok(bytes.len())
+    }
+
     /// A copy of the unsaved text where the next start can find it (Quit while editing).
     pub fn keep_copy(&self, fs: &E32Fs) {
         let bytes = match &self.table {

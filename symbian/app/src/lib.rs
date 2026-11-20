@@ -16,6 +16,7 @@ mod archive;
 mod edit;
 mod fa3;
 mod fa7;
+mod fa8;
 mod image;
 mod job;
 mod pics;
@@ -129,7 +130,7 @@ enum Action {
     CellDone,
     NewType(usize),
     // FA5
-    ImgMenu,
+    ImgMenu(usize),
     ImgStrip(usize),
     ImgTapped,
     ImgDouble(f32, f32),
@@ -162,6 +163,8 @@ enum Action {
     PickerNewFolder,
     // FA7
     Fa7(fa7::Act),
+    // FA8
+    Fa8(fa8::Act),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -302,6 +305,9 @@ struct State {
     compress: Option<archive::CompressForm>,
     // FA7
     fa7: Option<fa7::Open7>,
+    // FA8
+    with: Option<fa8::With>,
+    share: Option<fa8::Share>,
 }
 
 fn run() -> Result<(), i32> {
@@ -317,7 +323,12 @@ fn run() -> Result<(), i32> {
             .map_or(((0, 0), Rect::default()), |ui| scrolled(&ui))
     });
 
-    let fs = Rc::new(E32Fs::connect().map_err(|e| e.code())?);
+    let mut fs = E32Fs::connect().map_err(|e| e.code())?;
+    // its files go to other apps by handle (Open with, the picker's answer)
+    if let Err(e) = fs.0.share_protected() {
+        dprintln!("files: session not shared ({})", e);
+    }
+    let fs = Rc::new(fs);
     let mut st = State {
         fs: fs.clone(),
         slot: job::Slot::new()?,
@@ -368,6 +379,8 @@ fn run() -> Result<(), i32> {
         picker: None,
         compress: None,
         fa7: None,
+        with: None,
+        share: None,
     };
     load_settings(&app, &ui, &mut st);
     fa3::load(&mut st);
@@ -378,8 +391,10 @@ fn run() -> Result<(), i32> {
         test_photos(&st);
         test_zips(&st);
         fa7::test_files(&st);
+        fa8::test_files(&st);
     }
     show_drives(&app, &ui, &mut st);
+    fa8::restore_clip(&app, &ui, &mut st);
     // a trash cut short by a power cut is finished or rolled back (files-ops' journal)
     for &(d, ro) in &st.drives {
         if !ro {
@@ -490,7 +505,13 @@ fn run() -> Result<(), i32> {
                 }
                 AppEvent::NoteAction => undo(&app, &ui, &mut st),
                 // back from NEOCONT's IMPORT page: the cards it has now are marked
-                AppEvent::Visible(true) if st.view == View::Fa7 => fa7::visible(&ui, &mut st),
+                AppEvent::Visible(true) if st.view == View::Fa7 => {
+                    fa7::visible(&ui, &mut st);
+                    fa8::restore_clip(&app, &ui, &mut st);
+                }
+                AppEvent::Visible(true) => fa8::restore_clip(&app, &ui, &mut st),
+                // another app asks for a file (the picker) or a name to save one
+                AppEvent::Open { page } => fa8::opened(&app, &ui, &mut st, page),
                 AppEvent::Notified {
                     id: JOB_NOTE,
                     action: 1,
@@ -625,7 +646,9 @@ fn bind(ui: &FilesApp, actions: &Rc<RefCell<VecDeque<Action>>>) {
     // FA5
     {
         let q = actions.clone();
-        ui.on_img_menu_picked(move |_| q.borrow_mut().push_back(Action::ImgMenu));
+        ui.on_img_menu_picked(move |i| {
+            q.borrow_mut().push_back(Action::ImgMenu(i.max(0) as usize))
+        });
     }
     ui.on_img_strip_picked(index(Action::ImgStrip));
     ui.on_img_edit_menu(index(Action::ImgEditMenu));
@@ -668,6 +691,7 @@ fn bind(ui: &FilesApp, actions: &Rc<RefCell<VecDeque<Action>>>) {
     ui.on_picker_open(index(Action::PickerOpen));
     ui.on_picker_new_folder(plain(|| Action::PickerNewFolder));
     fa7::bind(ui, actions);
+    fa8::bind(ui, actions);
     {
         let q = actions.clone();
         ui.on_group_picked(move |g, i| {
@@ -811,6 +835,7 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
         Action::PickerOpen(i) => archive::picker_open(app, ui, st, i),
         Action::PickerNewFolder => archive::picker_new_folder(app, ui, st),
         Action::Fa7(a) => fa7::act(app, ui, st, a),
+        Action::Fa8(a) => fa8::act(app, ui, st, a),
         Action::Edit if st.view == View::Fa7 => fa7::edit(ui, st),
         Action::Row(i) if st.view == View::Folder => {
             let Some(item) = st.items.get(i).cloned() else {
@@ -859,10 +884,17 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
             let paths = fa3::picked_paths(st);
             ask_trash_paths(app, st, paths);
         }
-        Action::Pick(0) => pick_clip(ui, st, Kind::Copy),
+        Action::Pick(0) => pick_clip(app, ui, st, Kind::Copy),
         Action::Pick(_) => ask_trash(app, st),
         Action::PickMenu(m) => match m.as_str() {
-            "Move" => pick_clip(ui, st, Kind::Move),
+            "Move" => pick_clip(app, ui, st, Kind::Move),
+            "Open with…" => {
+                if let [one] = picked(st).as_slice() {
+                    let p = path_of(st, one);
+                    clear_selection(ui, st);
+                    fa8::open_with(ui, st, p);
+                }
+            }
             "Rename" => start_rename(app, ui, st),
             "Compress" => {
                 let paths = picked(st).iter().map(|i| path_of(st, i)).collect();
@@ -915,6 +947,7 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
         }
         Action::PasteCancel => {
             st.clip = None;
+            fa8::clear_clip(app);
             show_clip(ui, st);
         }
         Action::PasteGo => paste(app, ui, st),
@@ -1113,7 +1146,9 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
             ui.set_new_type(st.new_type as i32);
             ui.set_name_suffix([".txt", ".md", ".csv", ".json", ""][st.new_type].into());
         }
-        Action::ImgMenu => {
+        Action::ImgMenu(0) => fa8::act(app, ui, st, fa8::Act::Share),
+        Action::ImgMenu(1) => fa8::act(app, ui, st, fa8::Act::OpenWith),
+        Action::ImgMenu(_) => {
             let p = st.file.clone();
             fa3::details(app, ui, st, &p);
         }
@@ -1191,8 +1226,16 @@ fn show_tab(app: &App, ui: &FilesApp, st: &mut State, i: usize) {
     }
 }
 
-/// A file opens in the viewer, a folder (ends with `\`) as a folder.
+/// A file opens in the viewer (or the app "Always" names for its type), a folder (ends with `\`) as a folder.
 fn open_path(app: &App, ui: &FilesApp, st: &mut State, p: &str) {
+    if !p.ends_with('\\') && fa8::open_always(app, st, p) {
+        return;
+    }
+    open_here(app, ui, st, p);
+}
+
+/// [`open_path`] in Files itself, whatever "Always" says.
+fn open_here(app: &App, ui: &FilesApp, st: &mut State, p: &str) {
     if p.ends_with('\\') {
         return open_dir(app, ui, st, p.to_string());
     }
@@ -1310,6 +1353,13 @@ fn menu(app: &App, ui: &FilesApp, st: &mut State, m: &str) {
         }
         "Find and replace" => {
             ui.set_find_open(true);
+        }
+        "Open with…" => fa8::act(app, ui, st, fa8::Act::OpenWith),
+        "Save as…" => {
+            if let Some(o) = st.open.as_ref() {
+                let (name, dir) = (o.name.clone(), o.path_dir());
+                archive::open_picker(app, ui, st, archive::Purpose::SaveAs(name, false), dir);
+            }
         }
         "Wrap lines" | "No wrap" => act(app, ui, st, Action::WrapToggled),
         "Add row" | "Add column" | "Delete row" => {
@@ -1590,7 +1640,7 @@ fn undo(app: &App, ui: &FilesApp, st: &mut State) {
 }
 
 /// Copy (the header) or Move (⋮): the picked rows wait in the paste bar (files2-paste-bar).
-fn pick_clip(ui: &FilesApp, st: &mut State, kind: Kind) {
+fn pick_clip(app: &App, ui: &FilesApp, st: &mut State, kind: Kind) {
     let picked = picked(st);
     if picked.is_empty() || (kind == Kind::Move && st.read_only) {
         return;
@@ -1600,6 +1650,7 @@ fn pick_clip(ui: &FilesApp, st: &mut State, kind: Kind) {
         paths: picked.iter().map(|i| path_of(st, i)).collect(),
         from: st.dir.clone(),
     });
+    fa8::publish_clip(app, st);
     clear_selection(ui, st);
     show_clip(ui, st);
 }
@@ -1632,6 +1683,7 @@ fn paste(app: &App, ui: &FilesApp, st: &mut State) {
     let Some(clip) = st.clip.take() else {
         return;
     };
+    fa8::clear_clip(app);
     show_clip(ui, st);
     let dest = st.dir.clone();
     dprintln!(
@@ -2089,6 +2141,9 @@ pub(crate) fn is_text(name: &str) -> bool {
 
 fn view_file(app: &App, ui: &FilesApp, st: &mut State, item: &Item) {
     let path = model::join_file(&st.dir, &item.name);
+    if fa8::open_always(app, st, &path) {
+        return;
+    }
     if image::is_image(&item.name) {
         return image::open(app, ui, st, &path);
     }

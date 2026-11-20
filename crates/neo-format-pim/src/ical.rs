@@ -321,8 +321,7 @@ impl Ics {
         let (_, b, e) = self.items[i];
         let mut out = Vec::new();
         let mut depth = 0usize;
-        for k in b + 1..e {
-            let l = &self.lines[k];
+        for (k, l) in self.lines.iter().enumerate().take(e).skip(b + 1) {
             if begins(l) {
                 depth += 1;
             } else if ends(l) {
@@ -344,8 +343,7 @@ impl Ics {
     fn trigger_line(&self, i: usize) -> Option<usize> {
         let (_, b, e) = self.items[i];
         let mut in_alarm = false;
-        for k in b + 1..e {
-            let l = &self.lines[k];
+        for (k, l) in self.lines.iter().enumerate().take(e).skip(b + 1) {
             if begins(l) && l.value.trim().eq_ignore_ascii_case("VALARM") {
                 in_alarm = true;
             } else if ends(l) && l.value.trim().eq_ignore_ascii_case("VALARM") {

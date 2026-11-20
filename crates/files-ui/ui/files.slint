@@ -54,6 +54,8 @@ export struct FileRow {
 }
 
 export struct ImgGroup { title: string, count: string, more: string, thumbs: [FileRow] }
+// FA8 (files2-open-with): an app that opens the file, as the sheet lists it
+export struct WithRow { title: string, sub: string, colour: color }
 
 // a round check box (selection)
 component Check inherits Rectangle {
@@ -523,7 +525,9 @@ component RadioRow inherits Rectangle {
 component SwitchRow inherits Rectangle {
     in property <string> label;
     in property <string> hint;
-    in property <bool> on;
+    // two-way: the kit's Switch sets its own `on` when tapped, which would cut a one-way binding (the app's later
+    // resets, such as the Open with sheet's Always, would no longer show)
+    in-out property <bool> on;
     in property <bool> enabled: true;
     callback toggled(bool);
     height: 56 * Theme.dp;
@@ -551,7 +555,7 @@ component SwitchRow inherits Rectangle {
         VerticalLayout {
             alignment: center;
             Switch {
-                on: root.on;
+                on <=> root.on;
                 opacity: root.enabled ? 1 : 0.4;
                 toggled(v) => {
                     root.toggled(v);
@@ -870,7 +874,7 @@ export component FilesApp inherits Window {
     // files2-type-images: the Images type by folder
     in property <[ImgGroup]> img-groups;
     in property <int> img-current;
-    in property <[string]> img-menu: ["Details"];
+    in property <[string]> img-menu: ["Share…", "Open with…", "Details"];
     in property <bool> img-can-undo;
     in property <bool> img-can-redo;
     in property <bool> img-cropping;
@@ -943,6 +947,10 @@ export component FilesApp inherits Window {
     in property <string> picker-action;
     in property <string> picker-info;
     in property <bool> picker-can;
+    in property <string> picker-empty: "No folders here";
+    in property <bool> picker-naming;
+    in-out property <string> picker-name;
+    in property <bool> picker-can-new-folder: true;
     callback extract-way(int);
     callback extract-to();
     callback extract-all();
@@ -955,6 +963,18 @@ export component FilesApp inherits Window {
     callback picker-crumb(int);
     callback picker-open(int);
     callback picker-new-folder();
+    // FA8: the Open with sheet (files2-open-with) and the Share sheet (files2-share), over any viewer
+    in-out property <bool> with-open;
+    in property <string> with-title;
+    in property <[WithRow]> with-rows;
+    in-out property <bool> with-always;
+    in-out property <bool> share-open;
+    in property <string> share-title;
+    in property <string> share-clip;
+    callback open-with();
+    callback share();
+    callback with-picked(int);
+    callback share-picked(int);
 
     // keep a row in view (the cursor after a key, a find match)
     public function text-show-row(r: int) {
@@ -971,9 +991,10 @@ export component FilesApp inherits Window {
         "New folder", "New file", "Sort by", root.grid ? "List view" : "Grid view",
         root.show-hidden ? "Hide hidden" : "Show hidden", "Details"
     ];
-    property <[string]> pick-menu: root.read-only ? (root.one-item ? ["Compress", "Details", "Select all"] : ["Compress", "Select all"])
+    property <[string]> pick-menu: root.read-only ? (root.one-folder ? ["Compress", "Details", "Select all"]
+        : root.one-item ? ["Open with…", "Compress", "Details", "Select all"] : ["Compress", "Select all"])
         : root.one-folder ? ["Move", "Rename", "Compress", "Add to Favourites", "Details", "Select all"]
-        : root.one-item ? ["Move", "Rename", "Compress", "Details", "Select all"] : ["Move", "Compress", "Select all"];
+        : root.one-item ? ["Open with…", "Move", "Rename", "Compress", "Details", "Select all"] : ["Move", "Compress", "Select all"];
     property <[string]> bin-menu: ["Empty bin", "Select"];
     property <bool> selecting: root.selected > 0 || root.picking;
     property <bool> tab-root: root.view == "browse" || root.view == "recent" || root.view == "types";
@@ -1071,16 +1092,23 @@ export component FilesApp inherits Window {
             title: root.name;
             title-font: "DejaVu Sans";
             search: false;
-            actions: root.editable ? [{ icon: @image-url("@neoui/icons/sys/edit.svg"), label: "Edit" }] : [];
-            menu: [root.wrap ? "No wrap" : "Wrap lines", "Details"];
+            actions: root.editable ? [
+                { icon: @image-url("@neoui/icons/sys/share.svg"), label: "Share" },
+                { icon: @image-url("@neoui/icons/sys/edit.svg"), label: "Edit" },
+            ] : [{ icon: @image-url("@neoui/icons/sys/share.svg"), label: "Share" }];
+            menu: [root.wrap ? "No wrap" : "Wrap lines", "Open with…", "Details"];
             back => {
                 root.up();
             }
             action(i) => {
-                root.edit();
+                if i == 0 {
+                    root.share();
+                } else {
+                    root.edit();
+                }
             }
             menu-picked(i) => {
-                root.menu([root.wrap ? "No wrap" : "Wrap lines", "Details"][i]);
+                root.menu([root.wrap ? "No wrap" : "Wrap lines", "Open with…", "Details"][i]);
             }
             top => {
                 pane.to-top();
@@ -1096,7 +1124,7 @@ export component FilesApp inherits Window {
                 { icon: @image-url("icons/save.svg"), label: "Save", disabled: !root.dirty },
             ];
             menu: root.edit-kind == "table" ? ["Add row", "Add column", "Delete row", "Details"]
-                : ["Find and replace", root.wrap ? "No wrap" : "Wrap lines", "Details"];
+                : ["Find and replace", root.wrap ? "No wrap" : "Wrap lines", "Save as…", "Details"];
             back => {
                 root.up();
             }
@@ -1109,7 +1137,7 @@ export component FilesApp inherits Window {
             }
             menu-picked(i) => {
                 root.menu(root.edit-kind == "table" ? ["Add row", "Add column", "Delete row", "Details"][i]
-                    : ["Find and replace", root.wrap ? "No wrap" : "Wrap lines", "Details"][i]);
+                    : ["Find and replace", root.wrap ? "No wrap" : "Wrap lines", "Save as…", "Details"][i]);
             }
         }
         if root.view == "type": SubHeader {
@@ -1166,15 +1194,15 @@ export component FilesApp inherits Window {
                 root.up();
             }
         }
-        // FA7 (files2-spec-headers): [← name · share · edit (cards and events) · ⋮]; Share waits for FA8
+        // FA7 (files2-spec-headers): [← name · share · edit (cards and events) · ⋮]
         if root.view == "vcf" || root.view == "ics" || root.view == "font" || root.view == "cert" || root.view == "app" || root.view == "unknown": SubHeader {
             title: root.name;
             title-font: "DejaVu Sans";
             search: false;
             actions: root.view == "vcf" || root.view == "ics" ? [
-                { icon: @image-url("@neoui/icons/sys/share.svg"), label: "Share", disabled: true },
+                { icon: @image-url("@neoui/icons/sys/share.svg"), label: "Share" },
                 { icon: @image-url("@neoui/icons/sys/edit.svg"), label: "Edit", disabled: root.read-only },
-            ] : [{ icon: @image-url("@neoui/icons/sys/share.svg"), label: "Share", disabled: true }];
+            ] : [{ icon: @image-url("@neoui/icons/sys/share.svg"), label: "Share" }];
             menu: root.fa7-menu;
             back => {
                 root.up();
@@ -1182,6 +1210,8 @@ export component FilesApp inherits Window {
             action(i) => {
                 if i == 1 {
                     root.edit();
+                } else {
+                    root.share();
                 }
             }
             menu-picked(i) => {
@@ -2158,6 +2188,9 @@ export component FilesApp inherits Window {
                 as-text => {
                     root.hex-as-text();
                 }
+                open-with => {
+                    root.open-with();
+                }
             }
 
             // a copy or move (files2-progress): over the bottom of the list, Hide moves it to the shade only
@@ -2756,6 +2789,10 @@ export component FilesApp inherits Window {
         action: root.picker-action;
         info: root.picker-info;
         can-pick: root.picker-can;
+        empty: root.picker-empty;
+        naming: root.picker-naming;
+        name <=> root.picker-name;
+        can-new-folder: root.picker-can-new-folder;
         cancel => {
             root.picker-cancel();
         }
@@ -2839,6 +2876,77 @@ export component FilesApp inherits Window {
                     root.job-cancel();
                 }
             }
+        }
+    }
+
+    // files2-open-with: Files' own viewer first, then the apps that take the file; Always remembers the choice
+    Sheet {
+        title: root.with-title;
+        open <=> root.with-open;
+        for r[i] in root.with-rows: WayRow {
+            icon: @image-url("@neoui/icons/sys/apps.svg");
+            colour: r.colour;
+            title: r.title;
+            sub: r.sub;
+            clicked => {
+                root.with-picked(i);
+            }
+        }
+        SwitchRow {
+            label: "Always";
+            hint: "Open this type with the app you pick";
+            on <=> root.with-always;
+        }
+    }
+
+    // files2-share: Copy path, Copy to clipboard, Open with…; Bluetooth and MMS come later (FA13)
+    Sheet {
+        title: root.share-title;
+        open <=> root.share-open;
+        WayRow {
+            icon: @image-url("icons/copy.svg");
+            colour: #3d8bfd;
+            title: "Copy path";
+            sub: "Paste it as text anywhere";
+            clicked => {
+                root.share-picked(0);
+            }
+        }
+
+        WayRow {
+            icon: @image-url("icons/copy.svg");
+            colour: #2fb37a;
+            title: "Copy to clipboard";
+            sub: root.share-clip;
+            clicked => {
+                root.share-picked(1);
+            }
+        }
+
+        WayRow {
+            icon: @image-url("@neoui/icons/sys/apps.svg");
+            colour: #8a63d2;
+            title: "Open with…";
+            sub: "Another app that takes this file";
+            clicked => {
+                root.share-picked(2);
+            }
+        }
+
+        WayRow {
+            icon: @image-url("@neoui/icons/sys/bluetooth.svg");
+            colour: #5b6472;
+            title: "Send via Bluetooth";
+            sub: "Comes with Bluetooth";
+            enabled: false;
+        }
+
+        WayRow {
+            icon: @image-url("@neoui/icons/sys/message.svg");
+            colour: #5b6472;
+            title: "Send by MMS";
+            sub: "Comes with mobile data";
+            enabled: false;
         }
     }
 

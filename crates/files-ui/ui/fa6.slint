@@ -479,7 +479,9 @@ export component CompressForm inherits Rectangle {
     }
 }
 
-// Extract to… and Save in: [✕ Choose a folder ✓], the drives, where you are, its folders; the action at the bottom
+// Extract to… and Save in: [✕ Choose a folder ✓], the drives, where you are, its folders; the action at the bottom.
+// FA8 makes it Files' file picker too (files2-pick-file: files listed after the folders, a tap picks one) and its
+// Save as (files2-save-as: a name field above the action).
 export component FolderPicker inherits Rectangle {
     in property <string> title;
     in property <[string]> drives;
@@ -489,6 +491,11 @@ export component FolderPicker inherits Rectangle {
     in property <string> action;
     in property <string> info;
     in property <bool> can-pick: true;
+    in property <string> empty: "No folders here";
+    // Save as: the file's name, edited here
+    in property <bool> naming;
+    in-out property <string> name;
+    in property <bool> can-new-folder: true;
     callback cancel();
     callback done();
     callback drive-picked(int);
@@ -576,7 +583,7 @@ export component FolderPicker inherits Rectangle {
                 alignment: start;
                 if root.rows.length == 0: Text {
                     height: 96 * Theme.dp;
-                    text: "No folders here";
+                    text: root.empty;
                     color: Theme.text-dim;
                     font-size: 14 * Theme.dp;
                     horizontal-alignment: center;
@@ -588,6 +595,20 @@ export component FolderPicker inherits Rectangle {
                     tapped => {
                         root.open(i);
                     }
+                }
+            }
+        }
+
+        if root.naming: HorizontalLayout {
+            padding-left: 12 * Theme.dp;
+            padding-right: 12 * Theme.dp;
+            padding-top: 8 * Theme.dp;
+            TextField {
+                horizontal-stretch: 1;
+                text <=> root.name;
+                placeholder: "File name";
+                accepted(t) => {
+                    root.done();
                 }
             }
         }
@@ -613,7 +634,7 @@ export component FolderPicker inherits Rectangle {
                     overflow: elide;
                 }
 
-                VerticalLayout {
+                if root.can-new-folder: VerticalLayout {
                     alignment: center;
                     Pill2 {
                         text: "New folder";

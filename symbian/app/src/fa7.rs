@@ -378,6 +378,7 @@ fn menu(app: &App, ui: &FilesApp, st: &mut State, m: &str) {
     };
     match m {
         "Show as hex…" => hex(app, ui, st, ""),
+        "Open with…" => crate::fa8::open_with(ui, st, path),
         "Details" => crate::fa3::details(app, ui, st, &path),
         _ => {}
     }
@@ -388,9 +389,9 @@ fn show(app: &App, ui: &FilesApp, st: &mut State) {
     ui.set_name(o.name.as_str().into());
     let hexing = matches!(o.kind, Kind::Hex);
     ui.set_fa7_menu(strs(if hexing {
-        &["Details"]
+        &["Open with…", "Details"]
     } else {
-        &["Show as hex…", "Details"]
+        &["Show as hex…", "Open with…", "Details"]
     }));
     let ro = st.drives.iter().any(|&(d, ro)| ro && o.path.starts_with(d))
         || crate::archive::in_cache(&o.path)
