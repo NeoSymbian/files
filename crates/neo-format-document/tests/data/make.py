@@ -16,7 +16,7 @@ AFTER = "Երկրորդ էջ: the plan goes on after a page break, with a pictur
 
 
 def png(w=64, h=32):
-    raw = b"".join(b"\0" + bytes(v for x in range(w) for v in (x * 4, y * 8, 160)) for y in range(h))
+    raw = b"".join(b"\0" + bytes(v for x in range(w) for v in (x * 4 % 256, y * 8 % 256, 160)) for y in range(h))
     chunk = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
@@ -155,7 +155,72 @@ def rtf(path):
         f.write(head + body + "}")
 
 
+def words(seed, n):
+    """Deterministic prose: Latin syllables, with an Armenian and a Russian sentence now and then."""
+    syl = ["sym", "bi", "an", "ker", "nel", "ob", "ject", "ac", "tive", "sched", "ul", "er", "thread", "serv", "ice",
+           "han", "dle", "sess", "ion", "mes", "sage", "time", "re", "quest", "com", "plete", "run", "wait", "pro", "cess"]
+    hy = "Ակտիվ օբյեկտը սպասում է հարցման ավարտին։"
+    ru = "Планировщик вызывает RunL, когда запрос завершён."
+    out, x = [], seed * 2654435761 % 4294967296 or 1
+    sentence = []
+    while len(out) < n:
+        x = (x * 1103515245 + 12345) % 2147483648
+        if x % 97 == 0:
+            out.append(hy)
+            continue
+        if x % 89 == 0:
+            out.append(ru)
+            continue
+        w = "".join(syl[(x >> s) % len(syl)] for s in range(0, 3 * ((x >> 20) % 3 + 1), 3))
+        sentence.append(w)
+        if len(sentence) > 6 + x % 9:
+            s0 = " ".join(sentence)
+            out.append(s0[0].upper() + s0[1:] + ".")
+            sentence = []
+    return out
+
+
+def epub(path, chapters=12, paras=26, drm=False, spine=True):
+    nav = "".join(f'<li><a href="c{i + 1}.xhtml">Chapter {i + 1}</a></li>' for i in range(chapters))
+    ncx_points = "".join(f'<navPoint id="n{i + 1}" playOrder="{i + 1}"><navLabel><text>Chapter {i + 1}</text></navLabel>'
+                         f'<content src="c{i + 1}.xhtml"/></navPoint>' for i in range(chapters))
+    items = "".join(f'<item id="c{i + 1}" href="c{i + 1}.xhtml" media-type="application/xhtml+xml"/>' for i in range(chapters))
+    refs = "".join(f'<itemref idref="c{i + 1}"/>' for i in range(chapters)) if spine else ""
+    opf = ('<?xml version="1.0" encoding="UTF-8"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">'
+           '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">neosymbian-fa10</dc:identifier>'
+           '<dc:title>Symbian^3 book</dc:title><dc:language>en</dc:language></metadata><manifest>'
+           '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
+           '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>'
+           '<item id="cover" href="images/cover.png" media-type="image/png"/>'
+           f'{items}</manifest><spine toc="ncx">{refs}</spine></package>')
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(zipfile.ZipInfo("mimetype"), "application/epub+zip")
+        z.writestr("META-INF/container.xml", '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+                   '<rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
+        if drm:
+            z.writestr("META-INF/encryption.xml", '<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container" '
+                       'xmlns:enc="http://www.w3.org/2001/04/xmlenc#"><enc:EncryptedData><enc:EncryptionMethod '
+                       'Algorithm="http://www.w3.org/2001/04/xmlenc#aes128-cbc"/></enc:EncryptedData></encryption>')
+        z.writestr("OEBPS/content.opf", opf, zipfile.ZIP_DEFLATED)
+        z.writestr("OEBPS/nav.xhtml", '<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">'
+                   f'<body><nav epub:type="toc"><h1>Contents</h1><ol>{nav}</ol></nav></body></html>', zipfile.ZIP_DEFLATED)
+        z.writestr("OEBPS/toc.ncx", '<?xml version="1.0"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">'
+                   f'<navMap>{ncx_points}</navMap></ncx>', zipfile.ZIP_DEFLATED)
+        z.writestr("OEBPS/images/cover.png", png(120, 160))
+        for i in range(chapters):
+            ps = "".join(f"<p>{esc(' '.join(words(i * 1000 + k, 9)))}</p>" for k in range(paras))
+            cover = '<p style="text-align:center"><img src="images/cover.png" alt="cover"/></p>' if i == 0 else ""
+            body = (f'<h2 style="text-align:left">Chapter {i + 1}</h2>{cover}'
+                    f'<p><b>Active objects</b> wait for <i>one</i> request each.</p>{ps}')
+            z.writestr(f"OEBPS/c{i + 1}.xhtml", '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html>'
+                       f'<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Chapter {i + 1}</title></head><body>{body}</body></html>',
+                       zipfile.ZIP_DEFLATED)
+
+
 if __name__ == "__main__":
     docx(os.path.join(HERE, "plan-hy.docx"))
     odt(os.path.join(HERE, "plan-hy.odt"))
     rtf(os.path.join(HERE, "plan-hy.rtf"))
+    epub(os.path.join(HERE, "book-300.epub"))
+    epub(os.path.join(HERE, "drm.epub"), chapters=1, paras=2, drm=True)
+    epub(os.path.join(HERE, "no-spine.epub"), chapters=1, paras=2, spine=False)

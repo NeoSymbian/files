@@ -32,7 +32,7 @@ const ZOOM_MAX: f32 = 4.0;
 /// A pinch's start: the fingers' distance, the zoom, the midpoint and the scroll (left, top).
 type Pinch = (f32, f32, (f32, f32), (i32, i32));
 /// The pictures' own sizes (`None`: unknown until decoded).
-type Sizes = Vec<Option<(i32, i32)>>;
+pub(crate) type Sizes = Vec<Option<(i32, i32)>>;
 
 pub(crate) struct Open {
     v: DocViewer,
@@ -79,7 +79,7 @@ pub(crate) fn is_doc(name: &str) -> bool {
 }
 
 /// The glyph advances, calibrated against Slint once per run.
-fn fonts(ui: &FilesApp, st: &mut State) -> Fonts {
+pub(crate) fn fonts(ui: &FilesApp, st: &mut State) -> Fonts {
     *st.fonts.get_or_insert_with(|| {
         let f = Fonts::calibrate(|text, face: Face, px| {
             ui.set_probe_text(text.into());
@@ -228,6 +228,10 @@ pub(crate) fn picture(
     id: usize,
     px: Option<neo_format_image::Pixels>,
 ) {
+    let px = match crate::book::picture(ui, st, n, id, px) {
+        Some(px) => px,
+        None => return,
+    };
     let Some(d) = st.doc.as_mut().filter(|d| d.n == n) else {
         return;
     };
@@ -377,7 +381,7 @@ pub(crate) fn test_files(st: &State) {
     if st.fs.entry(&format!("{DIR}plan-hy.docx")).is_ok() {
         return;
     }
-    let files: [(&str, &[u8]); 6] = [
+    let files: [(&str, &[u8]); 8] = [
         (
             "plan-hy.docx",
             include_bytes!("../../../crates/neo-format-document/tests/data/plan-hy.docx"),
@@ -397,6 +401,14 @@ pub(crate) fn test_files(st: &State) {
         (
             "tu-plan.odt",
             include_bytes!("../../../crates/neo-format-document/tests/data/tu-plan.odt"),
+        ),
+        (
+            "book-300.epub",
+            include_bytes!("../../../crates/neo-format-document/tests/data/book-300.epub"),
+        ),
+        (
+            "drm.epub",
+            include_bytes!("../../../crates/neo-format-document/tests/data/drm.epub"),
         ),
         (
             "tu-plan.rtf",

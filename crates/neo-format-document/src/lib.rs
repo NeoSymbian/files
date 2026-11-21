@@ -7,6 +7,8 @@
 extern crate alloc;
 
 pub mod docx;
+pub mod epub;
+pub mod html;
 pub mod layout;
 pub mod model;
 pub mod odt;

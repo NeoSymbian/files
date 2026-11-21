@@ -20,6 +20,93 @@ fn fa10() {
     let s = common::app();
     layout_widths_are_slints(&s);
     docx_boards(&s);
+    epub_boards(&s);
+}
+
+fn epub_boards(s: &common::Shot) {
+    use files_ui::doc::{BookReader, Turn, book_opts, count_pages, show_book};
+    use neo_format_document::{Package, epub};
+    let ui = &s.ui;
+    let file = fixture("book-300.epub");
+    let p = Package::open(&file[..]).unwrap();
+    let book = epub::open(&p).unwrap();
+    ui.set_view("book".into());
+    ui.set_name("Symbian^3 book.epub".into());
+    ui.set_fa7_menu(common::strings(&[
+        "Contents",
+        "Text size",
+        "Theme",
+        "Show as hex…",
+        "Open with…",
+        "Details",
+    ]));
+    s.shoot("_doc_warmup");
+    let fonts = Fonts::calibrate(probe(s)).unwrap();
+    let (w, h) = (ui.get_book_page_w(), ui.get_book_page_h());
+    let chapters = book.spine.len();
+    let mut r = BookReader::new(
+        book.title.clone(),
+        book.toc.clone(),
+        chapters,
+        fonts,
+        common::DP,
+    );
+    r.layout(w, h);
+    let sizes = |d: &neo_format_document::Doc| -> Vec<Option<(i32, i32)>> {
+        d.images
+            .iter()
+            .map(|src| match src {
+                neo_format_document::ImageSrc::Member(m) => {
+                    neo_format_image::probe(&p.head(m, 64 << 10).ok()?)
+                        .map(|i| (i.w as i32, i.h as i32))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    // the counting worker's job: every chapter at this size
+    for i in 0..chapters {
+        let d = epub::chapter(&p, &book, i).unwrap();
+        let n = count_pages(
+            &d,
+            &fonts,
+            book_opts(common::DP, r.size, w, h),
+            h,
+            &sizes(&d),
+        );
+        r.counts[i] = Some(n);
+    }
+    let total: u32 = r.counts.iter().map(|c| c.unwrap()).sum();
+    assert!((250..=400).contains(&total), "{total} pages");
+    let d = epub::chapter(&p, &book, 2).unwrap();
+    let z = sizes(&d);
+    r.set_chapter(2, d, z, None, false);
+    for _ in 0..3 {
+        assert_eq!(r.next_page(), Turn::Page);
+    }
+    show_book(ui, &r, |_| None);
+    s.shoot("files2-view-epub");
+    ui.set_book_controls(true);
+    s.shoot("files2-view-epub-controls");
+    ui.set_book_controls(false);
+    ui.set_book_contents_open(true);
+    s.shoot("files2-view-epub-contents");
+    ui.set_book_contents_open(false);
+    // the last page of a chapter turns into the next chapter; the first back into the previous one's last
+    while r.next_page() == Turn::Page {}
+    let d = epub::chapter(&p, &book, 3).unwrap();
+    let z = sizes(&d);
+    r.set_chapter(3, d, z, None, false);
+    assert_eq!(r.prev_page(), Turn::Chapter(2, true));
+    // a bigger size keeps the place (the page that starts at or before it)
+    let at = r.pos();
+    r.set_size(r.size + 2);
+    assert!(r.pos() <= at);
+    // counted again from scratch: only the chapter in hand is known
+    assert_eq!(r.counts.iter().filter(|c| c.is_some()).count(), 1);
+    let _ = std::fs::remove_file(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../snapshots/_doc_warmup.png"),
+    );
 }
 
 fn layout_widths_are_slints(s: &common::Shot) {

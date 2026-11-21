@@ -191,7 +191,7 @@ impl<'a> Iterator for Reader<'a> {
 
 impl Reader<'_> {
     /// Skip to the end of the element just started (its start was the last event).
-    pub fn skip(&mut self) -> Result<()> {
+    pub fn skip_element(&mut self) -> Result<()> {
         let depth = self.stack.len();
         while self.stack.len() >= depth {
             match self.next() {

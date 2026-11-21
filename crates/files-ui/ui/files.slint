@@ -29,7 +29,7 @@ import { TSpan, TRow, Mark, TextPane, TextMetrics } from "text.slint";
 import { PackItem, WayRow, JobCard, ArchiveBar, ViewOnly, CompressForm, FolderPicker } from "fa6.slint";
 import { PimLine, PimCard, PimField, EvRow, EvCard, Sample, SampleGroup, GlyphRow, InfoGroup, VcfView, VcfEdit, IcsView, IcsEdit, FontView, CertView, AppView, UnknownView } from "fa7.slint";
 import { AudioView } from "audio.slint";
-import { DText, DImage, DRect, DocItems, DocProbe, DocView } from "doc.slint";
+import { DText, DImage, DRect, DocItems, DocProbe, DocView, BookView } from "doc.slint";
 import { MdSpan, MdRow, CellRow, Col, CodeKeys, StatusLine, FindBar, Segments, MdView, TableGrid, CellBar, TypeChips } from "editor.slint";
 export { DText, DImage, DRect }
 export { TSpan, TRow, Mark, MdSpan, MdRow, CellRow, Col, TextMetrics, StripItem }
@@ -802,6 +802,31 @@ export component FilesApp inherits Window {
     in property <string> doc-percent;
     out property <int> doc-view-w: doc-view.view-w;
     out property <int> doc-view-h: doc-view.view-h;
+    // FA10: a book (files2-view-epub): its page, title, chapter and page, the theme's colours, the controls, Contents
+    in property <[DText]> book-texts;
+    in property <[DImage]> book-images;
+    in property <[DRect]> book-rects;
+    in property <string> book-title;
+    in property <string> book-where;
+    in property <string> book-page;
+    in property <float> book-progress;
+    in property <color> book-paper: #f4ecd8;
+    in property <color> book-muted: #8a7a62;
+    in property <color> book-track: #ddd0b3;
+    in property <color> book-fill: #a0703c;
+    in property <string> book-theme-name: "Sepia";
+    in property <bool> book-controls;
+    in property <bool> book-contents-open;
+    in property <[string]> book-contents;
+    in property <[int]> book-contents-depth;
+    in property <int> book-contents-current;
+    out property <int> book-page-w: book-view.page-w;
+    out property <int> book-page-h: book-view.page-h;
+    callback book-turn(int);
+    callback book-toggle-controls();
+    callback book-control(int);
+    callback book-contents-chosen(int);
+    callback book-contents-closed();
     callback doc-mode-picked(int);
     callback doc-scrolled(int);
     callback doc-scrolled-x(int);
@@ -1253,7 +1278,7 @@ export component FilesApp inherits Window {
             }
         }
         // FA7 (files2-spec-headers): [← name · share · edit (cards and events) · ⋮]
-        if root.view == "vcf" || root.view == "ics" || root.view == "font" || root.view == "cert" || root.view == "app" || root.view == "unknown" || root.view == "audio" || root.view == "doc": SubHeader {
+        if root.view == "vcf" || root.view == "ics" || root.view == "font" || root.view == "cert" || root.view == "app" || root.view == "unknown" || root.view == "audio" || root.view == "doc" || root.view == "book": SubHeader {
             title: root.name;
             title-font: "DejaVu Sans";
             search: false;
@@ -2262,6 +2287,41 @@ export component FilesApp inherits Window {
                 }
                 seek(v) => {
                     root.audio-seek(v);
+                }
+            }
+            book-view := BookView {
+                visible: root.view == "book";
+                texts: root.book-texts;
+                images: root.book-images;
+                rects: root.book-rects;
+                title: root.book-title;
+                where: root.book-where;
+                page: root.book-page;
+                progress: root.book-progress;
+                paper: root.book-paper;
+                muted: root.book-muted;
+                track: root.book-track;
+                fill: root.book-fill;
+                theme-name: root.book-theme-name;
+                controls: root.book-controls;
+                contents-open: root.book-contents-open;
+                contents: root.book-contents;
+                contents-depth: root.book-contents-depth;
+                contents-current: root.book-contents-current;
+                turn(d) => {
+                    root.book-turn(d);
+                }
+                toggle-controls => {
+                    root.book-toggle-controls();
+                }
+                control(i) => {
+                    root.book-control(i);
+                }
+                contents-chosen(i) => {
+                    root.book-contents-chosen(i);
+                }
+                contents-closed => {
+                    root.book-contents-closed();
                 }
             }
             doc-view := DocView {

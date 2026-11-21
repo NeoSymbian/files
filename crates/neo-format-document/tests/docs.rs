@@ -217,3 +217,83 @@ fn picture_heads() {
     assert_eq!(p.head("word/media/image1.png", 1 << 20).unwrap(), all);
     assert!(p.head("word/media/missing.png", 64).is_err());
 }
+
+#[test]
+fn epub_books() {
+    use neo_format_document::{Error, Package, epub};
+    let file = data("book-300.epub");
+    assert_eq!(detect(&file), Some(Kind::Epub));
+    let p = Package::open(&file[..]).unwrap();
+    let book = epub::open(&p).unwrap();
+    assert_eq!(book.title, "Symbian^3 book");
+    assert_eq!(book.spine.len(), 12);
+    assert_eq!(book.spine[2], "OEBPS/c3.xhtml");
+    assert_eq!(book.toc.len(), 12);
+    assert_eq!(book.toc[2].title, "Chapter 3");
+    assert_eq!(book.toc[2].chapter, 2);
+    assert_eq!(book.title_of(5), Some("Chapter 6"));
+    let c1 = epub::chapter(&p, &book, 0).unwrap();
+    assert_eq!(
+        c1.images,
+        [neo_format_document::ImageSrc::Member(String::from(
+            "OEBPS/images/cover.png"
+        ))]
+    );
+    let s = shape(&c1);
+    assert_eq!(s[0], "h2 Chapter 1");
+    assert_eq!(s[1], "image");
+    assert!(s.len() > 25, "{}", s.len());
+    let text: usize = (0..12)
+        .map(|i| {
+            shape(&epub::chapter(&p, &book, i).unwrap())
+                .iter()
+                .map(|l| l.len())
+                .sum::<usize>()
+        })
+        .sum();
+    assert!(text > 70_000, "{text}");
+
+    let drm = data("drm.epub");
+    assert_eq!(
+        epub::open(&Package::open(&drm[..]).unwrap()),
+        Err(Error::Protected)
+    );
+    let none = data("no-spine.epub");
+    assert_eq!(
+        epub::open(&Package::open(&none[..]).unwrap()),
+        Err(Error::Bad("The book has no chapters"))
+    );
+}
+
+#[test]
+fn broken_books_never_panic() {
+    use neo_format_document::{Package, epub};
+    let good = data("book-300.epub");
+    let mut seed: u64 = 0x2545_f491;
+    let mut rnd = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let try_all = |b: &[u8]| {
+        if let Ok(p) = Package::open(b)
+            && let Ok(book) = epub::open(&p)
+        {
+            for i in 0..book.spine.len() {
+                let _ = epub::chapter(&p, &book, i);
+            }
+        }
+    };
+    for k in 0..20 {
+        try_all(&good[..good.len() * k / 20]);
+    }
+    for _ in 0..100 {
+        let mut b = good.clone();
+        for _ in 0..1 + rnd() % 4 {
+            let at = (rnd() % b.len() as u64) as usize;
+            b[at] ^= 1 << (rnd() % 8);
+        }
+        try_all(&b);
+    }
+}

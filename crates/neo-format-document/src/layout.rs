@@ -163,7 +163,7 @@ impl Flow {
     }
 
     /// The items of a page: those starting in it (a page never cuts a line).
-    pub fn page<'a>(&'a self, p: &Page) -> impl Iterator<Item = &'a Item> {
+    pub fn page(&self, p: Page) -> impl Iterator<Item = &Item> {
         let (top, end) = (p.top, p.end);
         let from = self.items.partition_point(|i| i.y() < top);
         self.items[from..].iter().take_while(move |i| i.y() < end)
@@ -941,7 +941,7 @@ mod tests {
         assert_eq!(pages[2].at.block, 3);
         for p in &pages {
             assert!(p.end > p.top);
-            for i in f.page(p) {
+            for i in f.page(*p) {
                 assert!(i.y() >= p.top && i.y() < p.end);
             }
         }
@@ -954,7 +954,7 @@ mod tests {
                 .unwrap()
         );
         // nothing is lost: every item is on exactly one page
-        let n: usize = pages.iter().map(|p| f.page(p).count()).sum();
+        let n: usize = pages.iter().map(|p| f.page(*p).count()).sum();
         assert_eq!(n, f.items.len());
     }
 

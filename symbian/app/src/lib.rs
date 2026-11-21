@@ -14,6 +14,7 @@ extern crate alloc;
 
 mod archive;
 mod audio;
+mod book;
 mod doc;
 mod edit;
 mod fa3;
@@ -171,6 +172,7 @@ enum Action {
     Audio(audio::Act),
     // FA10
     Doc(doc::Act),
+    Book(book::Act),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -318,6 +320,9 @@ struct State {
     audio: audio::Audio,
     // FA10
     doc: Option<doc::Open>,
+    book: Option<book::Open>,
+    /// The book page counter (a worker, started with the first book).
+    counter: Option<&'static book::Counter>,
     /// The document faces' advances, calibrated against Slint on the first document.
     fonts: Option<files_ui::doc::Fonts>,
     /// The documents opened so far (a picture is matched to its document by this).
@@ -397,6 +402,8 @@ fn run() -> Result<(), i32> {
         share: None,
         audio: audio::Audio::new(),
         doc: None,
+        book: None,
+        counter: book::Counter::new().ok(),
         fonts: None,
         doc_n: 0,
     };
@@ -450,6 +457,9 @@ fn run() -> Result<(), i32> {
                     if st.audio.busy() {
                         wait = wait.min(audio::POLL_US);
                     }
+                    if st.counter.is_some_and(|c| c.busy()) {
+                        wait = wait.min(book::POLL_US);
+                    }
                     let watch_dir =
                         (st.view == View::Folder && st.dir != st.unwatched).then(|| st.dir.clone());
                     let watch = async {
@@ -482,6 +492,7 @@ fn run() -> Result<(), i32> {
                             poll_scan(&app, &ui, &mut st);
                             image::poll(&app, &ui, &mut st);
                             audio::poll(&app, &ui, &mut st);
+                            book::poll(&ui, &mut st);
                             // a flick goes on without events: its scroll callbacks wait here
                             loop {
                                 let next = actions.borrow_mut().pop_front();
@@ -726,6 +737,7 @@ fn bind(ui: &FilesApp, actions: &Rc<RefCell<VecDeque<Action>>>) {
     fa8::bind(ui, actions);
     audio::bind(ui, actions);
     doc::bind(ui, actions);
+    book::bind(ui, actions);
     {
         let q = actions.clone();
         ui.on_group_picked(move |g, i| {
@@ -872,6 +884,7 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
         Action::Fa8(a) => fa8::act(app, ui, st, a),
         Action::Audio(a) => audio::act(app, ui, st, a),
         Action::Doc(a) => doc::act(ui, st, a),
+        Action::Book(a) => book::act(app, ui, st, a),
         Action::Edit if st.view == View::Fa7 => fa7::edit(ui, st),
         Action::Row(i) if st.view == View::Folder => {
             let Some(item) = st.items.get(i).cloned() else {

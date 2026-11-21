@@ -3,7 +3,7 @@
 // faces (NeoDoc = DejaVu Sans, its Bold and Oblique, and DejaVu Sans Mono: Latin, Greek, Cyrillic and Armenian), images and rectangles (rules,
 // table lines, underlines, page sheets). Rust hands over only what shows (a page, or a window of a long document).
 
-import { Theme } from "@neoui/kit.slint";
+import { Theme, Glyph } from "@neoui/kit.slint";
 
 // a run of text: x, y its top-left in px, `face` 0 regular, 1 bold, 2 italic, 3 mono
 export struct DText { x: int, y: int, px: int, face: int, text: string, colour: color }
@@ -209,6 +209,266 @@ export component DocView inherits Rectangle {
                     color: #7d838c;
                     font-size: 12.5 * Theme.dp;
                     vertical-alignment: center;
+                }
+            }
+        }
+    }
+}
+
+// a control on the reader's bar
+component ReaderButton inherits Rectangle {
+    in property <string> text;
+    in property <color> ink;
+    callback clicked();
+    height: 40 * Theme.dp;
+    width: max(56 * Theme.dp, t.preferred-width + 24 * Theme.dp);
+    border-radius: 20 * Theme.dp;
+    background: ta.pressed ? #ffffff22 : #ffffff10;
+    t := Text {
+        text: root.text;
+        color: root.ink;
+        font-size: 14 * Theme.dp;
+        font-weight: 600;
+    }
+
+    ta := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// files2-view-epub: the book's title over the page, the page (Rust lays it out: a chapter cut into pages), the
+// progress bar with the chapter and the page; taps on the left and right quarters turn pages (swipes too), a tap in
+// the middle shows the controls (Contents, A−, A+, the theme); Contents lists the chapters.
+export component BookView inherits Rectangle {
+    in property <[DText]> texts;
+    in property <[DImage]> images;
+    in property <[DRect]> rects;
+    in property <string> title;
+    in property <string> where;
+    in property <string> page;
+    in property <float> progress;
+    in property <color> paper: #f4ecd8;
+    in property <color> muted: #8a7a62;
+    in property <color> track: #ddd0b3;
+    in property <color> fill: #a0703c;
+    in property <string> theme-name: "Sepia";
+    in property <bool> controls;
+    in property <bool> contents-open;
+    in property <[string]> contents;
+    in property <[int]> contents-depth;
+    in property <int> contents-current;
+    out property <int> page-w: body.width / 1px;
+    out property <int> page-h: body.height / 1px;
+    callback turn(int);
+    callback toggle-controls();
+    callback control(int);
+    callback contents-chosen(int);
+    callback contents-closed();
+    background: root.paper;
+    VerticalLayout {
+        Rectangle {
+            height: 40 * Theme.dp;
+            Text {
+                x: 24 * Theme.dp;
+                width: parent.width - 48 * Theme.dp;
+                text: root.title;
+                color: root.muted;
+                font-family: "NeoDoc";
+                font-size: 12 * Theme.dp;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            body := Rectangle {
+                x: 24 * Theme.dp;
+                y: 4 * Theme.dp;
+                width: parent.width - 48 * Theme.dp;
+                height: parent.height - 4 * Theme.dp;
+                clip: true;
+                DocItems {
+                    width: parent.width;
+                    height: parent.height;
+                    texts: root.texts;
+                    images: root.images;
+                    rects: root.rects;
+                }
+            }
+
+            TouchArea {
+                pointer-event(e) => {
+                    if e.kind == PointerEventKind.up {
+                        if abs(self.mouse-x - self.pressed-x) > 40 * Theme.dp {
+                            root.turn(self.mouse-x < self.pressed-x ? 1 : -1);
+                        } else if self.mouse-x < self.width * 0.26 {
+                            root.turn(-1);
+                        } else if self.mouse-x > self.width * 0.74 {
+                            root.turn(1);
+                        } else {
+                            root.toggle-controls();
+                        }
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 58 * Theme.dp;
+            VerticalLayout {
+                padding-left: 24 * Theme.dp;
+                padding-right: 24 * Theme.dp;
+                alignment: center;
+                spacing: 7 * Theme.dp;
+                Rectangle {
+                    height: 3 * Theme.dp;
+                    border-radius: 2 * Theme.dp;
+                    background: root.track;
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * clamp(root.progress, 0, 1);
+                        border-radius: 2 * Theme.dp;
+                        background: root.fill;
+                    }
+                }
+
+                HorizontalLayout {
+                    Text {
+                        horizontal-stretch: 1;
+                        text: root.where;
+                        color: root.muted;
+                        font-family: "NeoDoc";
+                        font-size: 12 * Theme.dp;
+                        overflow: elide;
+                    }
+
+                    Text {
+                        text: root.page;
+                        color: root.muted;
+                        font-size: 12 * Theme.dp;
+                    }
+                }
+            }
+        }
+    }
+
+    if root.controls: Rectangle {
+        y: parent.height - 58 * Theme.dp - self.height;
+        height: 60 * Theme.dp;
+        background: #1d2025;
+        HorizontalLayout {
+            padding-left: 12 * Theme.dp;
+            padding-right: 12 * Theme.dp;
+            spacing: 8 * Theme.dp;
+            alignment: space-between;
+            VerticalLayout {
+                alignment: center;
+                ReaderButton {
+                    text: "Contents";
+                    ink: #ffffff;
+                    clicked => {
+                        root.control(0);
+                    }
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                ReaderButton {
+                    text: "A−";
+                    ink: #ffffff;
+                    clicked => {
+                        root.control(1);
+                    }
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                ReaderButton {
+                    text: "A+";
+                    ink: #ffffff;
+                    clicked => {
+                        root.control(2);
+                    }
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                ReaderButton {
+                    text: root.theme-name;
+                    ink: #ffffff;
+                    clicked => {
+                        root.control(3);
+                    }
+                }
+            }
+        }
+    }
+
+    if root.contents-open: Rectangle {
+        background: #0b0c0e;
+        TouchArea { }
+        VerticalLayout {
+            Rectangle {
+                height: 48 * Theme.dp;
+                HorizontalLayout {
+                    padding-left: 20 * Theme.dp;
+                    padding-right: 4 * Theme.dp;
+                    Text {
+                        horizontal-stretch: 1;
+                        text: "Contents";
+                        color: #ffffff;
+                        font-size: 19 * Theme.dp;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle {
+                        width: 48 * Theme.dp;
+                        Glyph {
+                            source: @image-url("@neoui/icons/sys/close.svg");
+                            size: 24 * Theme.dp;
+                            colorize: #b9bec7;
+                        }
+
+                        TouchArea {
+                            clicked => {
+                                root.contents-closed();
+                            }
+                        }
+                    }
+                }
+            }
+
+            Flickable {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    for c[i] in root.contents: Rectangle {
+                        height: 52 * Theme.dp;
+                        background: ta.pressed ? #ffffff10 : transparent;
+                        Text {
+                            x: (20 + 16 * root.contents-depth[i]) * Theme.dp;
+                            width: parent.width - self.x - 20 * Theme.dp;
+                            text: c;
+                            color: i == root.contents-current ? #cfe0ff : #e6e8eb;
+                            font-family: "NeoDoc";
+                            font-weight: i == root.contents-current ? 700 : 400;
+                            font-size: 16 * Theme.dp;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+
+                        ta := TouchArea {
+                            clicked => {
+                                root.contents-chosen(i);
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -311,7 +311,7 @@ impl DocViewer {
                         h: sheet_h,
                         colour: 0xffffff,
                     });
-                    let mut page: Vec<Item> = f.page(pg).cloned().collect();
+                    let mut page: Vec<Item> = f.page(*pg).cloned().collect();
                     shift(&mut page, x0 + ml, y + mt - pg.top);
                     items.extend(page);
                 }
@@ -407,4 +407,321 @@ pub fn show(
 /// "Word document · 48 KB".
 pub fn info(family: neo_view::Family, size: u64) -> alloc::string::String {
     alloc::format!("{} · {}", family.name(), files_core::size_text(size))
+}
+
+// ── books (files2-view-epub) ─────────────────────────────────────────────────────────────────────────────────────
+
+use neo_format_document::epub::Entry;
+use neo_format_document::layout::{Pos, page_of};
+
+/// A reading theme: its name, paper, ink, muted text, the progress bar's track and fill.
+pub struct ReadTheme {
+    pub name: &'static str,
+    pub paper: u32,
+    pub ink: u32,
+    pub muted: u32,
+    pub track: u32,
+    pub fill: u32,
+}
+
+pub const THEMES: [ReadTheme; 3] = [
+    ReadTheme {
+        name: "Sepia",
+        paper: 0xf4ecd8,
+        ink: 0x3b3226,
+        muted: 0x8a7a62,
+        track: 0xddd0b3,
+        fill: 0xa0703c,
+    },
+    ReadTheme {
+        name: "Light",
+        paper: 0xffffff,
+        ink: 0x1d1f23,
+        muted: 0x6b6f76,
+        track: 0xe3e5e8,
+        fill: 0x3d8bfd,
+    },
+    ReadTheme {
+        name: "Dark",
+        paper: 0x111214,
+        ink: 0xd6d3cc,
+        muted: 0x7d838c,
+        track: 0x2b2e33,
+        fill: 0xc9a46a,
+    },
+];
+
+/// Books start at this size ([`SIZES`]: 17 dp, the board's).
+pub const BOOK_SIZE: usize = 2;
+
+/// The layout of a book's page: `w` × `h` px of text at size `size`.
+pub fn book_opts(dp: f32, size: usize, w: i32, h: i32) -> Opts {
+    let body = (SIZES[size.min(SIZES.len() - 1)] * dp) as i32;
+    Opts {
+        width: w.max(100),
+        body,
+        twip: body as f32 / 240.0,
+        absolute: false,
+        gap: (10.0 * dp) as i32,
+        max_image_h: h.max(100),
+        image_scale: dp,
+    }
+}
+
+/// How many pages a chapter has at `o` (the counting worker's step; the same layout the reader shows).
+pub fn count_pages(doc: &Doc, fonts: &Fonts, o: Opts, h: i32, sizes: &[Option<(i32, i32)>]) -> u32 {
+    let f = layout(doc, o, fonts, |id| sizes.get(id).copied().flatten());
+    f.pages(h).len() as u32
+}
+
+/// Where a turn goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Turn {
+    /// Another page of this chapter.
+    Page,
+    /// The chapter `i` must be read (its first page, or its last when going back).
+    Chapter(usize, bool),
+    /// The book's first or last page already.
+    None,
+}
+
+/// A book open in the reader: the chapter in hand, cut into pages, and the place in it.
+pub struct BookReader {
+    pub title: String,
+    pub toc: Vec<Entry>,
+    pub chapters: usize,
+    pub chapter: usize,
+    pub page: usize,
+    /// Into [`SIZES`] and [`THEMES`].
+    pub size: usize,
+    pub theme: usize,
+    /// Pages of each chapter at this size and page size (from the counting worker), when known.
+    pub counts: Vec<Option<u32>>,
+    doc: Doc,
+    sizes: Vec<Option<(i32, i32)>>,
+    flow: Flow,
+    pages: Vec<Page>,
+    fonts: Fonts,
+    dp: f32,
+    view: (i32, i32),
+}
+
+use alloc::string::String;
+
+impl BookReader {
+    pub fn new(title: String, toc: Vec<Entry>, chapters: usize, fonts: Fonts, dp: f32) -> Self {
+        BookReader {
+            title,
+            toc,
+            chapters,
+            chapter: 0,
+            page: 0,
+            size: BOOK_SIZE,
+            theme: 0,
+            counts: alloc::vec![None; chapters],
+            doc: Doc::default(),
+            sizes: Vec::new(),
+            flow: Flow::default(),
+            pages: Vec::new(),
+            fonts,
+            dp,
+            view: (0, 0),
+        }
+    }
+
+    /// The layout options of this reader's pages.
+    pub fn opts(&self) -> Opts {
+        book_opts(self.dp, self.size, self.view.0, self.view.1)
+    }
+
+    pub fn view(&self) -> (i32, i32) {
+        self.view
+    }
+
+    pub fn fonts(&self) -> Fonts {
+        self.fonts
+    }
+
+    pub fn dp(&self) -> f32 {
+        self.dp
+    }
+
+    /// The pictures of the chapter in hand (their ids are what [`wanted`](Self::wanted) gives).
+    pub fn images(&self) -> &[neo_format_document::ImageSrc] {
+        &self.doc.images
+    }
+
+    /// Chapter `i` in hand (its blocks and its pictures' sizes), at `at`: a place in it, or its last page (`end`).
+    pub fn set_chapter(
+        &mut self,
+        i: usize,
+        doc: Doc,
+        sizes: Vec<Option<(i32, i32)>>,
+        at: Option<Pos>,
+        end: bool,
+    ) {
+        self.chapter = i;
+        self.doc = doc;
+        self.sizes = sizes;
+        self.relayout();
+        self.page = match (at, end) {
+            (_, true) => self.pages.len().saturating_sub(1),
+            (Some(p), _) => page_of(&self.pages, p),
+            _ => 0,
+        };
+    }
+
+    /// The page area changed (or the size): lay the chapter out again, keeping the place.
+    pub fn layout(&mut self, w: i32, h: i32) {
+        let at = self.pos();
+        let new = (w.max(100), h.max(100));
+        if new != self.view {
+            self.counts = alloc::vec![None; self.chapters];
+        }
+        self.view = new;
+        self.relayout();
+        self.page = page_of(&self.pages, at);
+    }
+
+    /// A new text size (counts start again).
+    pub fn set_size(&mut self, size: usize) {
+        let at = self.pos();
+        self.size = size.min(SIZES.len() - 1);
+        self.counts = alloc::vec![None; self.chapters];
+        self.relayout();
+        self.page = page_of(&self.pages, at);
+    }
+
+    fn relayout(&mut self) {
+        let sizes = &self.sizes;
+        self.flow = layout(&self.doc, self.opts(), &self.fonts, |id| {
+            sizes.get(id).copied().flatten()
+        });
+        self.pages = self.flow.pages(self.view.1);
+        self.counts[self.chapter] = Some(self.pages.len() as u32);
+    }
+
+    /// The place: the chapter and where its page starts.
+    pub fn pos(&self) -> Pos {
+        self.pages.get(self.page).map_or(Pos::default(), |p| p.at)
+    }
+
+    pub fn next_page(&mut self) -> Turn {
+        if self.page + 1 < self.pages.len() {
+            self.page += 1;
+            Turn::Page
+        } else if self.chapter + 1 < self.chapters {
+            Turn::Chapter(self.chapter + 1, false)
+        } else {
+            Turn::None
+        }
+    }
+
+    pub fn prev_page(&mut self) -> Turn {
+        if self.page > 0 {
+            self.page -= 1;
+            Turn::Page
+        } else if self.chapter > 0 {
+            Turn::Chapter(self.chapter - 1, true)
+        } else {
+            Turn::None
+        }
+    }
+
+    /// The page's items, from its top.
+    pub fn page_items(&self) -> impl Iterator<Item = &Item> {
+        let p = self.pages.get(self.page).copied().unwrap_or(Page {
+            top: 0,
+            end: 0,
+            at: Pos::default(),
+        });
+        self.flow.page(p)
+    }
+
+    pub fn page_top(&self) -> i32 {
+        self.pages.get(self.page).map_or(0, |p| p.top)
+    }
+
+    /// The pictures the page shows, and their drawn size.
+    pub fn wanted(&self) -> Vec<(usize, i32, i32)> {
+        self.page_items()
+            .filter_map(|i| match *i {
+                Item::Image { id, w, h, .. } => Some((id, w, h)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// How far into the book: by pages when every chapter is counted, else by chapters.
+    pub fn progress(&self) -> f32 {
+        let here = (self.page + 1) as f32 / self.pages.len().max(1) as f32;
+        match self.total() {
+            Some((before, total)) => (before + self.page as u32 + 1) as f32 / total.max(1) as f32,
+            None => (self.chapter as f32 + here) / self.chapters.max(1) as f32,
+        }
+    }
+
+    /// Pages before this chapter and in the whole book, once counted.
+    fn total(&self) -> Option<(u32, u32)> {
+        let all: Option<Vec<u32>> = self.counts.iter().copied().collect();
+        let all = all?;
+        Some((all[..self.chapter].iter().sum(), all.iter().sum()))
+    }
+
+    /// The footer: "Chapter 3 · 42 %" and "Page 118 of 280" (in the chapter until the book is counted).
+    pub fn footer(&self) -> (String, String) {
+        let name = self
+            .toc
+            .iter()
+            .rev()
+            .find(|e| e.chapter <= self.chapter)
+            .map(|e| e.title.clone());
+        let name = name
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| alloc::format!("Chapter {}", self.chapter + 1));
+        let pct = (self.progress() * 100.0) as i32;
+        let page = match self.total() {
+            Some((before, total)) => {
+                alloc::format!("Page {} of {}", before + self.page as u32 + 1, total)
+            }
+            None => alloc::format!(
+                "Page {} of {} in the chapter",
+                self.page + 1,
+                self.pages.len()
+            ),
+        };
+        (alloc::format!("{name} · {pct} %"), page)
+    }
+
+    /// The contents' entry the reader is in.
+    pub fn toc_current(&self) -> usize {
+        self.toc
+            .iter()
+            .rposition(|e| e.chapter <= self.chapter)
+            .unwrap_or(0)
+    }
+}
+
+/// Put the book's page on the screen (view "book"); `image(id)` gives a decoded picture.
+pub fn show_book(ui: &crate::FilesApp, r: &BookReader, image: impl Fn(usize) -> Option<Image>) {
+    let t = &THEMES[r.theme.min(THEMES.len() - 1)];
+    let (texts, images, rects) = models(r.page_items(), r.page_top(), t.ink, image);
+    ui.set_book_texts(texts);
+    ui.set_book_images(images);
+    ui.set_book_rects(rects);
+    ui.set_book_title(r.title.as_str().into());
+    let (left, right) = r.footer();
+    ui.set_book_where(left.into());
+    ui.set_book_page(right.into());
+    ui.set_book_progress(r.progress());
+    ui.set_book_paper(colour(t.paper));
+    ui.set_book_muted(colour(t.muted));
+    ui.set_book_track(colour(t.track));
+    ui.set_book_fill(colour(t.fill));
+    ui.set_book_theme_name(t.name.into());
+    let titles: Vec<slint::SharedString> = r.toc.iter().map(|e| e.title.as_str().into()).collect();
+    let depths: Vec<i32> = r.toc.iter().map(|e| e.depth as i32).collect();
+    ui.set_book_contents(ModelRc::new(VecModel::from(titles)));
+    ui.set_book_contents_depth(ModelRc::new(VecModel::from(depths)));
+    ui.set_book_contents_current(r.toc_current() as i32);
 }

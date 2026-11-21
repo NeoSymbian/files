@@ -83,6 +83,8 @@ enum Kind {
     Audio,
     /// FA10's document viewer (doc.rs keeps its state).
     Doc,
+    /// FA10's reader (book.rs keeps its state).
+    Book,
     Hex,
 }
 
@@ -247,6 +249,10 @@ pub(crate) fn open(app: &App, ui: &FilesApp, st: &mut State, path: &str) {
             o.kind = Kind::Doc;
             crate::doc::open(ui, st, &o)
         }
+        _ if crate::book::is_book(&o.name) => {
+            o.kind = Kind::Book;
+            crate::book::open(app, ui, st, &o)
+        }
         Family::Contact => cards(st, &mut o, &ext),
         Family::Font => font(ui, st, &mut o),
         Family::Cert => certificate(ui, st, &mut o),
@@ -278,8 +284,12 @@ pub(crate) fn back(app: &App, ui: &FilesApp, st: &mut State) {
     if st.fa7.as_ref().is_some_and(|o| o.form.is_some()) {
         return cancel(app, ui, st);
     }
+    if crate::book::back(ui, st) {
+        return;
+    }
     crate::audio::close(st);
     crate::doc::close(st);
+    crate::book::close(st);
     let from = st.fa7.take().map_or(View::Folder, |o| o.from);
     return_to(app, ui, st, from);
 }
@@ -391,6 +401,9 @@ fn menu(app: &App, ui: &FilesApp, st: &mut State, m: &str) {
     let Some(path) = st.fa7.as_ref().map(|o| o.path.clone()) else {
         return;
     };
+    if crate::book::menu(ui, st, m) {
+        return;
+    }
     match m {
         "Show as hex…" => hex(app, ui, st, ""),
         "Open with…" => crate::fa8::open_with(ui, st, path),
@@ -405,6 +418,15 @@ fn show(app: &App, ui: &FilesApp, st: &mut State) {
     let hexing = matches!(o.kind, Kind::Hex);
     ui.set_fa7_menu(strs(if hexing {
         &["Open with…", "Details"]
+    } else if matches!(o.kind, Kind::Book) {
+        &[
+            "Contents",
+            "Text size",
+            "Theme",
+            "Show as hex…",
+            "Open with…",
+            "Details",
+        ]
     } else {
         &["Show as hex…", "Open with…", "Details"]
     }));

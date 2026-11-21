@@ -382,7 +382,7 @@ impl Walker<'_> {
                 if name.prefix == "text"
                     && (name.local == "sequence-decls" || name.local == "tracked-changes")
                 {
-                    r.skip()?;
+                    r.skip_element()?;
                 }
             }
         }
@@ -469,7 +469,9 @@ impl Walker<'_> {
                     }
                     ("text", "tab") => p.push("\t", cur),
                     ("text", "line-break") => p.push("\n", cur),
-                    ("text", "note" | "annotation" | "bookmark-ref" | "ruby-text") => r.skip()?,
+                    ("text", "note" | "annotation" | "bookmark-ref" | "ruby-text") => {
+                        r.skip_element()?
+                    }
                     ("draw", "frame") => {
                         let l = |k| ev.attr("svg", k).and_then(length).unwrap_or(0);
                         frame = (l("width"), l("height"));
