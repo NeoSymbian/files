@@ -12,6 +12,7 @@ use files_core::{self as model, Item};
 slint::include_modules!();
 
 pub mod audio;
+pub mod doc;
 pub mod image;
 pub mod inspect;
 pub mod pim;

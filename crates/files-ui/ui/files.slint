@@ -13,6 +13,11 @@ import "@neoui/fonts/NeoSans-Bold.ttf";
 // Latin, Cyrillic and Armenian: names and text typed on the system keyboard, in any of its languages
 import "@neoui/fonts/DejaVuSans.ttf";
 import "@neoui/fonts/DejaVuSansMono.ttf";
+// documents (FA10): DejaVu Sans as a family of its own, with Bold and Oblique (fonts/NeoDoc.license)
+import "fonts/NeoDoc-Regular.ttf";
+import "fonts/NeoDoc-Bold.ttf";
+import "fonts/NeoDoc-Oblique.ttf";
+import { DocGlyphs } from "@files-gen/glyphs.slint";
 import {
     Theme, Kit, KeyboardFocus, Scroll, Alphabets, Glyph, NeoList, Header, SubHeader, FormHeader, TextField, Act, Tab, Footer,
     Sheet, Switch, Button, ProgressBar
@@ -24,7 +29,9 @@ import { TSpan, TRow, Mark, TextPane, TextMetrics } from "text.slint";
 import { PackItem, WayRow, JobCard, ArchiveBar, ViewOnly, CompressForm, FolderPicker } from "fa6.slint";
 import { PimLine, PimCard, PimField, EvRow, EvCard, Sample, SampleGroup, GlyphRow, InfoGroup, VcfView, VcfEdit, IcsView, IcsEdit, FontView, CertView, AppView, UnknownView } from "fa7.slint";
 import { AudioView } from "audio.slint";
+import { DText, DImage, DRect, DocItems, DocProbe } from "doc.slint";
 import { MdSpan, MdRow, CellRow, Col, CodeKeys, StatusLine, FindBar, Segments, MdView, TableGrid, CellBar, TypeChips } from "editor.slint";
+export { DText, DImage, DRect }
 export { TSpan, TRow, Mark, MdSpan, MdRow, CellRow, Col, TextMetrics, StripItem }
 export { PimLine, PimCard, PimField, EvRow, EvCard, Sample, SampleGroup, GlyphRow, InfoGroup }
 
@@ -1024,6 +1031,13 @@ export component FilesApp inherits Window {
     property <bool> listing: root.view == "recent" || root.view == "type" || root.view == "bin" || root.view == "review";
 
     Alphabets { }
+    DocGlyphs { }
+    // FA10: Rust measures a run here to calibrate its advances (doc.rs)
+    in property <string> probe-text;
+    in property <int> probe-px;
+    in property <int> probe-face;
+    out property <length> probe-width: doc-probe.preferred-width;
+    doc-probe := DocProbe { text: root.probe-text; px: root.probe-px; face: root.probe-face; }
 
     VerticalLayout {
         if root.tab-root: Header {

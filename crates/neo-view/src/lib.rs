@@ -182,7 +182,7 @@ pub const TYPES: [FileType; 55] = [
     t("docx", F::Word, E::None),
     t("xlsx", F::Excel, E::None),
     d("pptx", F::Slides),
-    d("odt", F::Word),
+    t("odt", F::Word, E::None),
     t("rtf", F::Word, E::None),
     t("zip", F::Archive, E::None),
     t("gz", F::Archive, E::None),
@@ -256,7 +256,7 @@ mod tests {
             TYPES.iter().filter(|t| t.editor != Editor::None).count(),
             24
         );
-        assert_eq!(TYPES.iter().filter(|t| t.needs_decoder).count(), 6);
+        assert_eq!(TYPES.iter().filter(|t| t.needs_decoder).count(), 5);
         for (i, a) in TYPES.iter().enumerate() {
             assert!(
                 TYPES[i + 1..].iter().all(|b| b.ext != a.ext),

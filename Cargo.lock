@@ -1072,6 +1072,7 @@ name = "files-ui"
 version = "0.1.0"
 dependencies = [
  "files-core",
+ "neo-format-document",
  "neo-format-image",
  "neo-format-inspect",
  "neo-format-pim",
@@ -1080,6 +1081,7 @@ dependencies = [
  "neoui-kit",
  "png",
  "slint",
+ "ttf-parser",
 ]
 
 [[package]]
@@ -2756,6 +2758,15 @@ version = "0.1.0"
 dependencies = [
  "crc32fast",
  "miniz_oxide 0.9.1",
+]
+
+[[package]]
+name = "neo-format-document"
+version = "0.1.0"
+dependencies = [
+ "neo-format-archive",
+ "unicode-linebreak",
+ "xmlparser",
 ]
 
 [[package]]

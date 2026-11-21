@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "neo-format-document"
+description = "Documents for Files: EPUB, docx, odt and rtf as one block model, xlsx as cells; line layout and pages"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+neo-format-archive = { workspace = true }
+xmlparser = { version = "0.13", default-features = false }
+unicode-linebreak = "0.1"

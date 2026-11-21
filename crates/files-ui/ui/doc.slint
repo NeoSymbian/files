@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// FA10 (documents): what the Rust layout (neo-format-document) places, drawn at its pixels: text runs in the document
+// faces (NeoDoc = DejaVu Sans, its Bold and Oblique, and DejaVu Sans Mono: Latin, Greek, Cyrillic and Armenian), images and rectangles (rules,
+// table lines, underlines, page sheets). Rust hands over only what shows (a page, or a window of a long document).
+
+// a run of text: x, y its top-left in px, `face` 0 regular, 1 bold, 2 italic, 3 mono
+export struct DText { x: int, y: int, px: int, face: int, text: string, colour: color }
+export struct DImage { x: int, y: int, w: int, h: int, image: image }
+export struct DRect { x: int, y: int, w: int, h: int, colour: color }
+
+export component DocItems inherits Rectangle {
+    in property <[DText]> texts;
+    in property <[DImage]> images;
+    in property <[DRect]> rects;
+    // where the items' (0, 0) is
+    in property <length> dx;
+    in property <length> dy;
+    for r in root.rects: Rectangle {
+        x: root.dx + r.x * 1px;
+        y: root.dy + r.y * 1px;
+        width: r.w * 1px;
+        height: r.h * 1px;
+        background: r.colour;
+    }
+    for i in root.images: Image {
+        x: root.dx + i.x * 1px;
+        y: root.dy + i.y * 1px;
+        width: i.w * 1px;
+        height: i.h * 1px;
+        source: i.image;
+        image-fit: fill;
+    }
+    for t in root.texts: Text {
+        x: root.dx + t.x * 1px;
+        y: root.dy + t.y * 1px;
+        text: t.text;
+        font-size: t.px * 1px;
+        font-family: t.face == 3 ? "DejaVu Sans Mono" : "NeoDoc";
+        font-weight: t.face == 1 ? 700 : 400;
+        font-italic: t.face == 2;
+        color: t.colour;
+    }
+}
+
+// the yardstick the Rust layout calibrates its advances with (one hidden run)
+export component DocProbe inherits Text {
+    visible: false;
+    in property <int> px;
+    in property <int> face;
+    font-size: root.px * 1px;
+    font-family: root.face == 3 ? "DejaVu Sans Mono" : "NeoDoc";
+    font-weight: root.face == 1 ? 700 : 400;
+    font-italic: root.face == 2;
+}

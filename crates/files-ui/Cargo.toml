@@ -21,9 +21,14 @@ neo-format-pim = { workspace = true }
 # fonts, certificates, packages and hex (FA7)
 neo-format-inspect = { workspace = true }
 
+# documents (FA10): EPUB, docx, odt, rtf and xlsx, laid out here at the advances Slint draws
+neo-format-document = { workspace = true }
+
 [build-dependencies]
 # the neoui kit (@neoui/kit.slint): theme, fonts, glyphs and components
 neoui-kit = { workspace = true }
+# the document faces' advances, measured at build time (advances.rs)
+ttf-parser = "0.25"
 
 [dev-dependencies]
 png = { workspace = true }
