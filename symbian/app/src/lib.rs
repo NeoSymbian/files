@@ -14,6 +14,8 @@ extern crate alloc;
 
 mod archive;
 mod audio;
+mod book;
+mod doc;
 mod edit;
 mod fa3;
 mod fa7;
@@ -22,6 +24,7 @@ mod image;
 mod job;
 mod pics;
 mod scan;
+mod sheet;
 
 use alloc::collections::VecDeque;
 use alloc::format;
@@ -168,6 +171,10 @@ enum Action {
     Fa8(fa8::Act),
     // FA9
     Audio(audio::Act),
+    // FA10
+    Doc(doc::Act),
+    Book(book::Act),
+    Sheet(sheet::Act),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -313,6 +320,16 @@ struct State {
     share: Option<fa8::Share>,
     // FA9
     audio: audio::Audio,
+    // FA10
+    doc: Option<doc::Open>,
+    book: Option<book::Open>,
+    workbook: Option<sheet::Open>,
+    /// The book page counter (a worker, started with the first book).
+    counter: Option<&'static book::Counter>,
+    /// The document faces' advances, calibrated against Slint on the first document.
+    fonts: Option<files_ui::doc::Fonts>,
+    /// The documents opened so far (a picture is matched to its document by this).
+    doc_n: u32,
 }
 
 fn run() -> Result<(), i32> {
@@ -387,6 +404,12 @@ fn run() -> Result<(), i32> {
         with: None,
         share: None,
         audio: audio::Audio::new(),
+        doc: None,
+        book: None,
+        workbook: None,
+        counter: book::Counter::new().ok(),
+        fonts: None,
+        doc_n: 0,
     };
     load_settings(&app, &ui, &mut st);
     fa3::load(&mut st);
@@ -399,6 +422,7 @@ fn run() -> Result<(), i32> {
         fa7::test_files(&st);
         fa8::test_files(&st);
         audio::test_files(&st);
+        doc::test_files(&st);
     }
     show_drives(&app, &ui, &mut st);
     fa8::restore_clip(&app, &ui, &mut st);
@@ -437,6 +461,9 @@ fn run() -> Result<(), i32> {
                     if st.audio.busy() {
                         wait = wait.min(audio::POLL_US);
                     }
+                    if st.counter.is_some_and(|c| c.busy()) {
+                        wait = wait.min(book::POLL_US);
+                    }
                     let watch_dir =
                         (st.view == View::Folder && st.dir != st.unwatched).then(|| st.dir.clone());
                     let watch = async {
@@ -469,6 +496,7 @@ fn run() -> Result<(), i32> {
                             poll_scan(&app, &ui, &mut st);
                             image::poll(&app, &ui, &mut st);
                             audio::poll(&app, &ui, &mut st);
+                            book::poll(&ui, &mut st);
                             // a flick goes on without events: its scroll callbacks wait here
                             loop {
                                 let next = actions.borrow_mut().pop_front();
@@ -500,6 +528,9 @@ fn run() -> Result<(), i32> {
                 AppEvent::Input(InputEvent::Touch { id, x, y, phase })
                     if st.view == View::Image
                         && image::touch(&app, &ui, &mut st, id, x, y, phase) => {}
+                // a document's page view reads a pinch the same way
+                AppEvent::Input(InputEvent::Touch { id, x, y, phase })
+                    if st.view == View::Fa7 && doc::touch(&app, &ui, &mut st, id, x, y, phase) => {}
                 _ => app.handle(&e),
             }
             // the player: "Stops when you leave Files"
@@ -709,6 +740,9 @@ fn bind(ui: &FilesApp, actions: &Rc<RefCell<VecDeque<Action>>>) {
     fa7::bind(ui, actions);
     fa8::bind(ui, actions);
     audio::bind(ui, actions);
+    doc::bind(ui, actions);
+    book::bind(ui, actions);
+    sheet::bind(ui, actions);
     {
         let q = actions.clone();
         ui.on_group_picked(move |g, i| {
@@ -854,6 +888,9 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
         Action::Fa7(a) => fa7::act(app, ui, st, a),
         Action::Fa8(a) => fa8::act(app, ui, st, a),
         Action::Audio(a) => audio::act(app, ui, st, a),
+        Action::Doc(a) => doc::act(ui, st, a),
+        Action::Book(a) => book::act(app, ui, st, a),
+        Action::Sheet(a) => sheet::act(ui, st, a),
         Action::Edit if st.view == View::Fa7 => fa7::edit(ui, st),
         Action::Row(i) if st.view == View::Folder => {
             let Some(item) = st.items.get(i).cloned() else {

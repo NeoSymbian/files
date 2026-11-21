@@ -28,6 +28,7 @@ neo-format-archive.workspace = true
 neo-format-pim.workspace = true
 neo-format-inspect.workspace = true
 neo-format-media.workspace = true
+neo-format-document.workspace = true
 neoaudio.workspace = true
 # NEOCONT's book format and import rule (Apache): the cards Contacts has are marked before Add to Contacts
 contacts.workspace = true

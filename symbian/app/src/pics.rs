@@ -57,7 +57,20 @@ pub struct Shown {
     pub gif: Option<Vec<u8>>,
 }
 
+/// A picture in a document (FA10): a member of the zip at `path`, or the bytes themselves (an rtf's), wanted at most
+/// `max` px on its long side (the size it is drawn at).
+pub struct DocPic {
+    pub id: usize,
+    pub path: String,
+    pub member: Option<String>,
+    pub bytes: Option<Vec<u8>>,
+    pub max: u32,
+}
+
 pub enum Done {
+    /// A document's picture: the document's number, the picture's id, its pixels at the drawn size (`None`: it
+    /// can't be decoded).
+    Doc(u32, usize, Option<Pixels>),
     Thumb(String, Option<Pixels>),
     /// The viewer's request number, and the picture or an error code (-1 not an image, -2 too big, -3 broken).
     Show(u32, String, Result<Shown, i32>),
@@ -76,6 +89,8 @@ struct Queue {
     show: Option<(u32, String)>,
     save: Option<Save>,
     thumbs: VecDeque<Want>,
+    /// A document's pictures in view (the document's number with each).
+    doc: VecDeque<(u32, DocPic)>,
     done: Vec<Done>,
     busy: bool,
     started: bool,
@@ -257,6 +272,44 @@ fn show(fs: &E32Fs, path: &str) -> Result<Shown, i32> {
     })
 }
 
+/// A document's picture, streamed: only its zip member is read (through the worker's own session), decoded (into a
+/// chunk of its own when it can) and shrunk to the size it is drawn at, so the heap holds a window's pixels.
+fn doc_pic(
+    fs: &E32Fs,
+    path: &str,
+    member: Option<&str>,
+    bytes: Option<Vec<u8>>,
+    max: u32,
+) -> Option<Pixels> {
+    let t0 = time::millis();
+    let b = match (bytes, member) {
+        (Some(b), _) => b,
+        (None, Some(m)) => {
+            let f = fs.open(path, neo_fs::Open::Read).ok()?;
+            let size = neo_fs::File::size(&f).ok()?;
+            let p = neo_format_document::Package::open(crate::audio::At(f, size)).ok()?;
+            if p.find(m)?.size > FILE_MAX {
+                return None;
+            }
+            p.read(m).ok()?
+        }
+        (None, None) => return None,
+    };
+    let (info, big, _) = decode_big(&b).ok()?;
+    drop(b);
+    let px = fit(&big.px(), Turn::exif(info.orientation), max.max(1));
+    drop(big);
+    dprintln!(
+        "files: doc picture {}x{} -> {}x{} in {} ms",
+        info.w,
+        info.h,
+        px.w,
+        px.h,
+        time::millis() - t0
+    );
+    Some(px)
+}
+
 fn save(fs: &E32Fs, s: &Save) -> Result<(u32, u32), i32> {
     let b = read(fs, &s.src)?;
     let (info, big, preview) = decode_big(&b)?;
@@ -338,6 +391,13 @@ impl Pics {
                             Some((None, Some(s), None))
                         } else if let Some(s) = q.show.take() {
                             Some((Some(s), None, None))
+                        } else if let Some((n, p)) = q.doc.pop_front() {
+                            q.busy = true;
+                            drop(q);
+                            let px =
+                                doc_pic(&fs, p.path.as_str(), p.member.as_deref(), p.bytes, p.max);
+                            self.q.lock().done.push(Done::Doc(n, p.id, px));
+                            continue;
                         } else {
                             q.thumbs.pop_front().map(|w| (None, None, Some(w)))
                         };
@@ -394,6 +454,20 @@ impl Pics {
         self.wake.signal();
     }
 
+    /// A document's pictures: those queued for document `n` and still in `keep` stay, the rest of the queue goes, and
+    /// `wants` are added (`n` 0 and nothing: the queue is emptied, the document closed).
+    pub fn doc(&'static self, n: u32, keep: &[usize], wants: Vec<DocPic>) {
+        {
+            let mut q = self.q.lock();
+            q.doc.retain(|(qn, p)| *qn == n && keep.contains(&p.id));
+            q.doc.extend(wants.into_iter().map(|w| (n, w)));
+        }
+        if n != 0 {
+            self.start();
+            self.wake.signal();
+        }
+    }
+
     /// What was made since the last call.
     pub fn take(&self) -> Vec<Done> {
         core::mem::take(&mut self.q.lock().done)
@@ -402,6 +476,11 @@ impl Pics {
     /// Work waiting or under way (the UI polls more often then).
     pub fn busy(&self) -> bool {
         let q = self.q.lock();
-        q.busy || q.show.is_some() || q.save.is_some() || !q.thumbs.is_empty() || !q.done.is_empty()
+        q.busy
+            || q.show.is_some()
+            || q.save.is_some()
+            || !q.thumbs.is_empty()
+            || !q.doc.is_empty()
+            || !q.done.is_empty()
     }
 }

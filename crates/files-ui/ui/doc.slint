@@ -1,0 +1,793 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// FA10 (documents): what the Rust layout (neo-format-document) places, drawn at its pixels: text runs in the document
+// faces (NeoDoc = DejaVu Sans, its Bold and Oblique, and DejaVu Sans Mono: Latin, Greek, Cyrillic and Armenian), images and rectangles (rules,
+// table lines, underlines, page sheets). Rust hands over only what shows (a page, or a window of a long document).
+
+import { Theme, Glyph } from "@neoui/kit.slint";
+
+// a run of text: x, y its top-left in px, `face` 0 regular, 1 bold, 2 italic, 3 mono
+export struct DText { x: int, y: int, px: int, face: int, text: string, colour: color }
+export struct DImage { x: int, y: int, w: int, h: int, image: image }
+export struct DRect { x: int, y: int, w: int, h: int, colour: color }
+
+export component DocItems inherits Rectangle {
+    in property <[DText]> texts;
+    in property <[DImage]> images;
+    in property <[DRect]> rects;
+    // where the items' (0, 0) is
+    in property <length> dx;
+    in property <length> dy;
+    for r in root.rects: Rectangle {
+        x: root.dx + r.x * 1px;
+        y: root.dy + r.y * 1px;
+        width: r.w * 1px;
+        height: r.h * 1px;
+        background: r.colour;
+    }
+    for i in root.images: Image {
+        x: root.dx + i.x * 1px;
+        y: root.dy + i.y * 1px;
+        width: i.w * 1px;
+        height: i.h * 1px;
+        source: i.image;
+        image-fit: fill;
+    }
+    for t in root.texts: Text {
+        x: root.dx + t.x * 1px;
+        y: root.dy + t.y * 1px;
+        text: t.text;
+        font-size: t.px * 1px;
+        font-family: t.face == 3 ? "DejaVu Sans Mono" : "NeoDoc";
+        font-weight: t.face == 1 ? 700 : 400;
+        font-italic: t.face == 2;
+        color: t.colour;
+    }
+}
+
+// the yardstick the Rust layout calibrates its advances with (one hidden run)
+export component DocProbe inherits Text {
+    visible: false;
+    in property <int> px;
+    in property <int> face;
+    font-size: root.px * 1px;
+    font-family: root.face == 3 ? "DejaVu Sans Mono" : "NeoDoc";
+    font-weight: root.face == 1 ? 700 : 400;
+    font-italic: root.face == 2;
+}
+
+
+// Page | Reflow (files2-view-docx's pill)
+component Pill inherits Rectangle {
+    in property <[string]> items;
+    in property <int> current;
+    in property <bool> first-enabled: true;
+    callback picked(int);
+    height: 32 * Theme.dp;
+    width: lay.preferred-width;
+    border-radius: 16 * Theme.dp;
+    background: #1d2025;
+    lay := HorizontalLayout {
+        padding: 2 * Theme.dp;
+        spacing: 2 * Theme.dp;
+        for s[i] in root.items: Rectangle {
+            border-radius: 14 * Theme.dp;
+            width: t.preferred-width + 24 * Theme.dp;
+            background: i == root.current ? #3d8bfd33 : transparent;
+            t := Text {
+                text: s;
+                color: i == root.current ? #cfe0ff : #b9bec7;
+                font-size: 13 * Theme.dp;
+                font-weight: 600;
+            }
+
+            TouchArea {
+                clicked => {
+                    root.picked(i);
+                }
+            }
+        }
+    }
+}
+
+// files2-view-docx: the Page | Reflow bar, the document (pages on grey, or one long sheet of paper), and the
+// footer with its kind, size and how far down it is. Rust lays out what shows (a window around the scroll position).
+export component DocView inherits Rectangle {
+    in property <int> mode;
+    in property <[DText]> texts;
+    in property <[DImage]> images;
+    in property <[DRect]> rects;
+    // the whole document's height, and where the items' (0, 0) is, px
+    in property <int> total;
+    // the content's width, px: a zoomed page is wider than the view
+    in property <int> total-w;
+    in property <int> window-top;
+    in property <color> paper;
+    in property <string> info;
+    in property <string> percent;
+    out property <int> view-w: flick.width / 1px;
+    out property <int> view-h: flick.height / 1px;
+    // the area changed size (it is first measured before the frame that shows it): Rust lays out again
+    callback resized(int, int);
+    changed view-w => {
+        root.resized(self.view-w, self.view-h);
+    }
+    changed view-h => {
+        root.resized(self.view-w, self.view-h);
+    }
+    callback mode-picked(int);
+    callback scrolled(int);
+    callback scrolled-x(int);
+    callback tapped(length, length);
+    background: #000000;
+    public function to-top() {
+        flick.content-y = 0;
+    }
+    public function scroll-to(px: int) {
+        flick.content-y = -min(max(0, px), max(0, root.total - root.view-h)) * 1px;
+    }
+    public function scroll-x-to(px: int) {
+        flick.content-x = -min(max(0, px), max(0, root.total-w - root.view-w)) * 1px;
+    }
+
+    VerticalLayout {
+        Rectangle {
+            height: 44 * Theme.dp;
+            HorizontalLayout {
+                padding-left: 12 * Theme.dp;
+                padding-right: 12 * Theme.dp;
+                spacing: 10 * Theme.dp;
+                alignment: start;
+                VerticalLayout {
+                    alignment: center;
+                    Pill {
+                        items: ["Page", "Reflow"];
+                        current: root.mode;
+                        picked(i) => {
+                            root.mode-picked(i);
+                        }
+                    }
+                }
+
+                Text {
+                    text: "Read-only";
+                    color: #7d838c;
+                    font-size: 12.5 * Theme.dp;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle {
+                y: parent.height - self.height;
+                height: max(1px, Theme.dp / 3);
+                background: #ffffff12;
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            background: root.mode == 0 ? #2b2e33 : root.paper;
+            clip: true;
+            flick := Flickable {
+                content-height: max(self.height, root.total * 1px);
+                content-width: max(self.width, root.total-w * 1px);
+                changed content-y => {
+                    root.scrolled(-self.content-y / 1px);
+                }
+                changed content-x => {
+                    root.scrolled-x(-self.content-x / 1px);
+                }
+                DocItems {
+                    y: root.window-top * 1px;
+                    width: max(parent.width, root.total-w * 1px);
+                    height: 1px;
+                    texts: root.texts;
+                    images: root.images;
+                    rects: root.rects;
+                }
+
+                TouchArea {
+                    clicked => {
+                        root.tapped(self.mouse-x, self.mouse-y);
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 30 * Theme.dp;
+            Rectangle {
+                y: 0;
+                height: max(1px, Theme.dp / 3);
+                background: #ffffff12;
+            }
+
+            HorizontalLayout {
+                padding-left: 16 * Theme.dp;
+                padding-right: 16 * Theme.dp;
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.info;
+                    color: #7d838c;
+                    font-size: 12.5 * Theme.dp;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: root.percent;
+                    color: #7d838c;
+                    font-size: 12.5 * Theme.dp;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}
+
+// a control on the reader's bar
+component ReaderButton inherits Rectangle {
+    in property <string> text;
+    in property <color> ink;
+    callback clicked();
+    height: 40 * Theme.dp;
+    width: max(56 * Theme.dp, t.preferred-width + 24 * Theme.dp);
+    border-radius: 20 * Theme.dp;
+    background: ta.pressed ? #ffffff22 : #ffffff10;
+    t := Text {
+        text: root.text;
+        color: root.ink;
+        font-size: 14 * Theme.dp;
+        font-weight: 600;
+    }
+
+    ta := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// files2-view-epub: the book's title over the page, the page (Rust lays it out: a chapter cut into pages), the
+// progress bar with the chapter and the page; taps on the left and right quarters turn pages (swipes too), a tap in
+// the middle shows the controls (Contents, A−, A+, the theme); Contents lists the chapters.
+export component BookView inherits Rectangle {
+    in property <[DText]> texts;
+    in property <[DImage]> images;
+    in property <[DRect]> rects;
+    in property <string> title;
+    in property <string> where;
+    in property <string> page;
+    in property <float> progress;
+    in property <color> paper: #f4ecd8;
+    in property <color> muted: #8a7a62;
+    in property <color> track: #ddd0b3;
+    in property <color> fill: #a0703c;
+    in property <string> theme-name: "Sepia";
+    in property <bool> controls;
+    in property <bool> contents-open;
+    in property <[string]> contents;
+    in property <[int]> contents-depth;
+    in property <int> contents-current;
+    out property <int> page-w: body.width / 1px;
+    out property <int> page-h: body.height / 1px;
+    callback resized(int, int);
+    changed page-w => {
+        root.resized(self.page-w, self.page-h);
+    }
+    changed page-h => {
+        root.resized(self.page-w, self.page-h);
+    }
+    callback turn(int);
+    callback toggle-controls();
+    callback control(int);
+    callback contents-chosen(int);
+    callback contents-closed();
+    background: root.paper;
+    VerticalLayout {
+        Rectangle {
+            height: 40 * Theme.dp;
+            Text {
+                x: 24 * Theme.dp;
+                width: parent.width - 48 * Theme.dp;
+                text: root.title;
+                color: root.muted;
+                font-family: "NeoDoc";
+                font-size: 12 * Theme.dp;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            body := Rectangle {
+                x: 24 * Theme.dp;
+                y: 4 * Theme.dp;
+                width: parent.width - 48 * Theme.dp;
+                height: parent.height - 4 * Theme.dp;
+                clip: true;
+                DocItems {
+                    width: parent.width;
+                    height: parent.height;
+                    texts: root.texts;
+                    images: root.images;
+                    rects: root.rects;
+                }
+            }
+
+            TouchArea {
+                pointer-event(e) => {
+                    if e.kind == PointerEventKind.up {
+                        if abs(self.mouse-x - self.pressed-x) > 40 * Theme.dp {
+                            root.turn(self.mouse-x < self.pressed-x ? 1 : -1);
+                        } else if self.mouse-x < self.width * 0.26 {
+                            root.turn(-1);
+                        } else if self.mouse-x > self.width * 0.74 {
+                            root.turn(1);
+                        } else {
+                            root.toggle-controls();
+                        }
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 58 * Theme.dp;
+            VerticalLayout {
+                padding-left: 24 * Theme.dp;
+                padding-right: 24 * Theme.dp;
+                alignment: center;
+                spacing: 7 * Theme.dp;
+                Rectangle {
+                    height: 3 * Theme.dp;
+                    border-radius: 2 * Theme.dp;
+                    background: root.track;
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * clamp(root.progress, 0, 1);
+                        border-radius: 2 * Theme.dp;
+                        background: root.fill;
+                    }
+                }
+
+                HorizontalLayout {
+                    Text {
+                        horizontal-stretch: 1;
+                        text: root.where;
+                        color: root.muted;
+                        font-family: "NeoDoc";
+                        font-size: 12 * Theme.dp;
+                        overflow: elide;
+                    }
+
+                    Text {
+                        text: root.page;
+                        color: root.muted;
+                        font-size: 12 * Theme.dp;
+                    }
+                }
+            }
+        }
+    }
+
+    if root.controls: Rectangle {
+        y: parent.height - 58 * Theme.dp - self.height;
+        height: 60 * Theme.dp;
+        background: #1d2025;
+        HorizontalLayout {
+            padding-left: 12 * Theme.dp;
+            padding-right: 12 * Theme.dp;
+            spacing: 8 * Theme.dp;
+            alignment: space-between;
+            VerticalLayout {
+                alignment: center;
+                ReaderButton {
+                    text: "Contents";
+                    ink: #ffffff;
+                    clicked => {
+                        root.control(0);
+                    }
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                ReaderButton {
+                    text: "A−";
+                    ink: #ffffff;
+                    clicked => {
+                        root.control(1);
+                    }
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                ReaderButton {
+                    text: "A+";
+                    ink: #ffffff;
+                    clicked => {
+                        root.control(2);
+                    }
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                ReaderButton {
+                    text: root.theme-name;
+                    ink: #ffffff;
+                    clicked => {
+                        root.control(3);
+                    }
+                }
+            }
+        }
+    }
+
+    if root.contents-open: Rectangle {
+        background: #0b0c0e;
+        TouchArea { }
+        VerticalLayout {
+            Rectangle {
+                height: 48 * Theme.dp;
+                HorizontalLayout {
+                    padding-left: 20 * Theme.dp;
+                    padding-right: 4 * Theme.dp;
+                    Text {
+                        horizontal-stretch: 1;
+                        text: "Contents";
+                        color: #ffffff;
+                        font-size: 19 * Theme.dp;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle {
+                        width: 48 * Theme.dp;
+                        Glyph {
+                            source: @image-url("@neoui/icons/sys/close.svg");
+                            size: 24 * Theme.dp;
+                            colorize: #b9bec7;
+                        }
+
+                        TouchArea {
+                            clicked => {
+                                root.contents-closed();
+                            }
+                        }
+                    }
+                }
+            }
+
+            Flickable {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    for c[i] in root.contents: Rectangle {
+                        height: 52 * Theme.dp;
+                        background: ta.pressed ? #ffffff10 : transparent;
+                        Text {
+                            x: (20 + 16 * root.contents-depth[i]) * Theme.dp;
+                            width: parent.width - self.x - 20 * Theme.dp;
+                            text: c;
+                            color: i == root.contents-current ? #cfe0ff : #e6e8eb;
+                            font-family: "NeoDoc";
+                            font-weight: i == root.contents-current ? 700 : 400;
+                            font-size: 16 * Theme.dp;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+
+                        ta := TouchArea {
+                            clicked => {
+                                root.contents-chosen(i);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// a cell (or a header) at its place in the grid, px; align 0 start, 1 end, 2 centre
+export struct DCell { x: int, y: int, w: int, h: int, text: string, align: int, bold: bool }
+
+component GridCell inherits Rectangle {
+    in property <DCell> c;
+    // headers draw their own lines; the cells' come from the grid's line model
+    in property <bool> lines: true;
+    in property <color> ink: #ffffff;
+    in property <color> ground: transparent;
+    x: c.x * 1px;
+    y: c.y * 1px;
+    width: c.w * 1px;
+    height: c.h * 1px;
+    background: root.ground;
+    Text {
+        x: 4 * Theme.dp;
+        width: parent.width - 8 * Theme.dp;
+        height: parent.height;
+        text: root.c.text;
+        color: root.ink;
+        font-family: "NeoDoc";
+        font-size: 12 * Theme.dp;
+        font-weight: root.c.bold ? 700 : 400;
+        overflow: elide;
+        vertical-alignment: center;
+        horizontal-alignment: root.c.align == 1 ? right : root.c.align == 2 ? center : left;
+    }
+
+    if root.lines: Rectangle {
+        x: parent.width - self.width;
+        width: max(1px, Theme.dp / 3);
+        background: #ffffff14;
+    }
+
+    if root.lines: Rectangle {
+        y: parent.height - self.height;
+        height: max(1px, Theme.dp / 3);
+        background: #ffffff14;
+    }
+}
+
+// files2-view-xlsx: the cell's name and its formula (or value), the grid with frozen column letters and row numbers,
+// the selection, Read-only · n sheets and the selection's sum, and the sheet tabs. Rust lays out the window of cells
+// around the scroll position; taps on a cell, a letter or a number select.
+export component SheetView inherits Rectangle {
+    in property <string> ref-name;
+    in property <string> formula;
+    in property <[DCell]> cells;
+    in property <[DRect]> lines;
+    in property <[DCell]> col-heads;
+    in property <[DCell]> row-heads;
+    // the selection, px in the grid
+    in property <int> sel-x;
+    in property <int> sel-y;
+    in property <int> sel-w;
+    in property <int> sel-h;
+    in property <int> total-w;
+    in property <int> total-h;
+    in property <int> head-w;
+    in property <int> head-h;
+    in property <string> status;
+    in property <string> sum;
+    in property <string> note;
+    in property <[string]> sheets;
+    in property <int> sheet;
+    out property <int> view-w: flick.width / 1px;
+    out property <int> view-h: flick.height / 1px;
+    callback resized(int, int);
+    changed view-w => {
+        root.resized(self.view-w, self.view-h);
+    }
+    changed view-h => {
+        root.resized(self.view-w, self.view-h);
+    }
+    callback scrolled(int, int);
+    callback tapped(int, int);
+    callback head-tapped(bool, int);
+    callback sheet-picked(int);
+    public function scroll-to(x: int, y: int) {
+        flick.content-x = -x * 1px;
+        flick.content-y = -y * 1px;
+    }
+    background: #000000;
+    property <length> sx: -flick.content-x;
+    property <length> sy: -flick.content-y;
+    VerticalLayout {
+        Rectangle {
+            height: 40 * Theme.dp;
+            HorizontalLayout {
+                padding-left: 12 * Theme.dp;
+                padding-right: 12 * Theme.dp;
+                spacing: 10 * Theme.dp;
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        height: 26 * Theme.dp;
+                        width: max(34 * Theme.dp, name.preferred-width + 12 * Theme.dp);
+                        border-radius: 6 * Theme.dp;
+                        background: #1d2025;
+                        name := Text {
+                            text: root.ref-name;
+                            color: #ffffff;
+                            font-size: 12.5 * Theme.dp;
+                            font-weight: 600;
+                        }
+                    }
+                }
+
+                Text {
+                    text: "fx";
+                    color: #7d838c;
+                    font-italic: true;
+                    font-size: 13 * Theme.dp;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.formula;
+                    color: #b9bec7;
+                    font-family: "NeoDoc";
+                    font-size: 13 * Theme.dp;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle {
+                y: parent.height - self.height;
+                height: max(1px, Theme.dp / 3);
+                background: #ffffff12;
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+            // the cells
+            Rectangle {
+                x: root.head-w * 1px;
+                y: root.head-h * 1px;
+                width: parent.width - self.x;
+                height: parent.height - self.y;
+                clip: true;
+                flick := Flickable {
+                    content-width: max(self.width, root.total-w * 1px);
+                    content-height: max(self.height, root.total-h * 1px);
+                    changed content-x => {
+                        root.scrolled(-self.content-x / 1px, -self.content-y / 1px);
+                    }
+                    changed content-y => {
+                        root.scrolled(-self.content-x / 1px, -self.content-y / 1px);
+                    }
+                    for l in root.lines: Rectangle {
+                        x: l.x * 1px;
+                        y: l.y * 1px;
+                        width: l.w * 1px;
+                        height: l.h * 1px;
+                        background: l.colour;
+                    }
+                    for c in root.cells: GridCell {
+                        c: c;
+                        lines: false;
+                    }
+                    if root.sel-w > 0: Rectangle {
+                        x: root.sel-x * 1px;
+                        y: root.sel-y * 1px;
+                        width: root.sel-w * 1px;
+                        height: root.sel-h * 1px;
+                        background: #3d8bfd1f;
+                        border-width: 2 * Theme.dp / 1.5;
+                        border-color: #3d8bfd;
+                    }
+                    TouchArea {
+                        clicked => {
+                            root.tapped(self.mouse-x / 1px, self.mouse-y / 1px);
+                        }
+                    }
+                }
+
+                if root.note != "": Text {
+                    text: root.note;
+                    color: #7d838c;
+                    font-size: 14 * Theme.dp;
+                }
+            }
+
+            // the letters, moving with the cells across
+            Rectangle {
+                x: root.head-w * 1px;
+                y: 0;
+                height: root.head-h * 1px;
+                width: parent.width - self.x;
+                clip: true;
+                background: #1a1d22;
+                for c in root.col-heads: GridCell {
+                    c: { x: c.x - root.sx / 1px, y: c.y, w: c.w, h: c.h, text: c.text, align: c.align, bold: c.bold };
+                    ink: #7d838c;
+                }
+                TouchArea {
+                    clicked => {
+                        root.head-tapped(true, (self.mouse-x + root.sx) / 1px);
+                    }
+                }
+            }
+
+            // the numbers, moving with the cells down
+            Rectangle {
+                x: 0;
+                y: root.head-h * 1px;
+                width: root.head-w * 1px;
+                height: parent.height - self.y;
+                clip: true;
+                background: #1a1d22;
+                for c in root.row-heads: GridCell {
+                    c: { x: c.x, y: c.y - root.sy / 1px, w: c.w, h: c.h, text: c.text, align: c.align, bold: c.bold };
+                    ink: #7d838c;
+                }
+                TouchArea {
+                    clicked => {
+                        root.head-tapped(false, (self.mouse-y + root.sy) / 1px);
+                    }
+                }
+            }
+
+            Rectangle {
+                x: 0;
+                y: 0;
+                width: root.head-w * 1px;
+                height: root.head-h * 1px;
+                background: #1a1d22;
+            }
+        }
+
+        Rectangle {
+            height: 30 * Theme.dp;
+            Rectangle {
+                y: 0;
+                height: max(1px, Theme.dp / 3);
+                background: #ffffff12;
+            }
+
+            HorizontalLayout {
+                padding-left: 12 * Theme.dp;
+                padding-right: 12 * Theme.dp;
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.status;
+                    color: #7d838c;
+                    font-size: 12.5 * Theme.dp;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: root.sum;
+                    color: #7d838c;
+                    font-family: "NeoDoc";
+                    font-size: 12.5 * Theme.dp;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        Rectangle {
+            height: 44 * Theme.dp;
+            background: #0b0c0e;
+            Rectangle {
+                y: 0;
+                height: max(1px, Theme.dp / 3);
+                background: #ffffff12;
+            }
+
+            Flickable {
+                content-width: tabs.preferred-width;
+                tabs := HorizontalLayout {
+                    for s[i] in root.sheets: Rectangle {
+                        width: t.preferred-width + 28 * Theme.dp;
+                        t := Text {
+                            text: s;
+                            color: i == root.sheet ? #ffffff : #b9bec7;
+                            font-family: "NeoDoc";
+                            font-size: 14 * Theme.dp;
+                            font-weight: i == root.sheet ? 700 : 400;
+                        }
+
+                        if i == root.sheet: Rectangle {
+                            y: parent.height - self.height;
+                            height: 3 * Theme.dp;
+                            background: #3d8bfd;
+                        }
+                        TouchArea {
+                            clicked => {
+                                root.sheet-picked(i);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

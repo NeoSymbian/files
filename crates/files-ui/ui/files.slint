@@ -13,6 +13,11 @@ import "@neoui/fonts/NeoSans-Bold.ttf";
 // Latin, Cyrillic and Armenian: names and text typed on the system keyboard, in any of its languages
 import "@neoui/fonts/DejaVuSans.ttf";
 import "@neoui/fonts/DejaVuSansMono.ttf";
+// documents (FA10): DejaVu Sans as a family of its own, with Bold and Oblique (fonts/NeoDoc.license)
+import "fonts/NeoDoc-Regular.ttf";
+import "fonts/NeoDoc-Bold.ttf";
+import "fonts/NeoDoc-Oblique.ttf";
+import { DocGlyphs } from "@files-gen/glyphs.slint";
 import {
     Theme, Kit, KeyboardFocus, Scroll, Alphabets, Glyph, NeoList, Header, SubHeader, FormHeader, TextField, Act, Tab, Footer,
     Sheet, Switch, Button, ProgressBar
@@ -24,7 +29,9 @@ import { TSpan, TRow, Mark, TextPane, TextMetrics } from "text.slint";
 import { PackItem, WayRow, JobCard, ArchiveBar, ViewOnly, CompressForm, FolderPicker } from "fa6.slint";
 import { PimLine, PimCard, PimField, EvRow, EvCard, Sample, SampleGroup, GlyphRow, InfoGroup, VcfView, VcfEdit, IcsView, IcsEdit, FontView, CertView, AppView, UnknownView } from "fa7.slint";
 import { AudioView } from "audio.slint";
+import { DText, DImage, DRect, DCell, DocItems, DocProbe, DocView, BookView, SheetView } from "doc.slint";
 import { MdSpan, MdRow, CellRow, Col, CodeKeys, StatusLine, FindBar, Segments, MdView, TableGrid, CellBar, TypeChips } from "editor.slint";
+export { DText, DImage, DRect, DCell }
 export { TSpan, TRow, Mark, MdSpan, MdRow, CellRow, Col, TextMetrics, StripItem }
 export { PimLine, PimCard, PimField, EvRow, EvCard, Sample, SampleGroup, GlyphRow, InfoGroup }
 
@@ -782,6 +789,86 @@ export component FilesApp inherits Window {
     // FA9: view "audio" (files2-view-audio), under FA7's header (Share, ⋮)
     in property <image> audio-cover;
     in property <bool> audio-has-cover;
+    // FA10: a document (files2-view-docx): Page 0 / Reflow 1, what shows, the whole height and the window's top (px)
+    in property <int> doc-mode: 1;
+    in property <[DText]> doc-texts;
+    in property <[DImage]> doc-images;
+    in property <[DRect]> doc-rects;
+    in property <int> doc-total;
+    in property <int> doc-total-w;
+    in property <int> doc-window-top;
+    in property <color> doc-paper: #f7f5f0;
+    in property <string> doc-info;
+    in property <string> doc-percent;
+    out property <int> doc-view-w: doc-view.view-w;
+    out property <int> doc-view-h: doc-view.view-h;
+    // FA10: a book (files2-view-epub): its page, title, chapter and page, the theme's colours, the controls, Contents
+    in property <[DText]> book-texts;
+    in property <[DImage]> book-images;
+    in property <[DRect]> book-rects;
+    in property <string> book-title;
+    in property <string> book-where;
+    in property <string> book-page;
+    in property <float> book-progress;
+    in property <color> book-paper: #f4ecd8;
+    in property <color> book-muted: #8a7a62;
+    in property <color> book-track: #ddd0b3;
+    in property <color> book-fill: #a0703c;
+    in property <string> book-theme-name: "Sepia";
+    in property <bool> book-controls;
+    in property <bool> book-contents-open;
+    in property <[string]> book-contents;
+    in property <[int]> book-contents-depth;
+    in property <int> book-contents-current;
+    out property <int> book-page-w: book-view.page-w;
+    out property <int> book-page-h: book-view.page-h;
+    callback book-turn(int);
+    callback book-toggle-controls();
+    callback book-control(int);
+    callback book-contents-chosen(int);
+    callback book-contents-closed();
+    // FA10: a workbook (files2-view-xlsx)
+    in property <string> sheet-ref;
+    in property <string> sheet-formula;
+    in property <[DCell]> sheet-cells;
+    in property <[DRect]> sheet-lines;
+    in property <[DCell]> sheet-col-heads;
+    in property <[DCell]> sheet-row-heads;
+    in property <int> sheet-sel-x;
+    in property <int> sheet-sel-y;
+    in property <int> sheet-sel-w;
+    in property <int> sheet-sel-h;
+    in property <int> sheet-total-w;
+    in property <int> sheet-total-h;
+    in property <int> sheet-head-w;
+    in property <int> sheet-head-h;
+    in property <string> sheet-status;
+    in property <string> sheet-sum;
+    in property <string> sheet-note;
+    in property <[string]> sheet-names;
+    in property <int> sheet-index;
+    out property <int> sheet-view-w: sheet-view.view-w;
+    out property <int> sheet-view-h: sheet-view.view-h;
+    callback sheet-scrolled(int, int);
+    callback sheet-tapped(int, int);
+    callback sheet-head-tapped(bool, int);
+    callback sheet-picked(int);
+    public function sheet-scroll-to(x: int, y: int) {
+        sheet-view.scroll-to(x, y);
+    }
+    callback doc-mode-picked(int);
+    callback doc-scrolled(int);
+    callback doc-scrolled-x(int);
+    callback doc-resized(int, int);
+    callback book-resized(int, int);
+    callback sheet-resized(int, int);
+    callback doc-tapped(length, length);
+    public function doc-scroll-to(px: int) {
+        doc-view.scroll-to(px);
+    }
+    public function doc-scroll-x-to(px: int) {
+        doc-view.scroll-x-to(px);
+    }
     in property <string> audio-title;
     in property <string> audio-sub;
     in property <float> audio-pos;
@@ -1024,6 +1111,13 @@ export component FilesApp inherits Window {
     property <bool> listing: root.view == "recent" || root.view == "type" || root.view == "bin" || root.view == "review";
 
     Alphabets { }
+    DocGlyphs { }
+    // FA10: Rust measures a run here to calibrate its advances (doc.rs)
+    in property <string> probe-text;
+    in property <int> probe-px;
+    in property <int> probe-face;
+    out property <length> probe-width: doc-probe.preferred-width;
+    doc-probe := DocProbe { text: root.probe-text; px: root.probe-px; face: root.probe-face; }
 
     VerticalLayout {
         if root.tab-root: Header {
@@ -1216,7 +1310,7 @@ export component FilesApp inherits Window {
             }
         }
         // FA7 (files2-spec-headers): [← name · share · edit (cards and events) · ⋮]
-        if root.view == "vcf" || root.view == "ics" || root.view == "font" || root.view == "cert" || root.view == "app" || root.view == "unknown" || root.view == "audio": SubHeader {
+        if root.view == "vcf" || root.view == "ics" || root.view == "font" || root.view == "cert" || root.view == "app" || root.view == "unknown" || root.view == "audio" || root.view == "doc" || root.view == "book" || root.view == "sheet": SubHeader {
             title: root.name;
             title-font: "DejaVu Sans";
             search: false;
@@ -2225,6 +2319,109 @@ export component FilesApp inherits Window {
                 }
                 seek(v) => {
                     root.audio-seek(v);
+                }
+            }
+            sheet-view := SheetView {
+                visible: root.view == "sheet";
+                ref-name: root.sheet-ref;
+                formula: root.sheet-formula;
+                cells: root.sheet-cells;
+                lines: root.sheet-lines;
+                col-heads: root.sheet-col-heads;
+                row-heads: root.sheet-row-heads;
+                sel-x: root.sheet-sel-x;
+                sel-y: root.sheet-sel-y;
+                sel-w: root.sheet-sel-w;
+                sel-h: root.sheet-sel-h;
+                total-w: root.sheet-total-w;
+                total-h: root.sheet-total-h;
+                head-w: root.sheet-head-w;
+                head-h: root.sheet-head-h;
+                status: root.sheet-status;
+                sum: root.sheet-sum;
+                note: root.sheet-note;
+                sheets: root.sheet-names;
+                sheet: root.sheet-index;
+                scrolled(x, y) => {
+                    root.sheet-scrolled(x, y);
+                }
+                tapped(x, y) => {
+                    root.sheet-tapped(x, y);
+                }
+                head-tapped(col, at) => {
+                    root.sheet-head-tapped(col, at);
+                }
+                sheet-picked(i) => {
+                    root.sheet-picked(i);
+                }
+                resized(w, h) => {
+                    root.sheet-resized(w, h);
+                }
+            }
+            book-view := BookView {
+                visible: root.view == "book";
+                texts: root.book-texts;
+                images: root.book-images;
+                rects: root.book-rects;
+                title: root.book-title;
+                where: root.book-where;
+                page: root.book-page;
+                progress: root.book-progress;
+                paper: root.book-paper;
+                muted: root.book-muted;
+                track: root.book-track;
+                fill: root.book-fill;
+                theme-name: root.book-theme-name;
+                controls: root.book-controls;
+                contents-open: root.book-contents-open;
+                contents: root.book-contents;
+                contents-depth: root.book-contents-depth;
+                contents-current: root.book-contents-current;
+                turn(d) => {
+                    root.book-turn(d);
+                }
+                resized(w, h) => {
+                    root.book-resized(w, h);
+                }
+                toggle-controls => {
+                    root.book-toggle-controls();
+                }
+                control(i) => {
+                    root.book-control(i);
+                }
+                contents-chosen(i) => {
+                    root.book-contents-chosen(i);
+                }
+                contents-closed => {
+                    root.book-contents-closed();
+                }
+            }
+            doc-view := DocView {
+                visible: root.view == "doc";
+                mode: root.doc-mode;
+                texts: root.doc-texts;
+                images: root.doc-images;
+                rects: root.doc-rects;
+                total: root.doc-total;
+                total-w: root.doc-total-w;
+                window-top: root.doc-window-top;
+                paper: root.doc-paper;
+                info: root.doc-info;
+                percent: root.doc-percent;
+                mode-picked(i) => {
+                    root.doc-mode-picked(i);
+                }
+                scrolled(px) => {
+                    root.doc-scrolled(px);
+                }
+                scrolled-x(px) => {
+                    root.doc-scrolled-x(px);
+                }
+                resized(w, h) => {
+                    root.doc-resized(w, h);
+                }
+                tapped(x, y) => {
+                    root.doc-tapped(x, y);
                 }
             }
             if root.view == "unknown": UnknownView {

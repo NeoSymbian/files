@@ -234,6 +234,24 @@ pub fn open<R: ReadAt>(r: R, m: &Member) -> Result<Reader<R>> {
     })
 }
 
+/// A member's whole data, at most `max` bytes ([`Error::TooBig`] past it): the small parts of a document (a docx's
+/// XML, an EPUB chapter), read through [`open`]'s checks.
+pub fn read_member<R: ReadAt>(r: R, m: &Member, max: u64) -> Result<Vec<u8>> {
+    if m.size > max {
+        return Err(Error::TooBig);
+    }
+    let mut s = open(r, m)?;
+    let mut out = Vec::with_capacity(m.size as usize);
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = s.read(&mut buf)?;
+        if n == 0 {
+            return Ok(out);
+        }
+        out.extend_from_slice(&buf[..n]);
+    }
+}
+
 impl<R: ReadAt> Stream for Reader<R> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         let n = match &mut self.body {

@@ -81,6 +81,12 @@ enum Kind {
     Fixed,
     /// FA9's player (audio.rs keeps its state).
     Audio,
+    /// FA10's document viewer (doc.rs keeps its state).
+    Doc,
+    /// FA10's reader (book.rs keeps its state).
+    Book,
+    /// FA10's grid (sheet.rs keeps its state).
+    Sheet,
     Hex,
 }
 
@@ -111,8 +117,8 @@ enum Form {
 
 pub(crate) struct Open7 {
     pub path: String,
-    name: String,
-    size: u64,
+    pub(crate) name: String,
+    pub(crate) size: u64,
     from: View,
     kind: Kind,
     form: Option<Form>,
@@ -170,7 +176,7 @@ pub(crate) fn bind(
     ui.on_hex_as_text(move || p(Act::HexAsText));
 }
 
-fn read(st: &State, path: &str, size: u64, max: u64) -> Result<Vec<u8>, String> {
+pub(crate) fn read(st: &State, path: &str, size: u64, max: u64) -> Result<Vec<u8>, String> {
     if size > max {
         return Err(format!(
             "It is too big to show ({})",
@@ -241,6 +247,18 @@ pub(crate) fn open(app: &App, ui: &FilesApp, st: &mut State, path: &str) {
     };
     let ext = neo_view::ext_of(&o.name).to_ascii_lowercase();
     let r = match neo_view::family_of(&o.name) {
+        _ if crate::doc::is_doc(&o.name) => {
+            o.kind = Kind::Doc;
+            crate::doc::open(ui, st, &o)
+        }
+        _ if crate::sheet::is_sheet(&o.name) => {
+            o.kind = Kind::Sheet;
+            crate::sheet::open(ui, st, &o)
+        }
+        _ if crate::book::is_book(&o.name) => {
+            o.kind = Kind::Book;
+            crate::book::open(app, ui, st, &o)
+        }
         Family::Contact => cards(st, &mut o, &ext),
         Family::Font => font(ui, st, &mut o),
         Family::Cert => certificate(ui, st, &mut o),
@@ -272,7 +290,11 @@ pub(crate) fn back(app: &App, ui: &FilesApp, st: &mut State) {
     if st.fa7.as_ref().is_some_and(|o| o.form.is_some()) {
         return cancel(app, ui, st);
     }
+    if crate::book::back(ui, st) {
+        return;
+    }
     crate::audio::close(st);
+    crate::doc::close_all(st);
     let from = st.fa7.take().map_or(View::Folder, |o| o.from);
     return_to(app, ui, st, from);
 }
@@ -384,6 +406,9 @@ fn menu(app: &App, ui: &FilesApp, st: &mut State, m: &str) {
     let Some(path) = st.fa7.as_ref().map(|o| o.path.clone()) else {
         return;
     };
+    if crate::book::menu(app, ui, st, m) {
+        return;
+    }
     match m {
         "Show as hex…" => hex(app, ui, st, ""),
         "Open with…" => crate::fa8::open_with(ui, st, path),
@@ -398,6 +423,15 @@ fn show(app: &App, ui: &FilesApp, st: &mut State) {
     let hexing = matches!(o.kind, Kind::Hex);
     ui.set_fa7_menu(strs(if hexing {
         &["Open with…", "Details"]
+    } else if matches!(o.kind, Kind::Book) {
+        &[
+            "Contents",
+            "Text size",
+            "Theme",
+            "Show as hex…",
+            "Open with…",
+            "Details",
+        ]
     } else {
         &["Show as hex…", "Open with…", "Details"]
     }));
@@ -1162,6 +1196,7 @@ fn package(ui: &FilesApp, st: &State, o: &mut Open7, ext: &str) -> Result<&'stat
 /// Show as hex…).
 fn hex(app: &App, ui: &FilesApp, st: &mut State, why: &str) {
     crate::audio::close(st);
+    crate::doc::close_all(st);
     let Some(o) = st.fa7.as_mut() else { return };
     let had_viewer = !matches!(o.kind, Kind::Hex);
     o.kind = Kind::Hex;
