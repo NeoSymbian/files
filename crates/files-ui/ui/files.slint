@@ -29,9 +29,9 @@ import { TSpan, TRow, Mark, TextPane, TextMetrics } from "text.slint";
 import { PackItem, WayRow, JobCard, ArchiveBar, ViewOnly, CompressForm, FolderPicker } from "fa6.slint";
 import { PimLine, PimCard, PimField, EvRow, EvCard, Sample, SampleGroup, GlyphRow, InfoGroup, VcfView, VcfEdit, IcsView, IcsEdit, FontView, CertView, AppView, UnknownView } from "fa7.slint";
 import { AudioView } from "audio.slint";
-import { DText, DImage, DRect, DocItems, DocProbe, DocView, BookView } from "doc.slint";
+import { DText, DImage, DRect, DCell, DocItems, DocProbe, DocView, BookView, SheetView } from "doc.slint";
 import { MdSpan, MdRow, CellRow, Col, CodeKeys, StatusLine, FindBar, Segments, MdView, TableGrid, CellBar, TypeChips } from "editor.slint";
-export { DText, DImage, DRect }
+export { DText, DImage, DRect, DCell }
 export { TSpan, TRow, Mark, MdSpan, MdRow, CellRow, Col, TextMetrics, StripItem }
 export { PimLine, PimCard, PimField, EvRow, EvCard, Sample, SampleGroup, GlyphRow, InfoGroup }
 
@@ -827,6 +827,35 @@ export component FilesApp inherits Window {
     callback book-control(int);
     callback book-contents-chosen(int);
     callback book-contents-closed();
+    // FA10: a workbook (files2-view-xlsx)
+    in property <string> sheet-ref;
+    in property <string> sheet-formula;
+    in property <[DCell]> sheet-cells;
+    in property <[DRect]> sheet-lines;
+    in property <[DCell]> sheet-col-heads;
+    in property <[DCell]> sheet-row-heads;
+    in property <int> sheet-sel-x;
+    in property <int> sheet-sel-y;
+    in property <int> sheet-sel-w;
+    in property <int> sheet-sel-h;
+    in property <int> sheet-total-w;
+    in property <int> sheet-total-h;
+    in property <int> sheet-head-w;
+    in property <int> sheet-head-h;
+    in property <string> sheet-status;
+    in property <string> sheet-sum;
+    in property <string> sheet-note;
+    in property <[string]> sheet-names;
+    in property <int> sheet-index;
+    out property <int> sheet-view-w: sheet-view.view-w;
+    out property <int> sheet-view-h: sheet-view.view-h;
+    callback sheet-scrolled(int, int);
+    callback sheet-tapped(int, int);
+    callback sheet-head-tapped(bool, int);
+    callback sheet-picked(int);
+    public function sheet-scroll-to(x: int, y: int) {
+        sheet-view.scroll-to(x, y);
+    }
     callback doc-mode-picked(int);
     callback doc-scrolled(int);
     callback doc-scrolled-x(int);
@@ -1278,7 +1307,7 @@ export component FilesApp inherits Window {
             }
         }
         // FA7 (files2-spec-headers): [← name · share · edit (cards and events) · ⋮]
-        if root.view == "vcf" || root.view == "ics" || root.view == "font" || root.view == "cert" || root.view == "app" || root.view == "unknown" || root.view == "audio" || root.view == "doc" || root.view == "book": SubHeader {
+        if root.view == "vcf" || root.view == "ics" || root.view == "font" || root.view == "cert" || root.view == "app" || root.view == "unknown" || root.view == "audio" || root.view == "doc" || root.view == "book" || root.view == "sheet": SubHeader {
             title: root.name;
             title-font: "DejaVu Sans";
             search: false;
@@ -2287,6 +2316,40 @@ export component FilesApp inherits Window {
                 }
                 seek(v) => {
                     root.audio-seek(v);
+                }
+            }
+            sheet-view := SheetView {
+                visible: root.view == "sheet";
+                ref-name: root.sheet-ref;
+                formula: root.sheet-formula;
+                cells: root.sheet-cells;
+                lines: root.sheet-lines;
+                col-heads: root.sheet-col-heads;
+                row-heads: root.sheet-row-heads;
+                sel-x: root.sheet-sel-x;
+                sel-y: root.sheet-sel-y;
+                sel-w: root.sheet-sel-w;
+                sel-h: root.sheet-sel-h;
+                total-w: root.sheet-total-w;
+                total-h: root.sheet-total-h;
+                head-w: root.sheet-head-w;
+                head-h: root.sheet-head-h;
+                status: root.sheet-status;
+                sum: root.sheet-sum;
+                note: root.sheet-note;
+                sheets: root.sheet-names;
+                sheet: root.sheet-index;
+                scrolled(x, y) => {
+                    root.sheet-scrolled(x, y);
+                }
+                tapped(x, y) => {
+                    root.sheet-tapped(x, y);
+                }
+                head-tapped(col, at) => {
+                    root.sheet-head-tapped(col, at);
+                }
+                sheet-picked(i) => {
+                    root.sheet-picked(i);
                 }
             }
             book-view := BookView {

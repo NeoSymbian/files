@@ -381,7 +381,7 @@ pub(crate) fn test_files(st: &State) {
     if st.fs.entry(&format!("{DIR}plan-hy.docx")).is_ok() {
         return;
     }
-    let files: [(&str, &[u8]); 8] = [
+    let files: [(&str, &[u8]); 9] = [
         (
             "plan-hy.docx",
             include_bytes!("../../../crates/neo-format-document/tests/data/plan-hy.docx"),
@@ -409,6 +409,10 @@ pub(crate) fn test_files(st: &State) {
         (
             "drm.epub",
             include_bytes!("../../../crates/neo-format-document/tests/data/drm.epub"),
+        ),
+        (
+            "Бюджет 2026.xlsx",
+            include_bytes!("../../../crates/neo-format-document/tests/data/budget-ru.xlsx"),
         ),
         (
             "tu-plan.rtf",

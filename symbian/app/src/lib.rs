@@ -24,6 +24,7 @@ mod image;
 mod job;
 mod pics;
 mod scan;
+mod sheet;
 
 use alloc::collections::VecDeque;
 use alloc::format;
@@ -173,6 +174,7 @@ enum Action {
     // FA10
     Doc(doc::Act),
     Book(book::Act),
+    Sheet(sheet::Act),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -321,6 +323,7 @@ struct State {
     // FA10
     doc: Option<doc::Open>,
     book: Option<book::Open>,
+    workbook: Option<sheet::Open>,
     /// The book page counter (a worker, started with the first book).
     counter: Option<&'static book::Counter>,
     /// The document faces' advances, calibrated against Slint on the first document.
@@ -403,6 +406,7 @@ fn run() -> Result<(), i32> {
         audio: audio::Audio::new(),
         doc: None,
         book: None,
+        workbook: None,
         counter: book::Counter::new().ok(),
         fonts: None,
         doc_n: 0,
@@ -738,6 +742,7 @@ fn bind(ui: &FilesApp, actions: &Rc<RefCell<VecDeque<Action>>>) {
     audio::bind(ui, actions);
     doc::bind(ui, actions);
     book::bind(ui, actions);
+    sheet::bind(ui, actions);
     {
         let q = actions.clone();
         ui.on_group_picked(move |g, i| {
@@ -885,6 +890,7 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
         Action::Audio(a) => audio::act(app, ui, st, a),
         Action::Doc(a) => doc::act(ui, st, a),
         Action::Book(a) => book::act(app, ui, st, a),
+        Action::Sheet(a) => sheet::act(ui, st, a),
         Action::Edit if st.view == View::Fa7 => fa7::edit(ui, st),
         Action::Row(i) if st.view == View::Folder => {
             let Some(item) = st.items.get(i).cloned() else {

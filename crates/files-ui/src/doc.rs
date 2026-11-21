@@ -725,3 +725,368 @@ pub fn show_book(ui: &crate::FilesApp, r: &BookReader, image: impl Fn(usize) -> 
     ui.set_book_contents_depth(ModelRc::new(VecModel::from(depths)));
     ui.set_book_contents_current(r.toc_current() as i32);
 }
+
+// ── workbooks (files2-view-xlsx) ─────────────────────────────────────────────────────────────────────────────────
+
+use crate::DCell;
+use neo_format_document::xlsx::{self, Sheet, Value, Workbook};
+
+/// What the grid draws: cells, lines, the column letters, the row numbers, and the selection (x, y, w, h).
+pub type SheetModels = (
+    Vec<DCell>,
+    Vec<DRect>,
+    Vec<DCell>,
+    Vec<DCell>,
+    (i32, i32, i32, i32),
+);
+
+/// The grid's sizes, dp: a character of a column's width, a row, the header row.
+const CHAR_DP: f32 = 6.0;
+const ROW_DP: f32 = 29.0;
+
+/// A workbook in the grid: the sheet in hand, the selection, a window of cells around the scroll position.
+pub struct SheetViewer {
+    pub wb: Workbook,
+    pub index: usize,
+    /// `None` for a chartsheet.
+    pub sheet: Option<Sheet>,
+    /// (first row, first col, last row, last col), inclusive.
+    pub sel: (u32, u32, u32, u32),
+    dp: f32,
+    view: (i32, i32),
+    /// Column edges, px (one more than the columns).
+    xs: Vec<i32>,
+    row_h: i32,
+    rows: u32,
+    /// The window: rows and columns drawn.
+    win: (u32, u32, u32, u32),
+    pub scroll: (i32, i32),
+}
+
+impl SheetViewer {
+    pub fn new(wb: Workbook, dp: f32) -> Self {
+        SheetViewer {
+            wb,
+            index: 0,
+            sheet: None,
+            sel: (0, 0, 0, 0),
+            dp,
+            view: (0, 0),
+            xs: Vec::new(),
+            row_h: 0,
+            rows: 0,
+            win: (0, 0, 0, 0),
+            scroll: (0, 0),
+        }
+    }
+
+    /// Sheet `i` in hand (or `None`: a chartsheet), its first cell selected, for a grid of `w` × `h` px.
+    pub fn set_sheet(&mut self, i: usize, sheet: Option<Sheet>, w: i32, h: i32) {
+        self.index = i;
+        self.sheet = sheet;
+        self.sel = (0, 0, 0, 0);
+        self.scroll = (0, 0);
+        self.view = (w.max(100), h.max(100));
+        self.row_h = (ROW_DP * self.dp) as i32;
+        let (rows, cols) = self.sheet.as_ref().map_or((0, 0), |s| (s.rows, s.cols));
+        let min_w = (24.0 * self.dp) as i32;
+        let mut xs = alloc::vec![0];
+        let mut c = 0;
+        // the columns used, then enough empty ones to fill the view
+        while c < cols.max(1) || *xs.last().unwrap_or(&0) < self.view.0 {
+            let w = self.sheet.as_ref().map_or(8.43, |s| s.width(c));
+            let px = ((w * CHAR_DP * self.dp) as i32).max(min_w);
+            xs.push(xs.last().unwrap_or(&0) + px);
+            c += 1;
+            if c >= 16_384 {
+                break;
+            }
+        }
+        self.xs = xs;
+        self.rows = rows.max((self.view.1 / self.row_h.max(1)) as u32 + 1);
+        self.win = (u32::MAX, 0, 0, 0);
+        self.window();
+    }
+
+    pub fn cols(&self) -> u32 {
+        self.xs.len() as u32 - 1
+    }
+
+    pub fn total(&self) -> (i32, i32) {
+        (*self.xs.last().unwrap_or(&0), self.rows as i32 * self.row_h)
+    }
+
+    /// The row numbers' width: the digits of the last row.
+    pub fn head(&self) -> (i32, i32) {
+        let digits = self.rows.max(1).ilog10() as f32 + 1.0;
+        (
+            ((8.0 + 7.0 * digits) * self.dp).max(26.0 * self.dp) as i32,
+            self.row_h,
+        )
+    }
+
+    fn col_at(&self, x: i32) -> u32 {
+        (self.xs.partition_point(|e| *e <= x).saturating_sub(1) as u32)
+            .min(self.cols().saturating_sub(1))
+    }
+
+    fn row_at(&self, y: i32) -> u32 {
+        ((y.max(0) / self.row_h.max(1)) as u32).min(self.rows.saturating_sub(1))
+    }
+
+    /// Scrolled to (x, y): whether the window must move.
+    pub fn scrolled(&mut self, x: i32, y: i32) -> bool {
+        self.scroll = (x.max(0), y.max(0));
+        let (r0, r1, c0, c1) = (
+            self.row_at(y),
+            self.row_at(y + self.view.1),
+            self.col_at(x),
+            self.col_at(x + self.view.0),
+        );
+        if self.win.0 != u32::MAX
+            && r0 >= self.win.0
+            && r1 <= self.win.1
+            && c0 >= self.win.2
+            && c1 <= self.win.3
+        {
+            return false;
+        }
+        self.window();
+        true
+    }
+
+    fn window(&mut self) {
+        let (x, y) = self.scroll;
+        let (vw, vh) = self.view;
+        let r0 = self.row_at(y - vh);
+        let r1 = self.row_at(y + 2 * vh);
+        let c0 = self.col_at(x - vw);
+        let c1 = self.col_at(x + 2 * vw);
+        self.win = (r0, r1, c0, c1);
+    }
+
+    /// The cell at (x, y) px in the grid selected.
+    pub fn tap(&mut self, x: i32, y: i32) {
+        let (r, c) = (self.row_at(y), self.col_at(x));
+        // a tap on a merged area selects the merge
+        let m = self.sheet.as_ref().and_then(|s| {
+            s.merges
+                .iter()
+                .find(|m| m.0 <= r && r <= m.2 && m.1 <= c && c <= m.3)
+                .copied()
+        });
+        self.sel = m.unwrap_or((r, c, r, c));
+    }
+
+    /// A column letter (or a row number) tapped: the whole column (row) selected.
+    pub fn head_tap(&mut self, column: bool, at: i32) {
+        let last_r = self.sheet.as_ref().map_or(0, |s| s.rows.saturating_sub(1));
+        let last_c = self.sheet.as_ref().map_or(0, |s| s.cols.saturating_sub(1));
+        self.sel = if column {
+            let c = self.col_at(at);
+            (0, c, last_r, c)
+        } else {
+            let r = self.row_at(at);
+            (r, 0, r, last_c)
+        };
+    }
+
+    /// "E7", or "B2:E6".
+    pub fn ref_name(&self) -> String {
+        let (r0, c0, r1, c1) = self.sel;
+        let one = |r: u32, c: u32| alloc::format!("{}{}", xlsx::col_name(c), r + 1);
+        if (r0, c0) == (r1, c1) {
+            one(r0, c0)
+        } else {
+            alloc::format!("{}:{}", one(r0, c0), one(r1, c1))
+        }
+    }
+
+    /// The formula bar: the selected cell's formula or value.
+    pub fn formula(&self) -> String {
+        let (r0, c0, ..) = self.sel;
+        self.sheet
+            .as_ref()
+            .and_then(|s| s.get(r0, c0))
+            .map(|c| xlsx::formula_bar(&self.wb, c))
+            .unwrap_or_default()
+    }
+
+    /// "Sum 1 038 500": the numbers in the selection (none: nothing).
+    pub fn sum(&self) -> String {
+        let Some(s) = self.sheet.as_ref() else {
+            return String::new();
+        };
+        let (r0, c0, r1, c1) = self.sel;
+        let (mut sum, mut n) = (0.0f64, 0);
+        for c in s.rows_in(r0, r1 + 1) {
+            if (c0..=c1).contains(&c.col)
+                && let Value::Num(v) = c.value
+            {
+                sum += v;
+                n += 1;
+            }
+        }
+        if n == 0 {
+            return String::new();
+        }
+        let whole = sum == (sum as i64) as f64;
+        alloc::format!(
+            "Sum {}",
+            xlsx::number(sum, if whole { "#,##0" } else { "#,##0.00" }, false)
+        )
+    }
+
+    pub fn status(&self) -> String {
+        let n = self.wb.sheets.len();
+        let mut s = alloc::format!(
+            "Read-only · {n} {}",
+            if n == 1 { "sheet" } else { "sheets" }
+        );
+        if self.sheet.as_ref().is_some_and(|s| s.truncated) {
+            s.push_str(" · the first 200,000 cells");
+        }
+        s
+    }
+
+    /// The window's cells, lines and headers, and the selection's rectangle, px in the grid.
+    pub fn models(&self) -> SheetModels {
+        let (r0, r1, c0, c1) = self.win;
+        let (r0, r1, c0, c1) = if r0 == u32::MAX {
+            (0, 0, 0, 0)
+        } else {
+            (r0, r1, c0, c1)
+        };
+        let rh = self.row_h;
+        let x_of = |c: u32| self.xs[(c as usize).min(self.xs.len() - 1)];
+        let mut cells = Vec::new();
+        if let Some(s) = &self.sheet {
+            for c in s.rows_in(r0, r1 + 1) {
+                if c.col < c0 || c.col > c1 {
+                    continue;
+                }
+                let (w, h) = match s.merge_at(c.row, c.col) {
+                    Some(None) => continue,
+                    Some(Some((er, ec))) => {
+                        (x_of(ec + 1) - x_of(c.col), (er - c.row + 1) as i32 * rh)
+                    }
+                    None => (x_of(c.col + 1) - x_of(c.col), rh),
+                };
+                let text = xlsx::display(&self.wb, c);
+                if text.is_empty() {
+                    continue;
+                }
+                let align = match (&c.value, s.merge_at(c.row, c.col)) {
+                    (_, Some(Some(_))) => 2,
+                    (Value::Num(_), _) => 1,
+                    (Value::Bool(_) | Value::Error(_), _) => 2,
+                    _ => 0,
+                };
+                let bold = self.wb.bold.get(c.style as usize).copied().unwrap_or(false);
+                cells.push(DCell {
+                    x: x_of(c.col),
+                    y: c.row as i32 * rh,
+                    w,
+                    h,
+                    text: text.as_str().into(),
+                    align,
+                    bold,
+                });
+            }
+        }
+        // grid lines over the window
+        let line = (self.dp / 3.0).max(1.0) as i32;
+        let ink = colour(0x242629);
+        let (top, bottom) = (r0 as i32 * rh, (r1 + 1) as i32 * rh);
+        let (left, right) = (x_of(c0), x_of(c1 + 1));
+        let mut lines = Vec::new();
+        for c in c0..=c1 + 1 {
+            lines.push(DRect {
+                x: x_of(c) - line,
+                y: top,
+                w: line,
+                h: bottom - top,
+                colour: ink,
+            });
+        }
+        for r in r0..=r1 + 1 {
+            lines.push(DRect {
+                x: left,
+                y: r as i32 * rh - line,
+                w: right - left,
+                h: line,
+                colour: ink,
+            });
+        }
+        let cols: Vec<DCell> = (c0..=c1)
+            .map(|c| DCell {
+                x: x_of(c),
+                y: 0,
+                w: x_of(c + 1) - x_of(c),
+                h: rh,
+                text: xlsx::col_name(c).as_str().into(),
+                align: 2,
+                bold: true,
+            })
+            .collect();
+        let hw = self.head().0;
+        let rows: Vec<DCell> = (r0..=r1)
+            .map(|r| DCell {
+                x: 0,
+                y: r as i32 * rh,
+                w: hw,
+                h: rh,
+                text: alloc::format!("{}", r + 1).as_str().into(),
+                align: 2,
+                bold: true,
+            })
+            .collect();
+        let (sr0, sc0, sr1, sc1) = self.sel;
+        let sel = if self.sheet.is_some() {
+            (
+                x_of(sc0),
+                sr0 as i32 * rh,
+                x_of(sc1 + 1) - x_of(sc0),
+                (sr1 - sr0 + 1) as i32 * rh,
+            )
+        } else {
+            (0, 0, 0, 0)
+        };
+        (cells, lines, cols, rows, sel)
+    }
+}
+
+/// Put the sheet on the screen (view "sheet").
+pub fn show_sheet(ui: &crate::FilesApp, v: &SheetViewer) {
+    let (cells, lines, cols, rows, sel) = v.models();
+    ui.set_sheet_cells(ModelRc::new(VecModel::from(cells)));
+    ui.set_sheet_lines(ModelRc::new(VecModel::from(lines)));
+    ui.set_sheet_col_heads(ModelRc::new(VecModel::from(cols)));
+    ui.set_sheet_row_heads(ModelRc::new(VecModel::from(rows)));
+    ui.set_sheet_sel_x(sel.0);
+    ui.set_sheet_sel_y(sel.1);
+    ui.set_sheet_sel_w(sel.2);
+    ui.set_sheet_sel_h(sel.3);
+    let (tw, th) = v.total();
+    ui.set_sheet_total_w(tw);
+    ui.set_sheet_total_h(th);
+    let (hw, hh) = v.head();
+    ui.set_sheet_head_w(hw);
+    ui.set_sheet_head_h(hh);
+    ui.set_sheet_ref(v.ref_name().into());
+    ui.set_sheet_formula(v.formula().into());
+    ui.set_sheet_status(v.status().into());
+    ui.set_sheet_sum(v.sum().into());
+    ui.set_sheet_note(
+        if v.sheet.is_none() {
+            "Charts aren't shown"
+        } else {
+            ""
+        }
+        .into(),
+    );
+    let names: Vec<slint::SharedString> =
+        v.wb.sheets.iter().map(|s| s.name.as_str().into()).collect();
+    ui.set_sheet_names(ModelRc::new(VecModel::from(names)));
+    ui.set_sheet_index(v.index as i32);
+}

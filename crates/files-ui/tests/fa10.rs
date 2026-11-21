@@ -21,6 +21,49 @@ fn fa10() {
     layout_widths_are_slints(&s);
     docx_boards(&s);
     epub_boards(&s);
+    xlsx_boards(&s);
+    let _ = std::fs::remove_file(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../snapshots/_doc_warmup.png"),
+    );
+}
+
+fn xlsx_boards(s: &common::Shot) {
+    use files_ui::doc::{SheetViewer, show_sheet};
+    use neo_format_document::{Package, xlsx};
+    let ui = &s.ui;
+    let file = fixture("budget-ru.xlsx");
+    let p = Package::open(&file[..]).unwrap();
+    let wb = xlsx::open(&p).unwrap();
+    ui.set_view("sheet".into());
+    ui.set_name("Бюджет 2026.xlsx".into());
+    ui.set_fa7_menu(common::strings(&["Show as hex…", "Open with…", "Details"]));
+    s.shoot("_doc_warmup");
+    let mut v = SheetViewer::new(wb.clone(), common::DP);
+    let sheet = xlsx::sheet(&p, &wb, 0).unwrap();
+    v.set_sheet(0, Some(sheet), ui.get_sheet_view_w(), ui.get_sheet_view_h());
+    // E7, as the board selects it: the middle of the cell
+    let (x, y) = {
+        let (cells, ..) = v.models();
+        let e7 = cells
+            .iter()
+            .find(|c| c.text.as_str() == "1\u{a0}038\u{a0}500")
+            .unwrap();
+        (e7.x + e7.w / 2, e7.y + e7.h / 2)
+    };
+    v.tap(x, y);
+    assert_eq!(v.ref_name(), "E7");
+    assert_eq!(v.formula(), "=SUM(E2:E6)");
+    assert_eq!(v.sum(), "Sum 1\u{a0}038\u{a0}500");
+    show_sheet(ui, &v);
+    s.shoot("files2-view-xlsx");
+    // a row's number selects the row: its sum
+    v.head_tap(false, y);
+    assert_eq!(v.ref_name(), "A7:E7");
+    assert_eq!(v.sum(), "Sum 2\u{a0}077\u{a0}000");
+    // the chartsheet
+    v.set_sheet(3, None, ui.get_sheet_view_w(), ui.get_sheet_view_h());
+    show_sheet(ui, &v);
+    s.shoot("files2-view-xlsx-chart");
 }
 
 fn epub_boards(s: &common::Shot) {

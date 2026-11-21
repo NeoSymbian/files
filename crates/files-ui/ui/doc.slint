@@ -474,3 +474,298 @@ export component BookView inherits Rectangle {
         }
     }
 }
+
+// a cell (or a header) at its place in the grid, px; align 0 start, 1 end, 2 centre
+export struct DCell { x: int, y: int, w: int, h: int, text: string, align: int, bold: bool }
+
+component GridCell inherits Rectangle {
+    in property <DCell> c;
+    // headers draw their own lines; the cells' come from the grid's line model
+    in property <bool> lines: true;
+    in property <color> ink: #ffffff;
+    in property <color> ground: transparent;
+    x: c.x * 1px;
+    y: c.y * 1px;
+    width: c.w * 1px;
+    height: c.h * 1px;
+    background: root.ground;
+    Text {
+        x: 4 * Theme.dp;
+        width: parent.width - 8 * Theme.dp;
+        height: parent.height;
+        text: root.c.text;
+        color: root.ink;
+        font-family: "NeoDoc";
+        font-size: 12 * Theme.dp;
+        font-weight: root.c.bold ? 700 : 400;
+        overflow: elide;
+        vertical-alignment: center;
+        horizontal-alignment: root.c.align == 1 ? right : root.c.align == 2 ? center : left;
+    }
+
+    if root.lines: Rectangle {
+        x: parent.width - self.width;
+        width: max(1px, Theme.dp / 3);
+        background: #ffffff14;
+    }
+
+    if root.lines: Rectangle {
+        y: parent.height - self.height;
+        height: max(1px, Theme.dp / 3);
+        background: #ffffff14;
+    }
+}
+
+// files2-view-xlsx: the cell's name and its formula (or value), the grid with frozen column letters and row numbers,
+// the selection, Read-only · n sheets and the selection's sum, and the sheet tabs. Rust lays out the window of cells
+// around the scroll position; taps on a cell, a letter or a number select.
+export component SheetView inherits Rectangle {
+    in property <string> ref-name;
+    in property <string> formula;
+    in property <[DCell]> cells;
+    in property <[DRect]> lines;
+    in property <[DCell]> col-heads;
+    in property <[DCell]> row-heads;
+    // the selection, px in the grid
+    in property <int> sel-x;
+    in property <int> sel-y;
+    in property <int> sel-w;
+    in property <int> sel-h;
+    in property <int> total-w;
+    in property <int> total-h;
+    in property <int> head-w;
+    in property <int> head-h;
+    in property <string> status;
+    in property <string> sum;
+    in property <string> note;
+    in property <[string]> sheets;
+    in property <int> sheet;
+    out property <int> view-w: flick.width / 1px;
+    out property <int> view-h: flick.height / 1px;
+    callback scrolled(int, int);
+    callback tapped(int, int);
+    callback head-tapped(bool, int);
+    callback sheet-picked(int);
+    public function scroll-to(x: int, y: int) {
+        flick.content-x = -x * 1px;
+        flick.content-y = -y * 1px;
+    }
+    background: #000000;
+    property <length> sx: -flick.content-x;
+    property <length> sy: -flick.content-y;
+    VerticalLayout {
+        Rectangle {
+            height: 40 * Theme.dp;
+            HorizontalLayout {
+                padding-left: 12 * Theme.dp;
+                padding-right: 12 * Theme.dp;
+                spacing: 10 * Theme.dp;
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        height: 26 * Theme.dp;
+                        width: max(34 * Theme.dp, name.preferred-width + 12 * Theme.dp);
+                        border-radius: 6 * Theme.dp;
+                        background: #1d2025;
+                        name := Text {
+                            text: root.ref-name;
+                            color: #ffffff;
+                            font-size: 12.5 * Theme.dp;
+                            font-weight: 600;
+                        }
+                    }
+                }
+
+                Text {
+                    text: "fx";
+                    color: #7d838c;
+                    font-italic: true;
+                    font-size: 13 * Theme.dp;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.formula;
+                    color: #b9bec7;
+                    font-family: "NeoDoc";
+                    font-size: 13 * Theme.dp;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle {
+                y: parent.height - self.height;
+                height: max(1px, Theme.dp / 3);
+                background: #ffffff12;
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+            // the cells
+            Rectangle {
+                x: root.head-w * 1px;
+                y: root.head-h * 1px;
+                width: parent.width - self.x;
+                height: parent.height - self.y;
+                clip: true;
+                flick := Flickable {
+                    content-width: max(self.width, root.total-w * 1px);
+                    content-height: max(self.height, root.total-h * 1px);
+                    changed content-x => {
+                        root.scrolled(-self.content-x / 1px, -self.content-y / 1px);
+                    }
+                    changed content-y => {
+                        root.scrolled(-self.content-x / 1px, -self.content-y / 1px);
+                    }
+                    for l in root.lines: Rectangle {
+                        x: l.x * 1px;
+                        y: l.y * 1px;
+                        width: l.w * 1px;
+                        height: l.h * 1px;
+                        background: l.colour;
+                    }
+                    for c in root.cells: GridCell {
+                        c: c;
+                        lines: false;
+                    }
+                    if root.sel-w > 0: Rectangle {
+                        x: root.sel-x * 1px;
+                        y: root.sel-y * 1px;
+                        width: root.sel-w * 1px;
+                        height: root.sel-h * 1px;
+                        background: #3d8bfd1f;
+                        border-width: 2 * Theme.dp / 1.5;
+                        border-color: #3d8bfd;
+                    }
+                    TouchArea {
+                        clicked => {
+                            root.tapped(self.mouse-x / 1px, self.mouse-y / 1px);
+                        }
+                    }
+                }
+
+                if root.note != "": Text {
+                    text: root.note;
+                    color: #7d838c;
+                    font-size: 14 * Theme.dp;
+                }
+            }
+
+            // the letters, moving with the cells across
+            Rectangle {
+                x: root.head-w * 1px;
+                y: 0;
+                height: root.head-h * 1px;
+                width: parent.width - self.x;
+                clip: true;
+                background: #1a1d22;
+                for c in root.col-heads: GridCell {
+                    c: { x: c.x - root.sx / 1px, y: c.y, w: c.w, h: c.h, text: c.text, align: c.align, bold: c.bold };
+                    ink: #7d838c;
+                }
+                TouchArea {
+                    clicked => {
+                        root.head-tapped(true, (self.mouse-x + root.sx) / 1px);
+                    }
+                }
+            }
+
+            // the numbers, moving with the cells down
+            Rectangle {
+                x: 0;
+                y: root.head-h * 1px;
+                width: root.head-w * 1px;
+                height: parent.height - self.y;
+                clip: true;
+                background: #1a1d22;
+                for c in root.row-heads: GridCell {
+                    c: { x: c.x, y: c.y - root.sy / 1px, w: c.w, h: c.h, text: c.text, align: c.align, bold: c.bold };
+                    ink: #7d838c;
+                }
+                TouchArea {
+                    clicked => {
+                        root.head-tapped(false, (self.mouse-y + root.sy) / 1px);
+                    }
+                }
+            }
+
+            Rectangle {
+                x: 0;
+                y: 0;
+                width: root.head-w * 1px;
+                height: root.head-h * 1px;
+                background: #1a1d22;
+            }
+        }
+
+        Rectangle {
+            height: 30 * Theme.dp;
+            Rectangle {
+                y: 0;
+                height: max(1px, Theme.dp / 3);
+                background: #ffffff12;
+            }
+
+            HorizontalLayout {
+                padding-left: 12 * Theme.dp;
+                padding-right: 12 * Theme.dp;
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.status;
+                    color: #7d838c;
+                    font-size: 12.5 * Theme.dp;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: root.sum;
+                    color: #7d838c;
+                    font-family: "NeoDoc";
+                    font-size: 12.5 * Theme.dp;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        Rectangle {
+            height: 44 * Theme.dp;
+            background: #0b0c0e;
+            Rectangle {
+                y: 0;
+                height: max(1px, Theme.dp / 3);
+                background: #ffffff12;
+            }
+
+            Flickable {
+                content-width: tabs.preferred-width;
+                tabs := HorizontalLayout {
+                    for s[i] in root.sheets: Rectangle {
+                        width: t.preferred-width + 28 * Theme.dp;
+                        t := Text {
+                            text: s;
+                            color: i == root.sheet ? #ffffff : #b9bec7;
+                            font-family: "NeoDoc";
+                            font-size: 14 * Theme.dp;
+                            font-weight: i == root.sheet ? 700 : 400;
+                        }
+
+                        if i == root.sheet: Rectangle {
+                            y: parent.height - self.height;
+                            height: 3 * Theme.dp;
+                            background: #3d8bfd;
+                        }
+                        TouchArea {
+                            clicked => {
+                                root.sheet-picked(i);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

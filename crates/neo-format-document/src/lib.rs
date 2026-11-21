@@ -13,6 +13,7 @@ pub mod layout;
 pub mod model;
 pub mod odt;
 pub mod rtf;
+pub mod xlsx;
 pub mod xml;
 
 pub use model::*;

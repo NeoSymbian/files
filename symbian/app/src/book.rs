@@ -280,7 +280,11 @@ pub(crate) fn act(app: &App, ui: &FilesApp, st: &mut State, a: Act) {
     match a {
         Act::Turn(d) => {
             b.controls = false;
-            let t = if d > 0 { b.r.next_page() } else { b.r.prev_page() };
+            let t = if d > 0 {
+                b.r.next_page()
+            } else {
+                b.r.prev_page()
+            };
             match t {
                 Turn::Page => refresh(ui, st),
                 Turn::Chapter(i, end) => go(ui, st, i, end, None),

@@ -85,6 +85,8 @@ enum Kind {
     Doc,
     /// FA10's reader (book.rs keeps its state).
     Book,
+    /// FA10's grid (sheet.rs keeps its state).
+    Sheet,
     Hex,
 }
 
@@ -249,6 +251,10 @@ pub(crate) fn open(app: &App, ui: &FilesApp, st: &mut State, path: &str) {
             o.kind = Kind::Doc;
             crate::doc::open(ui, st, &o)
         }
+        _ if crate::sheet::is_sheet(&o.name) => {
+            o.kind = Kind::Sheet;
+            crate::sheet::open(ui, st, &o)
+        }
         _ if crate::book::is_book(&o.name) => {
             o.kind = Kind::Book;
             crate::book::open(app, ui, st, &o)
@@ -290,6 +296,7 @@ pub(crate) fn back(app: &App, ui: &FilesApp, st: &mut State) {
     crate::audio::close(st);
     crate::doc::close(st);
     crate::book::close(st);
+    crate::sheet::close(st);
     let from = st.fa7.take().map_or(View::Folder, |o| o.from);
     return_to(app, ui, st, from);
 }

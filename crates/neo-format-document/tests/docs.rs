@@ -297,3 +297,68 @@ fn broken_books_never_panic() {
         try_all(&b);
     }
 }
+
+#[test]
+fn the_budget_workbook() {
+    use neo_format_document::Package;
+    use neo_format_document::xlsx::{self, Value, display, formula_bar};
+    let file = data("budget-ru.xlsx");
+    assert_eq!(detect(&file), Some(Kind::Xlsx));
+    let p = Package::open(&file[..]).unwrap();
+    let wb = xlsx::open(&p).unwrap();
+    let names: Vec<&str> = wb.sheets.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["1 квартал", "2 квартал", "Итоги", "Графики"]);
+    assert!(wb.sheets[3].part.is_none());
+    let s = xlsx::sheet(&p, &wb, 0).unwrap();
+    let cell = |r: &str| {
+        let (row, col) = xlsx::parse_ref(r).unwrap();
+        s.get(row, col).unwrap()
+    };
+    assert_eq!(display(&wb, cell("A2")), "Аренда");
+    assert!(wb.bold[cell("E7").style as usize] && !wb.bold[cell("E6").style as usize]);
+    assert_eq!(display(&wb, cell("B2")), "180\u{a0}000");
+    assert_eq!(display(&wb, cell("E7")), "1\u{a0}038\u{a0}500");
+    assert_eq!(formula_bar(&wb, cell("E7")), "=SUM(E2:E6)");
+    assert_eq!(formula_bar(&wb, cell("E4")), "=SUM(B4:D4)");
+    assert_eq!(formula_bar(&wb, cell("D10")), "=D9-D7");
+    assert_eq!(formula_bar(&wb, cell("E9")), "=SUM(B9:D9)");
+    assert_eq!(display(&wb, cell("A12")), "Бюджет утверждён");
+    assert_eq!(s.merge_at(11, 0), Some(Some((11, 4))));
+    assert_eq!(s.merge_at(11, 2), Some(None));
+    assert_eq!(display(&wb, cell("A13")), "09.12.2025");
+    assert_eq!(display(&wb, cell("B13")), "24.7%");
+    assert_eq!(display(&wb, cell("C13")), "TRUE");
+    assert_eq!(display(&wb, cell("D13")), "#DIV/0!");
+    assert_eq!(s.width(0), 14.0);
+    assert_eq!(s.width(9), 8.43);
+    assert_eq!((s.rows, s.cols), (13, 5));
+    assert!(matches!(cell("E10").value, Value::Num(n) if n == 341_500.0));
+    assert_eq!(
+        xlsx::sheet(&p, &wb, 3),
+        Err(neo_format_document::Error::NotDocument)
+    );
+
+    // broken copies only give errors
+    let mut seed: u64 = 0x2545_f491;
+    for _ in 0..300 {
+        let mut b = file.clone();
+        for _ in 0..3 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let at = (seed % b.len() as u64) as usize;
+            b[at] ^= 1 << (seed % 8);
+        }
+        if let Ok(p) = Package::open(&b[..])
+            && let Ok(wb) = xlsx::open(&p)
+        {
+            for i in 0..wb.sheets.len() {
+                if let Ok(s) = xlsx::sheet(&p, &wb, i) {
+                    for c in &s.cells {
+                        let _ = display(&wb, c);
+                    }
+                }
+            }
+        }
+    }
+}

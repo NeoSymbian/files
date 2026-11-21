@@ -217,10 +217,79 @@ def epub(path, chapters=12, paras=26, drm=False, spine=True):
                        zipfile.ZIP_DEFLATED)
 
 
+def xlsx(path):
+    """The canvas's files2-view-xlsx board: Бюджет 2026, its first quarter with sums and shared formulas."""
+    S = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+    strings = []
+    def sid(t):
+        if t not in strings:
+            strings.append(t)
+        return strings.index(t)
+    items = [("Аренда", 180000, 180000, 180000), ("Еда", 95000, 88000, 102000), ("Транспорт", 22000, 24000, 21000),
+             ("Связь", 6500, 6500, 6500), ("Отдых", 40000, 35000, 52000)]
+    rows = []
+    hdr = ["Статья", "Янв", "Фев", "Мар", "Итого"]
+    rows.append('<row r="1">' + "".join(f'<c r="{"ABCDE"[i]}1" s="4" t="s"><v>{sid(h)}</v></c>' for i, h in enumerate(hdr)) + '</row>')
+    for k, (name, a, b, c) in enumerate(items):
+        r = k + 2
+        f = (f'<f t="shared" ref="E2:E6" si="0">SUM(B2:D2)</f>' if r == 2 else '<f t="shared" si="0"/>')
+        rows.append(f'<row r="{r}"><c r="A{r}" t="s"><v>{sid(name)}</v></c><c r="B{r}" s="1"><v>{a}</v></c>'
+                    f'<c r="C{r}" s="1"><v>{b}</v></c><c r="D{r}" s="1"><v>{c}</v></c><c r="E{r}" s="1">{f}<v>{a + b + c}</v></c></row>')
+    sums = [sum(x[i] for x in items) for i in (1, 2, 3)]
+    tot = sum(sums)
+    cells7 = "".join(f'<c r="{col}7" s="5">' + (f'<f t="shared" ref="B7:E7" si="1">SUM(B2:B6)</f>' if col == "B" else '<f t="shared" si="1"/>')
+                     + f'<v>{v}</v></c>' for col, v in zip("BCDE", sums + [tot]))
+    rows.append(f'<row r="7"><c r="A7" s="4" t="s"><v>{sid("Расходы")}</v></c>{cells7}</row>')
+    inc = [450000, 450000, 480000]
+    rows.append(f'<row r="9"><c r="A9" t="s"><v>{sid("Доход")}</v></c>' + "".join(f'<c r="{col}9" s="1"><v>{v}</v></c>' for col, v in zip("BCD", inc))
+                + f'<c r="E9" s="1"><f>SUM(B9:D9)</f><v>{sum(inc)}</v></c></row>')
+    left = [i - s_ for i, s_ in zip(inc + [sum(inc)], sums + [tot])]
+    cells10 = "".join(f'<c r="{col}10" s="1">' + (f'<f t="shared" ref="B10:E10" si="2">B9-B7</f>' if col == "B" else '<f t="shared" si="2"/>')
+                      + f'<v>{v}</v></c>' for col, v in zip("BCDE", left))
+    rows.append(f'<row r="10"><c r="A10" t="s"><v>{sid("Остаток")}</v></c>{cells10}</row>')
+    rows.append(f'<row r="12"><c r="A12" t="inlineStr"><is><t>Бюджет утверждён</t></is></c></row>')
+    rows.append(f'<row r="13"><c r="A13" s="2"><v>46000</v></c><c r="B13" s="3"><v>0.247</v></c><c r="C13" t="b"><v>1</v></c>'
+                f'<c r="D13" t="e"><v>#DIV/0!</v></c></row>')
+    sheet1 = (f'<?xml version="1.0" encoding="UTF-8"?><worksheet {S}><cols><col min="1" max="1" width="14" customWidth="1"/>'
+              f'<col min="2" max="4" width="11" customWidth="1"/><col min="5" max="5" width="13" customWidth="1"/></cols><sheetData>{"".join(rows)}</sheetData>'
+              '<mergeCells count="1"><mergeCell ref="A12:E12"/></mergeCells></worksheet>')
+    small = lambda t: (f'<?xml version="1.0"?><worksheet {S}><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>{t}</t></is></c>'
+                       '<c r="B1"><v>1</v></c></row></sheetData></worksheet>')
+    sst = (f'<?xml version="1.0" encoding="UTF-8"?><sst {S} count="{len(strings)}" uniqueCount="{len(strings)}">'
+           + "".join(f'<si><t>{esc(t)}</t></si>' for t in strings) + '</sst>')
+    styles = (f'<?xml version="1.0"?><styleSheet {S}><numFmts count="1"><numFmt numFmtId="164" formatCode="0.0%"/></numFmts>'
+              '<fonts count="2"><font><sz val="11"/></font><font><b/><sz val="11"/></font></fonts>'
+              '<cellXfs count="6"><xf numFmtId="0"/><xf numFmtId="3" applyNumberFormat="1"/><xf numFmtId="14" applyNumberFormat="1"/>'
+              '<xf numFmtId="164" applyNumberFormat="1"/><xf numFmtId="0" fontId="1"/><xf numFmtId="3" fontId="1"/></cellXfs></styleSheet>')
+    names = ["1 квартал", "2 квартал", "Итоги", "Графики"]
+    book = (f'<?xml version="1.0" encoding="UTF-8"?><workbook {S}><workbookPr/><sheets>'
+            + "".join(f'<sheet name="{n}" sheetId="{i + 1}" r:id="rId{i + 1}"/>' for i, n in enumerate(names)) + '</sheets></workbook>')
+    R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    rels = ('<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            + "".join(f'<Relationship Id="rId{i + 1}" Type="{R}/worksheet" Target="worksheets/sheet{i + 1}.xml"/>' for i in range(3))
+            + f'<Relationship Id="rId4" Type="{R}/chartsheet" Target="chartsheets/sheet1.xml"/>'
+            + f'<Relationship Id="rId5" Type="{R}/sharedStrings" Target="sharedStrings.xml"/>'
+            + f'<Relationship Id="rId6" Type="{R}/styles" Target="styles.xml"/></Relationships>')
+    types = ('<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+             '<Default Extension="xml" ContentType="application/xml"/>'
+             '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/></Types>')
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", types)
+        z.writestr("xl/workbook.xml", book)
+        z.writestr("xl/_rels/workbook.xml.rels", rels)
+        z.writestr("xl/worksheets/sheet1.xml", sheet1)
+        z.writestr("xl/worksheets/sheet2.xml", small("Апрель"))
+        z.writestr("xl/worksheets/sheet3.xml", small("Итого за год"))
+        z.writestr("xl/chartsheets/sheet1.xml", f'<chartsheet {S}/>')
+        z.writestr("xl/sharedStrings.xml", sst)
+        z.writestr("xl/styles.xml", styles)
+
+
 if __name__ == "__main__":
     docx(os.path.join(HERE, "plan-hy.docx"))
     odt(os.path.join(HERE, "plan-hy.odt"))
     rtf(os.path.join(HERE, "plan-hy.rtf"))
     epub(os.path.join(HERE, "book-300.epub"))
+    xlsx(os.path.join(HERE, "budget-ru.xlsx"))
     epub(os.path.join(HERE, "drm.epub"), chapters=1, paras=2, drm=True)
     epub(os.path.join(HERE, "no-spine.epub"), chapters=1, paras=2, spine=False)
