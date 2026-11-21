@@ -119,17 +119,23 @@ pub fn models<'a>(
                 text: text.as_str().into(),
                 colour: colour(c.unwrap_or(ink)),
             }),
-            Item::Image { x, y, w, h, id } => {
-                if let Some(image) = image(*id) {
-                    images.push(DImage {
-                        x: *x,
-                        y: y - dy,
-                        w: *w,
-                        h: *h,
-                        image,
-                    });
-                }
-            }
+            Item::Image { x, y, w, h, id } => match image(*id) {
+                Some(image) => images.push(DImage {
+                    x: *x,
+                    y: y - dy,
+                    w: *w,
+                    h: *h,
+                    image,
+                }),
+                // still decoding (or it can't be): a quiet box where it goes
+                None => rects.push(DRect {
+                    x: *x,
+                    y: y - dy,
+                    w: *w,
+                    h: *h,
+                    colour: colour(PLACE),
+                }),
+            },
             Item::Rect {
                 x,
                 y,
@@ -183,6 +189,8 @@ pub enum Mode {
 pub const SIZES: [f32; 7] = [13.0, 15.0, 17.0, 19.0, 22.0, 26.0, 30.0];
 
 pub const PAPER: u32 = 0xf7f5f0;
+/// Where a picture goes while it decodes.
+pub const PLACE: u32 = 0xe6e2d8;
 pub const INK: u32 = 0x33373d;
 
 /// A document as DocView shows it: laid out at the view's width, in Page or Reflow mode, a window of it at a time.
@@ -197,6 +205,8 @@ pub struct DocViewer {
     dp: f32,
     view: (i32, i32),
     flow: Flow,
+    /// The content's width, px (wider than the view when a page is zoomed).
+    width: i32,
     /// The images' own sizes (`None`: not shown).
     sizes: Vec<Option<(i32, i32)>>,
     pages: Vec<Page>,
@@ -218,6 +228,7 @@ impl DocViewer {
             dp,
             view: (0, 0),
             flow: Flow::default(),
+            width: 0,
             sizes: alloc::vec![None; n],
             pages: Vec::new(),
             window_top: 0,
@@ -265,6 +276,7 @@ impl DocViewer {
                 shift(&mut f.items, pad, pad);
                 let height = f.height + 2 * pad;
                 self.flow = Flow::from_items(f.items, height);
+                self.width = self.view.0;
                 self.pages.clear();
             }
             Mode::Page => {
@@ -305,6 +317,7 @@ impl DocViewer {
                 }
                 let total = gap + self.pages.len() as i32 * (sheet_h + gap);
                 self.flow = Flow::from_items(items, total);
+                self.width = (2 * x0 + sheet_w).max(self.view.0);
             }
         }
         self.top = self.top.min((self.flow.height - self.view.1).max(0));
@@ -313,6 +326,25 @@ impl DocViewer {
 
     pub fn total(&self) -> i32 {
         self.flow.height
+    }
+
+    /// The content's width (the view's, or a zoomed page's).
+    pub fn width(&self) -> i32 {
+        self.width
+    }
+
+    /// The pictures the window shows, and the size each is drawn at (px): what to decode, at most that big.
+    pub fn wanted(&self) -> Vec<(usize, i32, i32)> {
+        let mut out: Vec<(usize, i32, i32)> = Vec::new();
+        for i in self.window() {
+            if let Item::Image { id, w, h, .. } = *i {
+                match out.iter_mut().find(|o| o.0 == id) {
+                    Some(o) => *o = (id, o.1.max(w), o.2.max(h)),
+                    None => out.push((id, w, h)),
+                }
+            }
+        }
+        out
     }
 
     /// Scrolled to `top`: whether the window must move (the caller then sets new models).
@@ -365,6 +397,7 @@ pub fn show(
     ui.set_doc_images(i);
     ui.set_doc_rects(r);
     ui.set_doc_total(v.total());
+    ui.set_doc_total_w(v.width());
     ui.set_doc_window_top(v.window_top.max(0));
     ui.set_doc_paper(colour(PAPER));
     ui.set_doc_info(info.into());

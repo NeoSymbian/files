@@ -473,6 +473,7 @@ pub fn poll(app: &App, ui: &FilesApp, st: &mut State) {
             }
             Done::Show(n, path, r) => shown(app, ui, st, n, &path, r),
             Done::Saved(path, r) => saved(app, ui, st, &path, r),
+            Done::Doc(n, id, px) => crate::doc::picture(ui, st, n, id, px),
         }
     }
     if thumbs {

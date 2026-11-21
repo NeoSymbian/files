@@ -84,8 +84,8 @@ pub struct Worker {
     wake: Semaphore,
 }
 
-/// A file as the decoders read it.
-struct At<F>(F, u64);
+/// A file as the decoders read it (and the document readers: doc.rs, the picture worker).
+pub(crate) struct At<F>(pub(crate) F, pub(crate) u64);
 
 impl<F: neo_fs::File> ReadAt for At<F> {
     fn read_at(&self, pos: u64, buf: &mut [u8]) -> neo_format_archive::Result<usize> {

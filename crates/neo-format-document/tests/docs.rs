@@ -204,3 +204,16 @@ fn textutil_files() {
         }
     }
 }
+
+/// A picture's size from its member's first bytes (the viewer never reads the rest on the UI thread).
+#[test]
+fn picture_heads() {
+    let file = data("plan-hy.docx");
+    let p = neo_format_document::Package::open(&file[..]).unwrap();
+    let head = p.head("word/media/image1.png", 64).unwrap();
+    assert_eq!(head.len(), 64);
+    let all = p.read("word/media/image1.png").unwrap();
+    assert_eq!(&all[..64], &head[..]);
+    assert_eq!(p.head("word/media/image1.png", 1 << 20).unwrap(), all);
+    assert!(p.head("word/media/missing.png", 64).is_err());
+}

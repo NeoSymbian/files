@@ -795,6 +795,7 @@ export component FilesApp inherits Window {
     in property <[DImage]> doc-images;
     in property <[DRect]> doc-rects;
     in property <int> doc-total;
+    in property <int> doc-total-w;
     in property <int> doc-window-top;
     in property <color> doc-paper: #f7f5f0;
     in property <string> doc-info;
@@ -803,9 +804,13 @@ export component FilesApp inherits Window {
     out property <int> doc-view-h: doc-view.view-h;
     callback doc-mode-picked(int);
     callback doc-scrolled(int);
+    callback doc-scrolled-x(int);
     callback doc-tapped(length, length);
     public function doc-scroll-to(px: int) {
         doc-view.scroll-to(px);
+    }
+    public function doc-scroll-x-to(px: int) {
+        doc-view.scroll-x-to(px);
     }
     in property <string> audio-title;
     in property <string> audio-sub;
@@ -2266,6 +2271,7 @@ export component FilesApp inherits Window {
                 images: root.doc-images;
                 rects: root.doc-rects;
                 total: root.doc-total;
+                total-w: root.doc-total-w;
                 window-top: root.doc-window-top;
                 paper: root.doc-paper;
                 info: root.doc-info;
@@ -2275,6 +2281,9 @@ export component FilesApp inherits Window {
                 }
                 scrolled(px) => {
                     root.doc-scrolled(px);
+                }
+                scrolled-x(px) => {
+                    root.doc-scrolled-x(px);
                 }
                 tapped(x, y) => {
                     root.doc-tapped(x, y);

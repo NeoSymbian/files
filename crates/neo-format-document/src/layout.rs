@@ -766,19 +766,17 @@ impl<M: Measure, S: Fn(usize) -> Option<(i32, i32)>> Ctx<'_, M, S> {
 
     fn image(&self, f: &mut Flow, img: &Image, block: u32, y: i32) -> i32 {
         let o = &self.o;
-        let Some((nw, nh)) = (self.size)(img.id) else {
-            return y;
-        };
-        if nw <= 0 || nh <= 0 {
-            return y;
-        }
+        // the size the file asks for, else the picture's own (unknown both: not drawn)
         let (mut w, mut h) = if img.width > 0 && img.height > 0 {
             (self.tw(img.width), self.tw(img.height))
         } else {
-            (
-                (nw as f32 * o.image_scale) as i32,
-                (nh as f32 * o.image_scale) as i32,
-            )
+            match (self.size)(img.id) {
+                Some((nw, nh)) if nw > 0 && nh > 0 => (
+                    (nw as f32 * o.image_scale) as i32,
+                    (nh as f32 * o.image_scale) as i32,
+                ),
+                _ => return y,
+            }
         };
         if w > o.width {
             h = (h as i64 * o.width as i64 / w as i64) as i32;

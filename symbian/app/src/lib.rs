@@ -320,6 +320,8 @@ struct State {
     doc: Option<doc::Open>,
     /// The document faces' advances, calibrated against Slint on the first document.
     fonts: Option<files_ui::doc::Fonts>,
+    /// The documents opened so far (a picture is matched to its document by this).
+    doc_n: u32,
 }
 
 fn run() -> Result<(), i32> {
@@ -396,6 +398,7 @@ fn run() -> Result<(), i32> {
         audio: audio::Audio::new(),
         doc: None,
         fonts: None,
+        doc_n: 0,
     };
     load_settings(&app, &ui, &mut st);
     fa3::load(&mut st);
@@ -510,6 +513,9 @@ fn run() -> Result<(), i32> {
                 AppEvent::Input(InputEvent::Touch { id, x, y, phase })
                     if st.view == View::Image
                         && image::touch(&app, &ui, &mut st, id, x, y, phase) => {}
+                // a document's page view reads a pinch the same way
+                AppEvent::Input(InputEvent::Touch { id, x, y, phase })
+                    if st.view == View::Fa7 && doc::touch(&app, &ui, &mut st, id, x, y, phase) => {}
                 _ => app.handle(&e),
             }
             // the player: "Stops when you leave Files"

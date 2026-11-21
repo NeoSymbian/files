@@ -98,6 +98,8 @@ export component DocView inherits Rectangle {
     in property <[DRect]> rects;
     // the whole document's height, and where the items' (0, 0) is, px
     in property <int> total;
+    // the content's width, px: a zoomed page is wider than the view
+    in property <int> total-w;
     in property <int> window-top;
     in property <color> paper;
     in property <string> info;
@@ -106,6 +108,7 @@ export component DocView inherits Rectangle {
     out property <int> view-h: flick.height / 1px;
     callback mode-picked(int);
     callback scrolled(int);
+    callback scrolled-x(int);
     callback tapped(length, length);
     background: #000000;
     public function to-top() {
@@ -113,6 +116,9 @@ export component DocView inherits Rectangle {
     }
     public function scroll-to(px: int) {
         flick.content-y = -min(max(0, px), max(0, root.total - root.view-h)) * 1px;
+    }
+    public function scroll-x-to(px: int) {
+        flick.content-x = -min(max(0, px), max(0, root.total-w - root.view-w)) * 1px;
     }
 
     VerticalLayout {
@@ -155,12 +161,16 @@ export component DocView inherits Rectangle {
             clip: true;
             flick := Flickable {
                 content-height: max(self.height, root.total * 1px);
+                content-width: max(self.width, root.total-w * 1px);
                 changed content-y => {
                     root.scrolled(-self.content-y / 1px);
                 }
+                changed content-x => {
+                    root.scrolled-x(-self.content-x / 1px);
+                }
                 DocItems {
                     y: root.window-top * 1px;
-                    width: parent.width;
+                    width: max(parent.width, root.total-w * 1px);
                     height: 1px;
                     texts: root.texts;
                     images: root.images;

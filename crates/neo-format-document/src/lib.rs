@@ -74,6 +74,32 @@ impl<R: ReadAt> Package<R> {
         Ok(Package { r, members })
     }
 
+    /// The file again with members listed before (a new handle on the same file: the list isn't read twice).
+    pub fn with(r: R, members: alloc::vec::Vec<Member>) -> Self {
+        Package { r, members }
+    }
+
+    /// The first `max` bytes of a member (a picture's header: its size without decoding it).
+    pub fn head(&self, name: &str, max: usize) -> Result<alloc::vec::Vec<u8>> {
+        use neo_format_archive::Stream;
+        let m = self
+            .find(name)
+            .ok_or(Error::Bad("A part of the document is missing"))?;
+        let mut s = zip::open(&self.r, m)?;
+        let want = max.min(m.size as usize);
+        let mut out = alloc::vec![0u8; want];
+        let mut at = 0;
+        while at < want {
+            let n = s.read(&mut out[at..])?;
+            if n == 0 {
+                break;
+            }
+            at += n;
+        }
+        out.truncate(at);
+        Ok(out)
+    }
+
     /// A member by name: exact first, then ignoring ASCII case (Office part names are case-insensitive).
     pub fn find(&self, name: &str) -> Option<&Member> {
         let name = name.trim_start_matches('/');
