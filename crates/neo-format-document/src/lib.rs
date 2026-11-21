@@ -127,6 +127,19 @@ impl<R: ReadAt> Package<R> {
         Ok(zip::read_member(&self.r, m, MAX_PART)?)
     }
 
+    /// A member's text, owned: UTF-8 is taken as it is (no second copy of a big part); a BOM or UTF-16 is converted.
+    pub fn text(&self, name: &str) -> Result<alloc::string::String> {
+        let b = self.read(name)?;
+        if !b.starts_with(&[0xEF, 0xBB, 0xBF])
+            && !b.starts_with(&[0xFF, 0xFE])
+            && !b.starts_with(&[0xFE, 0xFF])
+        {
+            return alloc::string::String::from_utf8(b)
+                .map_err(|_| Error::Bad("The text isn't UTF-8"));
+        }
+        Ok(alloc::string::String::from(xml::text(&b)?.as_ref()))
+    }
+
     pub fn has(&self, name: &str) -> bool {
         self.find(name).is_some()
     }

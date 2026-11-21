@@ -4,7 +4,7 @@
 //! a time. DRM (an `encryption.xml` that encrypts more than fonts) is refused; obfuscated fonts are fine (unused).
 
 use crate::model::Doc;
-use crate::xml::{Ev, Reader, text};
+use crate::xml::{Ev, Reader};
 use crate::{Error, Package, Result, join};
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -42,8 +42,7 @@ impl Book {
 }
 
 fn xml<R: ReadAt>(p: &Package<R>, name: &str) -> Result<String> {
-    let b = p.read(name)?;
-    Ok(String::from(text(&b)?.as_ref()))
+    p.text(name)
 }
 
 /// Open a book: its title, spine and contents.
@@ -217,8 +216,7 @@ pub fn open<R: ReadAt>(p: &Package<R>) -> Result<Book> {
 /// A chapter as blocks; its pictures are members of the book.
 pub fn chapter<R: ReadAt>(p: &Package<R>, book: &Book, i: usize) -> Result<Doc> {
     let path = book.spine.get(i).ok_or(Error::Bad("No such chapter"))?;
-    let b = p.read(path)?;
-    crate::html::read(&text(&b)?, path)
+    crate::html::read(&p.text(path)?, path)
 }
 
 fn collapse(s: &str) -> String {

@@ -34,14 +34,80 @@ type Pinch = (f32, f32, (f32, f32), (i32, i32));
 /// The pictures' own sizes (`None`: unknown until decoded).
 pub(crate) type Sizes = Vec<Option<(i32, i32)>>;
 
+/// A document's pictures in the window: decoded ones (with the size they were asked at), those asked and not back yet,
+/// and those that can't be decoded. Pictures that leave the window are let go.
+#[derive(Default)]
+pub(crate) struct Pics {
+    pics: Vec<Option<(slint::Image, u32)>>,
+    pending: Vec<bool>,
+    failed: Vec<bool>,
+}
+
+impl Pics {
+    fn grow(&mut self, n: usize) {
+        if self.pics.len() < n {
+            self.pics.resize(n, None);
+            self.pending.resize(n, false);
+            self.failed.resize(n, false);
+        }
+    }
+
+    /// The window wants `wanted` (id, drawn w, h): what to keep in the worker's queue, and what to ask (id, long side,
+    /// at most the viewer's largest picture: a zoomed page doesn't decode a photo at full size).
+    pub(crate) fn plan(&mut self, wanted: &[(usize, i32, i32)]) -> (Vec<usize>, Vec<(usize, u32)>) {
+        self.grow(wanted.iter().map(|w| w.0 + 1).max().unwrap_or(0));
+        for id in 0..self.pics.len() {
+            if !wanted.iter().any(|w| w.0 == id) {
+                self.pics[id] = None;
+                self.pending[id] = false;
+            }
+        }
+        let mut ask = Vec::new();
+        for &(id, w, h) in wanted {
+            let max = (w.max(h).max(1) as u32).min(crate::pics::SHOW_MAX);
+            let fits = self.pics[id].as_ref().is_some_and(|p| p.1 * 5 >= max * 4);
+            if fits || self.failed[id] || self.pending[id] {
+                continue;
+            }
+            self.pending[id] = true;
+            ask.push((id, max));
+        }
+        (wanted.iter().map(|w| w.0).collect(), ask)
+    }
+
+    /// A picture came back: kept (with the size the window wants now) when still wanted.
+    pub(crate) fn arrived(
+        &mut self,
+        id: usize,
+        px: Option<neo_format_image::Pixels>,
+        wanted: &[(usize, i32, i32)],
+    ) {
+        self.grow(id + 1);
+        self.pending[id] = false;
+        match (px, wanted.iter().find(|w| w.0 == id)) {
+            (Some(px), Some(&(_, w, h))) => {
+                let max = (w.max(h).max(1) as u32).min(crate::pics::SHOW_MAX);
+                self.pics[id] = Some((files_ui::image::slint_image(&px), max));
+            }
+            (Some(_), None) => {}
+            (None, _) => self.failed[id] = true,
+        }
+    }
+
+    pub(crate) fn image(&self, id: usize) -> Option<slint::Image> {
+        self.pics
+            .get(id)
+            .and_then(|p| p.as_ref())
+            .map(|p| p.0.clone())
+    }
+}
+
 pub(crate) struct Open {
     v: DocViewer,
     /// The document's number: a picture decoded for an earlier one is dropped.
     n: u32,
     path: String,
-    /// Decoded pictures in view and the long side they were decoded at; `failed` ones aren't asked for again.
-    pics: Vec<Option<(slint::Image, u32)>>,
-    failed: Vec<bool>,
+    pics: Pics,
     info: String,
     /// The horizontal scroll (a zoomed page), px.
     left: i32,
@@ -145,7 +211,6 @@ pub(crate) fn open(ui: &FilesApp, st: &mut State, o: &Open7) -> Result<&'static 
     let (doc, sizes) = read(st, &o.path, o.size)?;
     let fonts = fonts(ui, st);
     let dp = ui.global::<files_ui::Theme>().get_dp();
-    let n_pics = doc.images.len();
     let mut v = DocViewer::new(doc, fonts, dp, Mode::Reflow);
     for (i, s) in sizes.into_iter().enumerate() {
         v.set_size(i, s);
@@ -155,7 +220,7 @@ pub(crate) fn open(ui: &FilesApp, st: &mut State, o: &Open7) -> Result<&'static 
     dprintln!(
         "files: doc {} blocks, {} pictures, {} px",
         v.doc.blocks.len(),
-        n_pics,
+        v.doc.images.len(),
         v.total()
     );
     st.doc_n = st.doc_n.wrapping_add(1);
@@ -163,8 +228,7 @@ pub(crate) fn open(ui: &FilesApp, st: &mut State, o: &Open7) -> Result<&'static 
         v,
         n: st.doc_n,
         path: o.path.clone(),
-        pics: alloc::vec![None; n_pics],
-        failed: alloc::vec![false; n_pics],
+        pics: Pics::default(),
         info: files_ui::doc::info(neo_view::family_of(&o.name), o.size),
         left: 0,
         fingers: [None; 2],
@@ -181,43 +245,28 @@ pub(crate) fn open(ui: &FilesApp, st: &mut State, o: &Open7) -> Result<&'static 
 /// The window's models, and the pictures it wants asked of the worker (those that left it are let go).
 fn refresh(ui: &FilesApp, st: &mut State) {
     let Some(d) = st.doc.as_mut() else { return };
-    let wanted = d.v.wanted();
-    for (id, p) in d.pics.iter_mut().enumerate() {
-        if p.is_some() && !wanted.iter().any(|w| w.0 == id) {
-            *p = None;
-        }
-    }
-    let mut ask = Vec::new();
-    for &(id, w, h) in &wanted {
-        let max = w.max(h).max(1) as u32;
-        // decoded smaller than it now shows (a zoom): again, at the new size
-        let have = d
-            .pics
-            .get(id)
-            .and_then(|p| p.as_ref())
-            .is_some_and(|p| p.1 * 5 >= max * 4);
-        if have || d.failed.get(id).copied().unwrap_or(true) {
-            continue;
-        }
-        let (member, bytes) = match &d.v.doc.images[id] {
-            ImageSrc::Member(m) => (Some(m.clone()), None),
-            ImageSrc::Bytes(b) => (None, Some(b.clone())),
-        };
-        ask.push(DocPic {
-            id,
-            path: d.path.clone(),
-            member,
-            bytes,
-            max,
-        });
-    }
-    if !ask.is_empty() {
-        st.pics.doc(d.n, ask);
-    }
+    let (keep, ask) = d.pics.plan(&d.v.wanted());
+    let ask = ask
+        .into_iter()
+        .map(|(id, max)| {
+            let (member, bytes) = match &d.v.doc.images[id] {
+                ImageSrc::Member(m) => (Some(m.clone()), None),
+                // shortcut: an rtf's picture is copied for the worker (once per decode); rtf files with big photos are
+                // rare, keep the bytes in the worker if they aren't
+                ImageSrc::Bytes(b) => (None, Some(b.clone())),
+            };
+            DocPic {
+                id,
+                path: d.path.clone(),
+                member,
+                bytes,
+                max,
+            }
+        })
+        .collect();
+    st.pics.doc(d.n, &keep, ask);
     let pics = &d.pics;
-    files_ui::doc::show(ui, &d.v, &d.info, |id| {
-        pics.get(id).and_then(|p| p.as_ref()).map(|p| p.0.clone())
-    });
+    files_ui::doc::show(ui, &d.v, &d.info, |id| pics.image(id));
 }
 
 /// A picture from the worker.
@@ -228,30 +277,15 @@ pub(crate) fn picture(
     id: usize,
     px: Option<neo_format_image::Pixels>,
 ) {
-    let px = match crate::book::picture(ui, st, n, id, px) {
-        Some(px) => px,
-        None => return,
+    let Some(px) = crate::book::picture(ui, st, n, id, px) else {
+        return;
     };
     let Some(d) = st.doc.as_mut().filter(|d| d.n == n) else {
         return;
     };
-    match px {
-        Some(px) if d.v.wanted().iter().any(|w| w.0 == id) => {
-            if let Some(p) = d.pics.get_mut(id) {
-                *p = Some((files_ui::image::slint_image(&px), px.w.max(px.h)));
-            }
-        }
-        Some(_) => return,
-        None => {
-            if let Some(f) = d.failed.get_mut(id) {
-                *f = true;
-            }
-        }
-    }
+    d.pics.arrived(id, px, &d.v.wanted());
     let pics = &d.pics;
-    files_ui::doc::show(ui, &d.v, &d.info, |id| {
-        pics.get(id).and_then(|p| p.as_ref()).map(|p| p.0.clone())
-    });
+    files_ui::doc::show(ui, &d.v, &d.info, |id| pics.image(id));
 }
 
 pub(crate) fn act(ui: &FilesApp, st: &mut State, a: Act) {
@@ -368,7 +402,16 @@ pub(crate) fn touch(
 }
 
 pub(crate) fn close(st: &mut State) {
-    st.doc = None;
+    if st.doc.take().is_some() {
+        st.pics.doc(0, &[], Vec::new());
+    }
+}
+
+/// Every FA10 viewer closed (another view takes over: Back, the hex view).
+pub(crate) fn close_all(st: &mut State) {
+    close(st);
+    crate::book::close(st);
+    crate::sheet::close(st);
 }
 
 /// `C:\Data\fa10\`: the plan as docx, odt and rtf (and textutil's copies), each with a broken copy as FA7's.

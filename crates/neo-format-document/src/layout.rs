@@ -428,6 +428,11 @@ impl<M: Measure, S: Fn(usize) -> Option<(i32, i32)>> Ctx<'_, M, S> {
             while i < chars.len() {
                 w += chars[i].w;
                 i += 1;
+                // a run without a break chance is already too wide: stop here (it is cut by characters below)
+                if fit.is_none() && w > avail {
+                    fit = Some(i);
+                    break;
+                }
                 if let Some(m) = opp[i] {
                     let ink: i32 = w - chars[start..i]
                         .iter()
@@ -695,6 +700,7 @@ impl<M: Measure, S: Fn(usize) -> Option<(i32, i32)>> Ctx<'_, M, S> {
         let colour = 0xd9d6cf;
         y += o.gap / 2;
         for row in &t.rows {
+            let row_start = f.items.len();
             f.breaks.push(Break {
                 y,
                 at: Pos { block, ch: 0 },
@@ -742,8 +748,8 @@ impl<M: Measure, S: Fn(usize) -> Option<(i32, i32)>> Ctx<'_, M, S> {
                 x += w;
                 col += span;
             }
-            // the column lines run the row's height
-            for i in &mut f.items {
+            // the column lines run the row's height (only this row's: the table's earlier items are done)
+            for i in &mut f.items[row_start..] {
                 if let Item::Rect { h, w, .. } = i
                     && *h == 0
                     && *w == line
@@ -864,6 +870,44 @@ mod tests {
         // 7 chars of 10 px fit in 75: "aaa bbb" then "ccc"; the long word in 7s
         assert_eq!(t, ["aaa bbb", "ccc", "xxxxxxx", "xxxxx"]);
         assert!(f.breaks.len() == 4);
+    }
+
+    #[test]
+    fn long_runs_and_big_tables_stay_linear() {
+        // 200k characters without a break chance: cut into lines of 7, quickly
+        let doc = Doc {
+            blocks: alloc::vec![para(&"x".repeat(200_000))],
+            ..Default::default()
+        };
+        let f = layout(&doc, opts(75), &Fixed, |_| None);
+        assert_eq!(f.breaks.len(), 200_000_usize.div_ceil(7));
+        // a 3,000-row table
+        let cell = |s: &str| Cell {
+            paras: alloc::vec![{
+                let mut p = Para::default();
+                p.push(s, Style::default());
+                p
+            }],
+            span: 1,
+            header: false,
+        };
+        let rows = (0..3000)
+            .map(|_| alloc::vec![cell("a"), cell("b")])
+            .collect();
+        let doc = Doc {
+            blocks: alloc::vec![Block::Table(Table {
+                rows,
+                widths: alloc::vec![]
+            })],
+            ..Default::default()
+        };
+        let f = layout(&doc, opts(200), &Fixed, |_| None);
+        let tall = f
+            .items
+            .iter()
+            .filter(|i| matches!(i, Item::Rect { h, .. } if *h > 2))
+            .count();
+        assert_eq!(tall, 3000);
     }
 
     #[test]

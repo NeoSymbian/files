@@ -454,11 +454,18 @@ impl Pics {
         self.wake.signal();
     }
 
-    /// A document's pictures that show now, in order (what was asked before and not decoded yet is dropped).
-    pub fn doc(&'static self, n: u32, wants: Vec<DocPic>) {
-        self.q.lock().doc = wants.into_iter().map(|w| (n, w)).collect();
-        self.start();
-        self.wake.signal();
+    /// A document's pictures: those queued for document `n` and still in `keep` stay, the rest of the queue goes, and
+    /// `wants` are added (`n` 0 and nothing: the queue is emptied, the document closed).
+    pub fn doc(&'static self, n: u32, keep: &[usize], wants: Vec<DocPic>) {
+        {
+            let mut q = self.q.lock();
+            q.doc.retain(|(qn, p)| *qn == n && keep.contains(&p.id));
+            q.doc.extend(wants.into_iter().map(|w| (n, w)));
+        }
+        if n != 0 {
+            self.start();
+            self.wake.signal();
+        }
     }
 
     /// What was made since the last call.

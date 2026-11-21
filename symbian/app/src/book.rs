@@ -49,8 +49,7 @@ pub(crate) struct Open {
     /// The counting job the page counts come from.
     counted: u32,
     /// The pictures of the chapter in hand (decoded at their drawn size), and those that can't be.
-    pics: Vec<Option<(slint::Image, u32)>>,
-    failed: Vec<bool>,
+    pics: crate::doc::Pics,
     controls: bool,
     contents: bool,
 }
@@ -133,7 +132,11 @@ pub(crate) fn open(
     let modified = st.fs.entry(&o.path).map(|e| e.modified).unwrap_or(0);
     let (chapter_i, at) = place(st, &o.path, o.size, modified).unwrap_or((0, Pos::default()));
     let chapter_i = chapter_i.min(book.spine.len() - 1);
-    let (doc, sizes) = chapter(&p, &book, chapter_i)?;
+    let (chapter_i, at, (doc, sizes)) = match chapter(&p, &book, chapter_i) {
+        Ok(c) => (chapter_i, at, c),
+        Err(_) if chapter_i > 0 => (0, Pos::default(), chapter(&p, &book, 0)?),
+        Err(e) => return Err(e),
+    };
     let members = p.members.clone();
     drop(p);
     let fonts = crate::doc::fonts(ui, st);
@@ -159,8 +162,7 @@ pub(crate) fn open(
         modified,
         n: st.doc_n,
         counted: 0,
-        pics: Vec::new(),
-        failed: Vec::new(),
+        pics: crate::doc::Pics::default(),
         controls: false,
         contents: false,
     };
@@ -186,45 +188,32 @@ fn setting(app: &App, key: &str, default: usize, n: usize) -> usize {
 /// The page on screen, and its pictures asked of the worker.
 fn refresh(ui: &FilesApp, st: &mut State) {
     let Some(b) = st.book.as_mut() else { return };
-    let wanted = b.r.wanted();
-    let doc_images = b.r.images();
-    let mut ask = Vec::new();
-    for &(id, w, h) in &wanted {
-        let max = w.max(h).max(1) as u32;
-        if id >= b.pics.len() {
-            b.pics.resize(id + 1, None);
-            b.failed.resize(id + 1, false);
-        }
-        let have = b.pics[id].as_ref().is_some_and(|p| p.1 * 5 >= max * 4);
-        if have || b.failed[id] {
-            continue;
-        }
-        if let Some(ImageSrc::Member(m)) = doc_images.get(id) {
-            ask.push(DocPic {
+    let (keep, ask) = b.pics.plan(&b.r.wanted());
+    let images = b.r.images();
+    let ask = ask
+        .into_iter()
+        .filter_map(|(id, max)| match images.get(id) {
+            Some(ImageSrc::Member(m)) => Some(DocPic {
                 id,
                 path: b.path.clone(),
                 member: Some(m.clone()),
                 bytes: None,
                 max,
-            });
-        }
-    }
-    if !ask.is_empty() {
-        st.pics.doc(b.n, ask);
-    }
+            }),
+            _ => None,
+        })
+        .collect();
+    st.pics.doc(b.n, &keep, ask);
     show(ui, b);
 }
 
 fn show(ui: &FilesApp, b: &Open) {
     let pics = &b.pics;
-    files_ui::doc::show_book(ui, &b.r, |id| {
-        pics.get(id).and_then(|p| p.as_ref()).map(|p| p.0.clone())
-    });
+    files_ui::doc::show_book(ui, &b.r, |id| pics.image(id));
     ui.set_book_controls(b.controls);
     ui.set_book_contents_open(b.contents);
 }
 
-/// A picture from the worker for the book's page.
 /// The book's picture `n`/`id`; another document's comes back.
 pub(crate) fn picture(
     ui: &FilesApp,
@@ -236,21 +225,28 @@ pub(crate) fn picture(
     let Some(b) = st.book.as_mut().filter(|b| b.n == n) else {
         return Some(px);
     };
-    match px {
-        Some(px) if b.r.wanted().iter().any(|w| w.0 == id) => {
-            if let Some(p) = b.pics.get_mut(id) {
-                *p = Some((files_ui::image::slint_image(&px), px.w.max(px.h)));
-            }
-        }
-        Some(_) => return None,
-        None => {
-            if let Some(f) = b.failed.get_mut(id) {
-                *f = true;
-            }
-        }
-    }
+    b.pics.arrived(id, px, &b.r.wanted());
     show(ui, b);
     None
+}
+
+/// A chapter that can't be read, as one centred line.
+fn broken(why: &str) -> Doc {
+    let mut p = neo_format_document::Para {
+        align: neo_format_document::Align::Centre,
+        ..Default::default()
+    };
+    p.push(
+        &alloc::format!("This chapter can't be read: {why}"),
+        neo_format_document::Style {
+            italic: true,
+            ..Default::default()
+        },
+    );
+    Doc {
+        blocks: alloc::vec![neo_format_document::Block::Para(p)],
+        ..Default::default()
+    }
 }
 
 /// Chapter `i` in hand: at its start, or its last page (`end`), or at a place.
@@ -258,19 +254,16 @@ fn go(ui: &FilesApp, st: &mut State, i: usize, end: bool, at: Option<Pos>) {
     let Some(b) = st.book.as_ref() else { return };
     let r = package(&st.fs, &b.path, Some(b.members.clone())).and_then(|p| chapter(&p, &b.book, i));
     let Some(b) = st.book.as_mut() else { return };
-    match r {
-        Ok((doc, sizes)) => {
-            b.r.set_chapter(i, doc, sizes, at, end);
-            // the last chapter's pictures go: they were another chapter's ids
-            b.pics.iter_mut().for_each(|p| *p = None);
-            b.failed.iter_mut().for_each(|f| *f = false);
-            b.n = {
-                st.doc_n = st.doc_n.wrapping_add(1);
-                st.doc_n
-            };
-        }
-        Err(why) => dprintln!("files: chapter {} {}", i, why),
-    }
+    // a chapter that can't be read is a page saying so: turning goes on past it
+    let (doc, sizes) = r.unwrap_or_else(|why| {
+        dprintln!("files: chapter {} {}", i, why);
+        (broken(&why), Vec::new())
+    });
+    b.r.set_chapter(i, doc, sizes, at, end);
+    // the last chapter's pictures go: they were another chapter's ids
+    b.pics = crate::doc::Pics::default();
+    st.doc_n = st.doc_n.wrapping_add(1);
+    b.n = st.doc_n;
     save_place(st);
     refresh(ui, st);
 }
@@ -286,7 +279,10 @@ pub(crate) fn act(app: &App, ui: &FilesApp, st: &mut State, a: Act) {
                 b.r.prev_page()
             };
             match t {
-                Turn::Page => refresh(ui, st),
+                Turn::Page => {
+                    save_place(st);
+                    refresh(ui, st);
+                }
                 Turn::Chapter(i, end) => go(ui, st, i, end, None),
                 Turn::None => show(ui, b),
             }
@@ -335,14 +331,17 @@ pub(crate) fn act(app: &App, ui: &FilesApp, st: &mut State, a: Act) {
 }
 
 /// The ⋮ menu's book items.
-pub(crate) fn menu(ui: &FilesApp, st: &mut State, m: &str) -> bool {
+pub(crate) fn menu(app: &App, ui: &FilesApp, st: &mut State, m: &str) -> bool {
     let Some(b) = st.book.as_mut() else {
         return false;
     };
     match m {
         "Contents" => b.contents = true,
         "Text size" => b.controls = true,
-        "Theme" => b.r.theme = (b.r.theme + 1) % THEMES.len(),
+        "Theme" => {
+            b.r.theme = (b.r.theme + 1) % THEMES.len();
+            crate::save(app, THEME_KEY, Value::Int(b.r.theme as i32));
+        }
         _ => return false,
     }
     show(ui, b);
@@ -364,8 +363,15 @@ pub(crate) fn back(ui: &FilesApp, st: &mut State) -> bool {
 }
 
 pub(crate) fn close(st: &mut State) {
+    if st.book.is_none() {
+        return;
+    }
     save_place(st);
     st.book = None;
+    st.pics.doc(0, &[], Vec::new());
+    if let Some(c) = st.counter {
+        c.cancel();
+    }
 }
 
 // ── the place in each book ───────────────────────────────────────────────────────────────────────────────────────
@@ -424,6 +430,8 @@ struct Queue {
     done: Vec<(u32, usize, u32)>,
     busy: bool,
     started: bool,
+    /// The book closed: the running count stops.
+    cancel: bool,
 }
 
 pub(crate) struct Counter {
@@ -456,6 +464,7 @@ impl Counter {
                             let mut q = self.q.lock();
                             let j = q.job.take();
                             q.busy = j.is_some();
+                            q.cancel = false;
                             j
                         };
                         let Some(job) = job else { break };
@@ -470,7 +479,15 @@ impl Counter {
         self.wake.signal();
     }
 
-    /// Every chapter laid out as the reader would; a newer job stops this one.
+    /// Stop counting (the book closed).
+    fn cancel(&self) {
+        let mut q = self.q.lock();
+        q.job = None;
+        q.cancel = true;
+        q.done.clear();
+    }
+
+    /// Every chapter laid out as the reader would; a newer job (or a cancel) stops this one.
     fn count(&self, fs: &E32Fs, job: &Job) {
         let t0 = e32::time::millis();
         let Ok(p) = package(fs, &job.path, None) else {
@@ -479,8 +496,11 @@ impl Counter {
         let Ok(book) = epub::open(&p) else { return };
         let o = book_opts(job.dp, job.size, job.w, job.h);
         for i in 0..book.spine.len() {
-            if self.q.lock().job.is_some() {
-                return;
+            {
+                let q = self.q.lock();
+                if q.job.is_some() || q.cancel {
+                    return;
+                }
             }
             let n = match chapter(&p, &book, i) {
                 Ok((doc, sizes)) => count_pages(&doc, &job.fonts, o, job.h, &sizes),

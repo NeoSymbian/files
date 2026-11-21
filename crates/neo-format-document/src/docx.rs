@@ -66,7 +66,12 @@ impl RunProps {
             "i" => self.italic = Some(on()),
             "u" => self.underline = Some(on()),
             "strike" | "dstrike" => self.strike = Some(on()),
-            "sz" => self.size = ev.attr("w", "val").and_then(|v| v.parse().ok()),
+            "sz" => {
+                self.size = ev
+                    .attr("w", "val")
+                    .and_then(|v| v.parse::<u16>().ok())
+                    .map(|v| v.clamp(2, 400))
+            }
             "color" => self.colour = Some(ev.attr("w", "val").and_then(hex)),
             "vertAlign" => {
                 self.script = Some(match ev.attr("w", "val") {

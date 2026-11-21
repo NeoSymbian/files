@@ -190,9 +190,12 @@ impl Styles {
                             self.body = Some((v / 10).clamp(2, 400) as u16);
                         }
                     }
-                    "list-level-style-bullet" | "list-level-style-number" => {
+                    // an image bullet is a level too (else the levels after it move up one)
+                    "list-level-style-bullet"
+                    | "list-level-style-number"
+                    | "list-level-style-image" => {
                         if let Some((_, s)) = &mut cur {
-                            let bullet = name.local.ends_with("bullet");
+                            let bullet = !name.local.ends_with("number");
                             let fmt = ev.attr("style", "num-format").unwrap_or("1");
                             let suffix = ev.attr("style", "num-suffix").unwrap_or(".");
                             let mut f = String::from(fmt);

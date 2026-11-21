@@ -294,9 +294,7 @@ pub(crate) fn back(app: &App, ui: &FilesApp, st: &mut State) {
         return;
     }
     crate::audio::close(st);
-    crate::doc::close(st);
-    crate::book::close(st);
-    crate::sheet::close(st);
+    crate::doc::close_all(st);
     let from = st.fa7.take().map_or(View::Folder, |o| o.from);
     return_to(app, ui, st, from);
 }
@@ -408,7 +406,7 @@ fn menu(app: &App, ui: &FilesApp, st: &mut State, m: &str) {
     let Some(path) = st.fa7.as_ref().map(|o| o.path.clone()) else {
         return;
     };
-    if crate::book::menu(ui, st, m) {
+    if crate::book::menu(app, ui, st, m) {
         return;
     }
     match m {
@@ -1198,6 +1196,7 @@ fn package(ui: &FilesApp, st: &State, o: &mut Open7, ext: &str) -> Result<&'stat
 /// Show as hex…).
 fn hex(app: &App, ui: &FilesApp, st: &mut State, why: &str) {
     crate::audio::close(st);
+    crate::doc::close_all(st);
     let Some(o) = st.fa7.as_mut() else { return };
     let had_viewer = !matches!(o.kind, Kind::Hex);
     o.kind = Kind::Hex;

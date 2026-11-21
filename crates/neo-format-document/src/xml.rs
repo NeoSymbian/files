@@ -229,7 +229,11 @@ pub fn resolve(s: &str) -> Cow<'_, str> {
     while let Some(at) = rest.find('&') {
         out.push_str(&rest[..at]);
         rest = &rest[at..];
-        let Some(end) = rest[..rest.len().min(12)].find(';') else {
+        // `;` is ASCII: look for it in bytes (12 bytes may end inside a character)
+        let Some(end) = rest.as_bytes()[..rest.len().min(12)]
+            .iter()
+            .position(|&b| b == b';')
+        else {
             out.push('&');
             rest = &rest[1..];
             continue;
@@ -320,6 +324,10 @@ mod tests {
 
     #[test]
     fn events_and_entities() {
+        // "&" before letters of two bytes each: the entity scan must not cut a character
+        let v = all("<a b='R&amp;D Компания'>&amp;Ծրագիր &Ծրագիր</a>").unwrap();
+        assert_eq!(v[0].attr("", "b"), Some("R&D Компания"));
+        assert_eq!(v[1], Ev::Text(Cow::Owned(String::from("&Ծրագիր &Ծրագիր"))));
         let v =
             all("<w:p a='1 &amp; 2'><w:t>A&nbsp;&#x2014;&#1329;&bogus;</w:t><br/></w:p>").unwrap();
         assert_eq!(v[0].attr("", "a"), Some("1 & 2"));

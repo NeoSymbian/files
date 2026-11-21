@@ -203,7 +203,7 @@ impl Html<'_> {
                 let depth = self.lists.len().saturating_sub(1).min(8) as u8;
                 let marker = match self.lists.last_mut() {
                     Some((true, n)) => {
-                        *n += 1;
+                        *n = n.saturating_add(1);
                         alloc::format!("{n}.")
                     }
                     _ => String::from(if depth.is_multiple_of(2) {

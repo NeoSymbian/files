@@ -4,7 +4,7 @@
 //! their cached values and formulas (a shared formula shifted from its master; nothing is calculated), column
 //! widths and merged cells. Cells are kept compactly and sorted, at most [`MAX_CELLS`] a sheet.
 
-use crate::xml::{Ev, Reader, text};
+use crate::xml::{Ev, Reader};
 use crate::{Error, Package, Result, join};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -16,6 +16,8 @@ use neo_format_archive::ReadAt;
 /// At most this many cells of a sheet are read (the rest: [`Sheet::truncated`]).
 pub const MAX_CELLS: usize = 200_000;
 pub const MAX_STRINGS: usize = 1_000_000;
+/// At most this many merged areas are kept (each cell drawn looks them up).
+pub const MAX_MERGES: usize = 10_000;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SheetRef {
@@ -129,8 +131,7 @@ pub fn parse_ref(r: &str) -> Option<(u32, u32)> {
 }
 
 fn xml<R: ReadAt>(p: &Package<R>, name: &str) -> Result<String> {
-    let b = p.read(name)?;
-    Ok(String::from(text(&b)?.as_ref()))
+    p.text(name)
 }
 
 const BUILTIN: [(u32, &str); 21] = [
@@ -315,7 +316,8 @@ pub fn sheet<R: ReadAt>(p: &Package<R>, wb: &Workbook, i: usize) -> Result<Sheet
                     next_row = ev
                         .attr("", "r")
                         .and_then(|v| v.parse::<u32>().ok())
-                        .map_or(next_row, |r| r.saturating_sub(1));
+                        .map_or(next_row, |r| r.saturating_sub(1))
+                        .min(1_048_575);
                     next_col = 0;
                 }
                 "c" => {
@@ -323,7 +325,9 @@ pub fn sheet<R: ReadAt>(p: &Package<R>, wb: &Workbook, i: usize) -> Result<Sheet
                         .attr("", "r")
                         .and_then(parse_ref)
                         .unwrap_or((next_row, next_col));
-                    next_col = col + 1;
+                    // Excel's limits: a hostile file can't push the grid past them
+                    let (row, col) = (row.min(1_048_575), col.min(16_383));
+                    next_col = (col + 1).min(16_383);
                     kind = String::from(ev.attr("", "t").unwrap_or("n"));
                     let style = ev.attr("", "s").and_then(|v| v.parse().ok()).unwrap_or(0);
                     cell = Some(Cell {
@@ -363,7 +367,8 @@ pub fn sheet<R: ReadAt>(p: &Package<R>, wb: &Workbook, i: usize) -> Result<Sheet
                     }
                 }
                 "mergeCell" => {
-                    if let Some((a, b)) = ev.attr("", "ref").and_then(|r| r.split_once(':'))
+                    if sh.merges.len() < MAX_MERGES
+                        && let Some((a, b)) = ev.attr("", "ref").and_then(|r| r.split_once(':'))
                         && let (Some(a), Some(b)) = (parse_ref(a), parse_ref(b))
                     {
                         sh.merges.push((a.0, a.1, b.0.max(a.0), b.1.max(a.1)));
