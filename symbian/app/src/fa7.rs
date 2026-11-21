@@ -81,6 +81,8 @@ enum Kind {
     Fixed,
     /// FA9's player (audio.rs keeps its state).
     Audio,
+    /// FA10's document viewer (doc.rs keeps its state).
+    Doc,
     Hex,
 }
 
@@ -111,8 +113,8 @@ enum Form {
 
 pub(crate) struct Open7 {
     pub path: String,
-    name: String,
-    size: u64,
+    pub(crate) name: String,
+    pub(crate) size: u64,
     from: View,
     kind: Kind,
     form: Option<Form>,
@@ -170,7 +172,7 @@ pub(crate) fn bind(
     ui.on_hex_as_text(move || p(Act::HexAsText));
 }
 
-fn read(st: &State, path: &str, size: u64, max: u64) -> Result<Vec<u8>, String> {
+pub(crate) fn read(st: &State, path: &str, size: u64, max: u64) -> Result<Vec<u8>, String> {
     if size > max {
         return Err(format!(
             "It is too big to show ({})",
@@ -241,6 +243,10 @@ pub(crate) fn open(app: &App, ui: &FilesApp, st: &mut State, path: &str) {
     };
     let ext = neo_view::ext_of(&o.name).to_ascii_lowercase();
     let r = match neo_view::family_of(&o.name) {
+        _ if crate::doc::is_doc(&o.name) => {
+            o.kind = Kind::Doc;
+            crate::doc::open(ui, st, &o)
+        }
         Family::Contact => cards(st, &mut o, &ext),
         Family::Font => font(ui, st, &mut o),
         Family::Cert => certificate(ui, st, &mut o),
@@ -273,6 +279,7 @@ pub(crate) fn back(app: &App, ui: &FilesApp, st: &mut State) {
         return cancel(app, ui, st);
     }
     crate::audio::close(st);
+    crate::doc::close(st);
     let from = st.fa7.take().map_or(View::Folder, |o| o.from);
     return_to(app, ui, st, from);
 }

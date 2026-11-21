@@ -2880,6 +2880,7 @@ dependencies = [
  "fs-e32",
  "libm",
  "neo-format-archive",
+ "neo-format-document",
  "neo-format-image",
  "neo-format-inspect",
  "neo-format-media",

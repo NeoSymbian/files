@@ -14,6 +14,7 @@ extern crate alloc;
 
 mod archive;
 mod audio;
+mod doc;
 mod edit;
 mod fa3;
 mod fa7;
@@ -168,6 +169,8 @@ enum Action {
     Fa8(fa8::Act),
     // FA9
     Audio(audio::Act),
+    // FA10
+    Doc(doc::Act),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -313,6 +316,10 @@ struct State {
     share: Option<fa8::Share>,
     // FA9
     audio: audio::Audio,
+    // FA10
+    doc: Option<doc::Open>,
+    /// The document faces' advances, calibrated against Slint on the first document.
+    fonts: Option<files_ui::doc::Fonts>,
 }
 
 fn run() -> Result<(), i32> {
@@ -387,6 +394,8 @@ fn run() -> Result<(), i32> {
         with: None,
         share: None,
         audio: audio::Audio::new(),
+        doc: None,
+        fonts: None,
     };
     load_settings(&app, &ui, &mut st);
     fa3::load(&mut st);
@@ -399,6 +408,7 @@ fn run() -> Result<(), i32> {
         fa7::test_files(&st);
         fa8::test_files(&st);
         audio::test_files(&st);
+        doc::test_files(&st);
     }
     show_drives(&app, &ui, &mut st);
     fa8::restore_clip(&app, &ui, &mut st);
@@ -709,6 +719,7 @@ fn bind(ui: &FilesApp, actions: &Rc<RefCell<VecDeque<Action>>>) {
     fa7::bind(ui, actions);
     fa8::bind(ui, actions);
     audio::bind(ui, actions);
+    doc::bind(ui, actions);
     {
         let q = actions.clone();
         ui.on_group_picked(move |g, i| {
@@ -854,6 +865,7 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
         Action::Fa7(a) => fa7::act(app, ui, st, a),
         Action::Fa8(a) => fa8::act(app, ui, st, a),
         Action::Audio(a) => audio::act(app, ui, st, a),
+        Action::Doc(a) => doc::act(ui, st, a),
         Action::Edit if st.view == View::Fa7 => fa7::edit(ui, st),
         Action::Row(i) if st.view == View::Folder => {
             let Some(item) = st.items.get(i).cloned() else {

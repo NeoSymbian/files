@@ -166,3 +166,212 @@ mod tests {
         assert!(Fonts::stored('中', Face::Regular, 16).is_none());
     }
 }
+
+use neo_format_document::layout::{Flow, Opts, Page, layout, shift};
+use neo_format_document::{Doc, PageSetup};
+
+/// How a document shows (files2-view-docx's pill).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// The file's pages at its page size, on grey.
+    Page = 0,
+    /// One long sheet at the reader's text size.
+    Reflow = 1,
+}
+
+/// Text sizes the reader steps through (dp); documents start at 15, books at 17.
+pub const SIZES: [f32; 7] = [13.0, 15.0, 17.0, 19.0, 22.0, 26.0, 30.0];
+
+pub const PAPER: u32 = 0xf7f5f0;
+pub const INK: u32 = 0x33373d;
+
+/// A document as DocView shows it: laid out at the view's width, in Page or Reflow mode, a window of it at a time.
+pub struct DocViewer {
+    pub doc: Doc,
+    pub mode: Mode,
+    /// Into [`SIZES`].
+    pub size: usize,
+    /// The page view's zoom, 1.0 = the page's width fits the view.
+    pub zoom: f32,
+    fonts: Fonts,
+    dp: f32,
+    view: (i32, i32),
+    flow: Flow,
+    /// The images' own sizes (`None`: not shown).
+    sizes: Vec<Option<(i32, i32)>>,
+    pages: Vec<Page>,
+    /// Where the window starts, px.
+    pub window_top: i32,
+    /// The scroll position, px.
+    pub top: i32,
+}
+
+impl DocViewer {
+    pub fn new(doc: Doc, fonts: Fonts, dp: f32, mode: Mode) -> Self {
+        let n = doc.images.len();
+        DocViewer {
+            doc,
+            mode,
+            size: 1,
+            zoom: 1.0,
+            fonts,
+            dp,
+            view: (0, 0),
+            flow: Flow::default(),
+            sizes: alloc::vec![None; n],
+            pages: Vec::new(),
+            window_top: 0,
+            top: 0,
+        }
+    }
+
+    /// An image's own size, before (or after) a layout.
+    pub fn set_size(&mut self, id: usize, size: Option<(i32, i32)>) {
+        if let Some(s) = self.sizes.get_mut(id) {
+            *s = size;
+        }
+    }
+
+    pub fn pages(&self) -> usize {
+        self.pages.len()
+    }
+
+    /// Lay out again for a view of `w` × `h` px (after a size, mode or zoom change, or a new view size).
+    pub fn layout(&mut self, w: i32, h: i32) {
+        self.view = (w.max(100), h.max(100));
+        let dp = self.dp;
+        let gap = (12.0 * dp) as i32;
+        let sizes = self.sizes.clone();
+        let size = move |id: usize| sizes.get(id).copied().flatten();
+        match self.mode {
+            Mode::Reflow => {
+                let pad = (22.0 * dp) as i32;
+                let body = (SIZES[self.size] * dp) as i32;
+                let body_hp = if self.doc.body == 0 {
+                    24
+                } else {
+                    self.doc.body
+                };
+                let o = Opts {
+                    width: self.view.0 - 2 * pad,
+                    body,
+                    twip: body as f32 / (body_hp as f32 * 10.0),
+                    absolute: false,
+                    gap,
+                    max_image_h: 0,
+                    image_scale: dp / 2.0,
+                };
+                let mut f = layout(&self.doc, o, &self.fonts, size);
+                shift(&mut f.items, pad, pad);
+                let height = f.height + 2 * pad;
+                self.flow = Flow::from_items(f.items, height);
+                self.pages.clear();
+            }
+            Mode::Page => {
+                let p: PageSetup = self.doc.page;
+                let sheet_w = ((self.view.0 - 2 * gap) as f32 * self.zoom) as i32;
+                let twip = sheet_w as f32 / p.width as f32;
+                let o = Opts {
+                    width: (p.text_width() as f32 * twip) as i32,
+                    body: (self.doc.body.max(2) as f32 * 10.0 * twip) as i32,
+                    twip,
+                    absolute: true,
+                    gap: (120.0 * twip) as i32,
+                    max_image_h: (p.text_height() as f32 * twip) as i32,
+                    image_scale: twip * 15.0,
+                };
+                let f = layout(&self.doc, o, &self.fonts, size);
+                let text_h = (p.text_height() as f32 * twip) as i32;
+                self.pages = f.pages(text_h);
+                let sheet_h = (p.height as f32 * twip) as i32;
+                let (ml, mt) = (
+                    (p.margin[3] as f32 * twip) as i32,
+                    (p.margin[0] as f32 * twip) as i32,
+                );
+                let x0 = ((self.view.0 - sheet_w) / 2).max(gap);
+                let mut items = Vec::new();
+                for (i, pg) in self.pages.iter().enumerate() {
+                    let y = gap + i as i32 * (sheet_h + gap);
+                    items.push(Item::Rect {
+                        x: x0,
+                        y,
+                        w: sheet_w,
+                        h: sheet_h,
+                        colour: 0xffffff,
+                    });
+                    let mut page: Vec<Item> = f.page(pg).cloned().collect();
+                    shift(&mut page, x0 + ml, y + mt - pg.top);
+                    items.extend(page);
+                }
+                let total = gap + self.pages.len() as i32 * (sheet_h + gap);
+                self.flow = Flow::from_items(items, total);
+            }
+        }
+        self.top = self.top.min((self.flow.height - self.view.1).max(0));
+        self.window_top = i32::MIN;
+    }
+
+    pub fn total(&self) -> i32 {
+        self.flow.height
+    }
+
+    /// Scrolled to `top`: whether the window must move (the caller then sets new models).
+    pub fn scroll(&mut self, top: i32) -> bool {
+        self.top = top.max(0);
+        let h = self.view.1;
+        let need = self.window_top == i32::MIN
+            || top < self.window_top
+            || top + h > self.window_top + 3 * h;
+        if need {
+            self.window_top = (top - h).max(0);
+        }
+        need
+    }
+
+    /// The items of the window, relative to its top.
+    pub fn window(&self) -> impl Iterator<Item = &Item> {
+        let t = self.window_top.max(0);
+        self.flow.window(t, t + 4 * self.view.1)
+    }
+
+    /// "12 %": how far down the view is.
+    pub fn percent(&self) -> alloc::string::String {
+        let room = (self.flow.height - self.view.1).max(1);
+        alloc::format!(
+            "{} %",
+            (self.top.max(0) as i64 * 100 / room as i64).clamp(0, 100)
+        )
+    }
+
+    /// The models for DocView: `image(id)` gives a decoded picture.
+    pub fn models(
+        &self,
+        image: impl Fn(usize) -> Option<Image>,
+    ) -> (ModelRc<DText>, ModelRc<DImage>, ModelRc<DRect>) {
+        models(self.window(), self.window_top.max(0), INK, image)
+    }
+}
+
+/// Put `v` on the screen (view "doc"); `image(id)` gives a decoded picture.
+pub fn show(
+    ui: &crate::FilesApp,
+    v: &DocViewer,
+    info: &str,
+    image: impl Fn(usize) -> Option<Image>,
+) {
+    let (t, i, r) = v.models(image);
+    ui.set_doc_mode(v.mode as i32);
+    ui.set_doc_texts(t);
+    ui.set_doc_images(i);
+    ui.set_doc_rects(r);
+    ui.set_doc_total(v.total());
+    ui.set_doc_window_top(v.window_top.max(0));
+    ui.set_doc_paper(colour(PAPER));
+    ui.set_doc_info(info.into());
+    ui.set_doc_percent(v.percent().into());
+}
+
+/// "Word document · 48 KB".
+pub fn info(family: neo_view::Family, size: u64) -> alloc::string::String {
+    alloc::format!("{} · {}", family.name(), files_core::size_text(size))
+}

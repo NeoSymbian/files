@@ -3,6 +3,8 @@
 // faces (NeoDoc = DejaVu Sans, its Bold and Oblique, and DejaVu Sans Mono: Latin, Greek, Cyrillic and Armenian), images and rectangles (rules,
 // table lines, underlines, page sheets). Rust hands over only what shows (a page, or a window of a long document).
 
+import { Theme } from "@neoui/kit.slint";
+
 // a run of text: x, y its top-left in px, `face` 0 regular, 1 bold, 2 italic, 3 mono
 export struct DText { x: int, y: int, px: int, face: int, text: string, colour: color }
 export struct DImage { x: int, y: int, w: int, h: int, image: image }
@@ -51,4 +53,154 @@ export component DocProbe inherits Text {
     font-family: root.face == 3 ? "DejaVu Sans Mono" : "NeoDoc";
     font-weight: root.face == 1 ? 700 : 400;
     font-italic: root.face == 2;
+}
+
+
+// Page | Reflow (files2-view-docx's pill)
+component Pill inherits Rectangle {
+    in property <[string]> items;
+    in property <int> current;
+    in property <bool> first-enabled: true;
+    callback picked(int);
+    height: 32 * Theme.dp;
+    width: lay.preferred-width;
+    border-radius: 16 * Theme.dp;
+    background: #1d2025;
+    lay := HorizontalLayout {
+        padding: 2 * Theme.dp;
+        spacing: 2 * Theme.dp;
+        for s[i] in root.items: Rectangle {
+            border-radius: 14 * Theme.dp;
+            width: t.preferred-width + 24 * Theme.dp;
+            background: i == root.current ? #3d8bfd33 : transparent;
+            t := Text {
+                text: s;
+                color: i == root.current ? #cfe0ff : #b9bec7;
+                font-size: 13 * Theme.dp;
+                font-weight: 600;
+            }
+
+            TouchArea {
+                clicked => {
+                    root.picked(i);
+                }
+            }
+        }
+    }
+}
+
+// files2-view-docx: the Page | Reflow bar, the document (pages on grey, or one long sheet of paper), and the
+// footer with its kind, size and how far down it is. Rust lays out what shows (a window around the scroll position).
+export component DocView inherits Rectangle {
+    in property <int> mode;
+    in property <[DText]> texts;
+    in property <[DImage]> images;
+    in property <[DRect]> rects;
+    // the whole document's height, and where the items' (0, 0) is, px
+    in property <int> total;
+    in property <int> window-top;
+    in property <color> paper;
+    in property <string> info;
+    in property <string> percent;
+    out property <int> view-w: flick.width / 1px;
+    out property <int> view-h: flick.height / 1px;
+    callback mode-picked(int);
+    callback scrolled(int);
+    callback tapped(length, length);
+    background: #000000;
+    public function to-top() {
+        flick.content-y = 0;
+    }
+    public function scroll-to(px: int) {
+        flick.content-y = -min(max(0, px), max(0, root.total - root.view-h)) * 1px;
+    }
+
+    VerticalLayout {
+        Rectangle {
+            height: 44 * Theme.dp;
+            HorizontalLayout {
+                padding-left: 12 * Theme.dp;
+                padding-right: 12 * Theme.dp;
+                spacing: 10 * Theme.dp;
+                alignment: start;
+                VerticalLayout {
+                    alignment: center;
+                    Pill {
+                        items: ["Page", "Reflow"];
+                        current: root.mode;
+                        picked(i) => {
+                            root.mode-picked(i);
+                        }
+                    }
+                }
+
+                Text {
+                    text: "Read-only";
+                    color: #7d838c;
+                    font-size: 12.5 * Theme.dp;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle {
+                y: parent.height - self.height;
+                height: max(1px, Theme.dp / 3);
+                background: #ffffff12;
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            background: root.mode == 0 ? #2b2e33 : root.paper;
+            clip: true;
+            flick := Flickable {
+                content-height: max(self.height, root.total * 1px);
+                changed content-y => {
+                    root.scrolled(-self.content-y / 1px);
+                }
+                DocItems {
+                    y: root.window-top * 1px;
+                    width: parent.width;
+                    height: 1px;
+                    texts: root.texts;
+                    images: root.images;
+                    rects: root.rects;
+                }
+
+                TouchArea {
+                    clicked => {
+                        root.tapped(self.mouse-x, self.mouse-y);
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 30 * Theme.dp;
+            Rectangle {
+                y: 0;
+                height: max(1px, Theme.dp / 3);
+                background: #ffffff12;
+            }
+
+            HorizontalLayout {
+                padding-left: 16 * Theme.dp;
+                padding-right: 16 * Theme.dp;
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.info;
+                    color: #7d838c;
+                    font-size: 12.5 * Theme.dp;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: root.percent;
+                    color: #7d838c;
+                    font-size: 12.5 * Theme.dp;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
 }

@@ -20,6 +20,7 @@ neo-format-archive = { path = "../crates/neo-format-archive" }
 neo-format-pim = { path = "../crates/neo-format-pim" }
 neo-format-inspect = { path = "../crates/neo-format-inspect" }
 neo-format-media = { path = "../crates/neo-format-media" }
+neo-format-document = { path = "../crates/neo-format-document" }
 # NeoSymbian/phone's contacts model (Apache): the vCard import and the book NEOCONT writes
 contacts = { git = "https://github.com/NeoSymbian/phone", rev = "3057b116f0fc39643a7937a0f9361eeee35195fc" }
 files-ops = { path = "../crates/files-ops" }

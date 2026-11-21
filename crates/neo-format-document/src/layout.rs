@@ -25,6 +25,9 @@ pub trait Measure {
     fn ascent(&self, face: Face, px: i32) -> i32;
 }
 
+/// Underlines and strikes of text without a colour of its own.
+pub const LINE_INK: u32 = 0x33373d;
+
 /// Drawn in place of a character the fonts don't have.
 pub const MISSING: char = '□';
 
@@ -86,6 +89,14 @@ impl Item {
             Item::Text { y, .. } | Item::Image { y, .. } | Item::Rect { y, .. } => y,
         }
     }
+    /// How tall it draws (a text: about two of its px, for windows).
+    pub fn height(&self) -> i32 {
+        match *self {
+            Item::Text { px, .. } => px * 2,
+            Item::Image { h, .. } | Item::Rect { h, .. } => h,
+        }
+    }
+
     fn shift(&mut self, dx: i32, dy: i32) {
         match self {
             Item::Text { x, y, .. } | Item::Image { x, y, .. } | Item::Rect { x, y, .. } => {
@@ -124,6 +135,18 @@ pub struct Page {
 }
 
 impl Flow {
+    /// A flow made of placed items (a document's pages side by side with their sheets).
+    pub fn from_items(mut items: Vec<Item>, height: i32) -> Flow {
+        items.sort_by_key(Item::y);
+        let tallest = items.iter().map(Item::height).max().unwrap_or(0);
+        Flow {
+            items,
+            height,
+            breaks: Vec::new(),
+            tallest,
+        }
+    }
+
     /// The items that show in `[top, end)`.
     pub fn window(&self, top: i32, end: i32) -> impl Iterator<Item = &Item> {
         let from = self.items.partition_point(|i| i.y() < top - self.tallest);
@@ -239,15 +262,7 @@ pub fn layout<M: Measure>(
     }
     f.height = y;
     f.items.sort_by_key(Item::y);
-    f.tallest = f
-        .items
-        .iter()
-        .map(|i| match *i {
-            Item::Text { px, .. } => px * 2,
-            Item::Image { h, .. } | Item::Rect { h, .. } => h,
-        })
-        .max()
-        .unwrap_or(0);
+    f.tallest = f.items.iter().map(Item::height).max().unwrap_or(0);
     f
 }
 
@@ -313,7 +328,9 @@ impl<M: Measure, S: Fn(usize) -> Option<(i32, i32)>> Ctx<'_, M, S> {
             ParaKind::Item { .. } => (o.gap / 4, o.gap / 4),
             _ => (o.gap / 2, o.gap / 2),
         };
-        y += p.before.map_or(before, |t| self.tw(t));
+        if y > 0 {
+            y += p.before.map_or(before, |t| self.tw(t));
+        }
         let styles: Vec<Style> = p
             .runs
             .iter()
@@ -544,6 +561,7 @@ impl<M: Measure, S: Fn(usize) -> Option<(i32, i32)>> Ctx<'_, M, S> {
             let mut s = String::new();
             let start_x = x;
             let mut lead = 0;
+            let mut trail = 0;
             while j < chars.len() && chars[j].run == run {
                 let c = chars[j].c;
                 if s.is_empty() && c == ' ' {
@@ -551,6 +569,11 @@ impl<M: Measure, S: Fn(usize) -> Option<(i32, i32)>> Ctx<'_, M, S> {
                 } else if c != '\n' && c != '\u{ad}' {
                     s.push(c);
                 }
+                trail = if c == ' ' || c == '\n' {
+                    trail + chars[j].w
+                } else {
+                    0
+                };
                 x += chars[j].w;
                 j += 1;
             }
@@ -574,6 +597,28 @@ impl<M: Measure, S: Fn(usize) -> Option<(i32, i32)>> Ctx<'_, M, S> {
                     underline: st.underline,
                     strike: st.strike,
                 });
+                // underline and strike: lines under and through the run (Slint's Text has neither)
+                let w = x - start_x - lead - trail;
+                let h = (px / 14).max(1);
+                let ink = st.colour.or(colour).unwrap_or(LINE_INK);
+                if st.underline {
+                    f.items.push(Item::Rect {
+                        x: start_x + lead,
+                        y: base + dy + px / 8,
+                        w,
+                        h,
+                        colour: ink,
+                    });
+                }
+                if st.strike {
+                    f.items.push(Item::Rect {
+                        x: start_x + lead,
+                        y: base + dy - px * 3 / 10,
+                        w,
+                        h,
+                        colour: ink,
+                    });
+                }
             }
             i = j;
         }
@@ -593,7 +638,7 @@ impl<M: Measure, S: Fn(usize) -> Option<(i32, i32)>> Ctx<'_, M, S> {
         }
         let line = (o.body / 16).max(1);
         let pad = o.body * 2 / 5;
-        let widths: Vec<i32> = if t.widths.len() == cols && t.widths.iter().all(|w| *w > 0) {
+        let mut widths: Vec<i32> = if t.widths.len() == cols && t.widths.iter().all(|w| *w > 0) {
             let total: i64 = t.widths.iter().map(|w| *w as i64).sum();
             t.widths
                 .iter()
@@ -602,6 +647,51 @@ impl<M: Measure, S: Fn(usize) -> Option<(i32, i32)>> Ctx<'_, M, S> {
         } else {
             alloc::vec![o.width / cols as i32; cols]
         };
+        // a column is at least as wide as its longest word, when the table can afford it
+        let mut mins = alloc::vec![0; cols];
+        for row in &t.rows {
+            let mut col = 0;
+            for cell in row {
+                if col >= cols {
+                    break;
+                }
+                if cell.span <= 1 {
+                    for p in &cell.paras {
+                        for r in &p.runs {
+                            let st = Style {
+                                bold: r.style.bold || cell.header,
+                                ..r.style
+                            };
+                            let (f, px) = (Self::face(&st), self.px(&st, &p.kind));
+                            for word in r.text.split_whitespace() {
+                                let w: i32 = word
+                                    .chars()
+                                    .map(|c| self.m.advance(c, f, px).unwrap_or(px / 2))
+                                    .sum();
+                                mins[col] = mins[col].max(w + 2 * pad + 2);
+                            }
+                        }
+                    }
+                }
+                col += cell.span.max(1) as usize;
+            }
+        }
+        if mins.iter().sum::<i32>() <= o.width {
+            for _ in 0..cols {
+                let short: i32 = widths.iter().zip(&mins).map(|(w, m)| (m - w).max(0)).sum();
+                if short == 0 {
+                    break;
+                }
+                let spare: i32 = widths.iter().zip(&mins).map(|(w, m)| (w - m).max(0)).sum();
+                for (w, m) in widths.iter_mut().zip(&mins) {
+                    if *w < *m {
+                        *w = *m;
+                    } else if spare > 0 {
+                        *w -= ((*w - m) as i64 * short as i64 / spare as i64) as i32;
+                    }
+                }
+            }
+        }
         let colour = 0xd9d6cf;
         y += o.gap / 2;
         for row in &t.rows {
@@ -682,7 +772,7 @@ impl<M: Measure, S: Fn(usize) -> Option<(i32, i32)>> Ctx<'_, M, S> {
         if nw <= 0 || nh <= 0 {
             return y;
         }
-        let (mut w, mut h) = if img.width > 0 && img.height > 0 && o.absolute {
+        let (mut w, mut h) = if img.width > 0 && img.height > 0 {
             (self.tw(img.width), self.tw(img.height))
         } else {
             (

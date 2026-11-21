@@ -6,8 +6,11 @@
 
 extern crate alloc;
 
+pub mod docx;
 pub mod layout;
 pub mod model;
+pub mod odt;
+pub mod rtf;
 pub mod xml;
 
 pub use model::*;
@@ -151,6 +154,26 @@ pub fn detect<R: ReadAt>(r: &R) -> Option<Kind> {
         }
     }
     None
+}
+
+/// Read a docx, odt or rtf ([`Kind::Epub`] and [`Kind::Xlsx`] have their own readers: a book is read a chapter at a
+/// time, a sheet as cells). An rtf is read whole, at most [`MAX_PART`].
+pub fn read<R: ReadAt>(kind: Kind, r: R) -> Result<Doc> {
+    match kind {
+        Kind::Docx => docx::read(&Package::open(r)?),
+        Kind::Odt => odt::read(&Package::open(r)?),
+        Kind::Rtf => {
+            let size = r.size();
+            if size > MAX_PART {
+                return Err(Error::TooBig);
+            }
+            let mut b = alloc::vec![0u8; size as usize];
+            let n = r.read_at(0, &mut b)?;
+            b.truncate(n);
+            rtf::read(&b)
+        }
+        Kind::Epub | Kind::Xlsx => Err(Error::NotDocument),
+    }
 }
 
 /// `dir` of `base` joined with `rel` (`OEBPS/text/c1.xhtml` + `../img/a.png` → `OEBPS/img/a.png`); a `#fragment` and
