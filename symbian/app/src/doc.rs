@@ -118,6 +118,7 @@ pub(crate) struct Open {
 }
 
 pub(crate) enum Act {
+    Resized(i32, i32),
     Mode(i32),
     Scrolled(i32),
     ScrolledX(i32),
@@ -128,6 +129,8 @@ pub(crate) fn bind(ui: &FilesApp, q: &Rc<RefCell<VecDeque<crate::Action>>>) {
         let q = q.clone();
         move |a: Act| q.borrow_mut().push_back(crate::Action::Doc(a))
     };
+    let p = push(q);
+    ui.on_doc_resized(move |w, h| p(Act::Resized(w, h)));
     let p = push(q);
     ui.on_doc_mode_picked(move |i| p(Act::Mode(i)));
     let p = push(q);
@@ -208,6 +211,8 @@ fn read(st: &State, path: &str, size: u64) -> Result<(Doc, Sizes), String> {
 }
 
 pub(crate) fn open(ui: &FilesApp, st: &mut State, o: &Open7) -> Result<&'static str, String> {
+    // the viewer's area is measured with the viewer showing (the folder's footer tabs make it shorter)
+    ui.set_view("doc".into());
     let (doc, sizes) = read(st, &o.path, o.size)?;
     let fonts = fonts(ui, st);
     let dp = ui.global::<files_ui::Theme>().get_dp();
@@ -291,6 +296,15 @@ pub(crate) fn picture(
 pub(crate) fn act(ui: &FilesApp, st: &mut State, a: Act) {
     let Some(d) = st.doc.as_mut() else { return };
     match a {
+        Act::Resized(w, h) => {
+            // the same share of the document stays in view
+            let at = d.v.top as f32 / d.v.total().max(1) as f32;
+            d.v.layout(w, h);
+            let top = (at * d.v.total() as f32) as i32;
+            d.v.scroll(top);
+            refresh(ui, st);
+            ui.invoke_doc_scroll_to(top);
+        }
         Act::Mode(m) => {
             let mode = if m == 0 { Mode::Page } else { Mode::Reflow };
             if mode == d.v.mode {

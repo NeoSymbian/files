@@ -23,6 +23,7 @@ pub(crate) struct Open {
 }
 
 pub(crate) enum Act {
+    Resized(i32, i32),
     Scrolled(i32, i32),
     Tapped(i32, i32),
     Head(bool, i32),
@@ -34,6 +35,8 @@ pub(crate) fn bind(ui: &FilesApp, q: &Rc<RefCell<VecDeque<crate::Action>>>) {
         let q = q.clone();
         move |a: Act| q.borrow_mut().push_back(crate::Action::Sheet(a))
     };
+    let p = push(q);
+    ui.on_sheet_resized(move |w, h| p(Act::Resized(w, h)));
     let p = push(q);
     ui.on_sheet_scrolled(move |x, y| p(Act::Scrolled(x, y)));
     let p = push(q);
@@ -63,6 +66,8 @@ fn package<'a>(
 }
 
 pub(crate) fn open(ui: &FilesApp, st: &mut State, o: &Open7) -> Result<&'static str, String> {
+    // the viewer's area is measured with the viewer showing (the folder's footer tabs make it shorter)
+    ui.set_view("sheet".into());
     let p = package(st, &o.path, None)?;
     let reason = |e: neo_format_document::Error| String::from(e.reason());
     let wb = xlsx::open(&p).map_err(reason)?;
@@ -98,6 +103,10 @@ pub(crate) fn act(ui: &FilesApp, st: &mut State, a: Act) {
         return;
     };
     match a {
+        Act::Resized(w, h) => {
+            s.v.resize(w, h);
+            show_sheet(ui, &s.v);
+        }
         Act::Scrolled(x, y) => {
             if s.v.scrolled(x, y) {
                 show_sheet(ui, &s.v);

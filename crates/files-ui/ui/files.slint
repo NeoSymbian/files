@@ -859,6 +859,9 @@ export component FilesApp inherits Window {
     callback doc-mode-picked(int);
     callback doc-scrolled(int);
     callback doc-scrolled-x(int);
+    callback doc-resized(int, int);
+    callback book-resized(int, int);
+    callback sheet-resized(int, int);
     callback doc-tapped(length, length);
     public function doc-scroll-to(px: int) {
         doc-view.scroll-to(px);
@@ -2351,6 +2354,9 @@ export component FilesApp inherits Window {
                 sheet-picked(i) => {
                     root.sheet-picked(i);
                 }
+                resized(w, h) => {
+                    root.sheet-resized(w, h);
+                }
             }
             book-view := BookView {
                 visible: root.view == "book";
@@ -2373,6 +2379,9 @@ export component FilesApp inherits Window {
                 contents-current: root.book-contents-current;
                 turn(d) => {
                     root.book-turn(d);
+                }
+                resized(w, h) => {
+                    root.book-resized(w, h);
                 }
                 toggle-controls => {
                     root.book-toggle-controls();
@@ -2407,6 +2416,9 @@ export component FilesApp inherits Window {
                 }
                 scrolled-x(px) => {
                     root.doc-scrolled-x(px);
+                }
+                resized(w, h) => {
+                    root.doc-resized(w, h);
                 }
                 tapped(x, y) => {
                     root.doc-tapped(x, y);

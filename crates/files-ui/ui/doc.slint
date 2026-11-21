@@ -106,6 +106,14 @@ export component DocView inherits Rectangle {
     in property <string> percent;
     out property <int> view-w: flick.width / 1px;
     out property <int> view-h: flick.height / 1px;
+    // the area changed size (it is first measured before the frame that shows it): Rust lays out again
+    callback resized(int, int);
+    changed view-w => {
+        root.resized(self.view-w, self.view-h);
+    }
+    changed view-h => {
+        root.resized(self.view-w, self.view-h);
+    }
     callback mode-picked(int);
     callback scrolled(int);
     callback scrolled-x(int);
@@ -261,6 +269,13 @@ export component BookView inherits Rectangle {
     in property <int> contents-current;
     out property <int> page-w: body.width / 1px;
     out property <int> page-h: body.height / 1px;
+    callback resized(int, int);
+    changed page-w => {
+        root.resized(self.page-w, self.page-h);
+    }
+    changed page-h => {
+        root.resized(self.page-w, self.page-h);
+    }
     callback turn(int);
     callback toggle-controls();
     callback control(int);
@@ -542,6 +557,13 @@ export component SheetView inherits Rectangle {
     in property <int> sheet;
     out property <int> view-w: flick.width / 1px;
     out property <int> view-h: flick.height / 1px;
+    callback resized(int, int);
+    changed view-w => {
+        root.resized(self.view-w, self.view-h);
+    }
+    changed view-h => {
+        root.resized(self.view-w, self.view-h);
+    }
     callback scrolled(int, int);
     callback tapped(int, int);
     callback head-tapped(bool, int);

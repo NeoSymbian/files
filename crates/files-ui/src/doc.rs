@@ -786,6 +786,11 @@ impl SheetViewer {
         self.sheet = sheet;
         self.sel = (0, 0, 0, 0);
         self.scroll = (0, 0);
+        self.resize(w, h);
+    }
+
+    /// The grid's area is `w` × `h` px now (the selection and the scroll stay).
+    pub fn resize(&mut self, w: i32, h: i32) {
         self.view = (w.max(100), h.max(100));
         self.row_h = (ROW_DP * self.dp) as i32;
         let (rows, cols) = self.sheet.as_ref().map_or((0, 0), |s| (s.rows, s.cols));

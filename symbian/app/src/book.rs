@@ -55,6 +55,7 @@ pub(crate) struct Open {
 }
 
 pub(crate) enum Act {
+    Resized(i32, i32),
     Turn(i32),
     ToggleControls,
     Control(usize),
@@ -67,6 +68,8 @@ pub(crate) fn bind(ui: &FilesApp, q: &Rc<RefCell<VecDeque<crate::Action>>>) {
         let q = q.clone();
         move |a: Act| q.borrow_mut().push_back(crate::Action::Book(a))
     };
+    let p = push(q);
+    ui.on_book_resized(move |w, h| p(Act::Resized(w, h)));
     let p = push(q);
     ui.on_book_turn(move |d| p(Act::Turn(d)));
     let p = push(q);
@@ -127,6 +130,8 @@ pub(crate) fn open(
     st: &mut State,
     o: &Open7,
 ) -> Result<&'static str, String> {
+    // the viewer's area is measured with the viewer showing (the folder's footer tabs make it shorter)
+    ui.set_view("book".into());
     let p = package(&st.fs, &o.path, None)?;
     let book = epub::open(&p).map_err(|e| String::from(e.reason()))?;
     let modified = st.fs.entry(&o.path).map(|e| e.modified).unwrap_or(0);
@@ -151,6 +156,13 @@ pub(crate) fn open(
     r.size = setting(app, SIZE_KEY, files_ui::doc::BOOK_SIZE, SIZES.len());
     r.theme = setting(app, THEME_KEY, 0, THEMES.len());
     r.layout(ui.get_book_page_w(), ui.get_book_page_h());
+    dprintln!(
+        "files: book page {}x{} px, dp {}, window {}",
+        ui.get_book_page_w(),
+        ui.get_book_page_h(),
+        dp,
+        ui.window().size().height
+    );
     r.set_chapter(chapter_i, doc, sizes, Some(at), false);
     st.doc_n = st.doc_n.wrapping_add(1);
     let b = Open {
@@ -271,6 +283,14 @@ fn go(ui: &FilesApp, st: &mut State, i: usize, end: bool, at: Option<Pos>) {
 pub(crate) fn act(app: &App, ui: &FilesApp, st: &mut State, a: Act) {
     let Some(b) = st.book.as_mut() else { return };
     match a {
+        Act::Resized(w, h) => {
+            if (w, h) != b.r.view() {
+                // the page keeps its place; the pages are counted again at the new size
+                b.r.layout(w, h);
+                count(st);
+                refresh(ui, st);
+            }
+        }
         Act::Turn(d) => {
             b.controls = false;
             let t = if d > 0 {
