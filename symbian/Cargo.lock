@@ -610,7 +610,7 @@ checksum = "be95d4a884358a21a199689323c29e9256b4a1b315e22f183d155422041d3a9a"
 [[package]]
 name = "contacts"
 version = "0.1.0"
-source = "git+https://github.com/NeoSymbian/phone?rev=3057b116f0fc39643a7937a0f9361eeee35195fc#3057b116f0fc39643a7937a0f9361eeee35195fc"
+source = "git+https://github.com/NeoSymbian/phone?rev=add6e2449050e0aace786e5d41d8c468886aa1a1#add6e2449050e0aace786e5d41d8c468886aa1a1"
 dependencies = [
  "phone-rules",
 ]
@@ -924,7 +924,7 @@ dependencies = [
 [[package]]
 name = "e32"
 version = "0.1.0"
-source = "git+https://github.com/NeoSymbian/e32-rs?rev=cedbcd2ee7540e2e73e1dc1f7dc19dd6d42721f8#cedbcd2ee7540e2e73e1dc1f7dc19dd6d42721f8"
+source = "git+https://github.com/NeoSymbian/e32-rs?rev=206b6c28cf49ef2f6e746580df97f05921500c35#206b6c28cf49ef2f6e746580df97f05921500c35"
 dependencies = [
  "critical-section",
  "e32-sys",
@@ -934,7 +934,7 @@ dependencies = [
 [[package]]
 name = "e32-sys"
 version = "0.1.0"
-source = "git+https://github.com/NeoSymbian/e32-rs?rev=cedbcd2ee7540e2e73e1dc1f7dc19dd6d42721f8#cedbcd2ee7540e2e73e1dc1f7dc19dd6d42721f8"
+source = "git+https://github.com/NeoSymbian/e32-rs?rev=206b6c28cf49ef2f6e746580df97f05921500c35#206b6c28cf49ef2f6e746580df97f05921500c35"
 
 [[package]]
 name = "either"
@@ -2856,7 +2856,7 @@ version = "0.1.0"
 [[package]]
 name = "neoapp"
 version = "0.1.0"
-source = "git+https://github.com/NeoSymbian/neoui?rev=fa5a610774857a6512a4960414c6a1a8d26f3a6f#fa5a610774857a6512a4960414c6a1a8d26f3a6f"
+source = "git+https://github.com/NeoSymbian/neoui?rev=222c43f8116a6dba9ff170997ae7dc0feef055a0#222c43f8116a6dba9ff170997ae7dc0feef055a0"
 dependencies = [
  "e32",
  "neoui-proto",
@@ -2866,7 +2866,7 @@ dependencies = [
 [[package]]
 name = "neoaudio"
 version = "0.1.0"
-source = "git+https://github.com/NeoSymbian/neohw?rev=99cdeb32adceb968bda06ecc39a0e4286f8eb4cc#99cdeb32adceb968bda06ecc39a0e4286f8eb4cc"
+source = "git+https://github.com/NeoSymbian/neohw?rev=9b3853bdc56c0bef6bcf34cbc5cf0c1f18e39fb5#9b3853bdc56c0bef6bcf34cbc5cf0c1f18e39fb5"
 
 [[package]]
 name = "neofiles"
@@ -2897,7 +2897,7 @@ dependencies = [
 [[package]]
 name = "neoui-kit"
 version = "0.1.0"
-source = "git+https://github.com/NeoSymbian/neoui?rev=a73ace8f2b9c8252c8bd63a0c39f1b9d92b6dc29#a73ace8f2b9c8252c8bd63a0c39f1b9d92b6dc29"
+source = "git+https://github.com/NeoSymbian/neoui?rev=222c43f8116a6dba9ff170997ae7dc0feef055a0#222c43f8116a6dba9ff170997ae7dc0feef055a0"
 dependencies = [
  "slint-build",
 ]
@@ -2905,7 +2905,7 @@ dependencies = [
 [[package]]
 name = "neoui-proto"
 version = "0.1.0"
-source = "git+https://github.com/NeoSymbian/neoui?rev=fa5a610774857a6512a4960414c6a1a8d26f3a6f#fa5a610774857a6512a4960414c6a1a8d26f3a6f"
+source = "git+https://github.com/NeoSymbian/neoui?rev=222c43f8116a6dba9ff170997ae7dc0feef055a0#222c43f8116a6dba9ff170997ae7dc0feef055a0"
 
 [[package]]
 name = "nix"
@@ -3448,7 +3448,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "phone-rules"
 version = "0.1.0"
-source = "git+https://github.com/NeoSymbian/neohw?rev=06b03ddb4c16e8609328e1ca4814df00daab78bb#06b03ddb4c16e8609328e1ca4814df00daab78bb"
+source = "git+https://github.com/NeoSymbian/neohw?rev=9b3853bdc56c0bef6bcf34cbc5cf0c1f18e39fb5#9b3853bdc56c0bef6bcf34cbc5cf0c1f18e39fb5"
 
 [[package]]
 name = "pico-args"

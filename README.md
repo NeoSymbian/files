@@ -27,7 +27,7 @@ The JPEG encoder (`jpeg-encoder`, in `neo-format-image`) is based in part on the
 
 ```sh
 cargo fmt --all --check && cargo clippy --all-targets -- -D warnings && cargo test   # host; snapshots/*.png
-cd symbian && cargo fmt --all --check && cargo arm   # target/armv5te-none-eabi/release/libneofiles.a
+cd symbian && cargo fmt --all --check && cargo arm   # target/armv8a-neosymbian-eabi/release/libneofiles.a
 ```
 
 For a ROM, copy `symbian/exes.txt`'s line and `libneofiles.a` into NeoSymbian/build's `rust/`. The pins (e32, Slint,

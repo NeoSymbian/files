@@ -10,4 +10,4 @@ license.workspace = true
 
 [dev-dependencies]
 # phone's vCard reader and writer (Apache): the round trip with Contacts is this crate's gate
-contacts = { git = "https://github.com/NeoSymbian/phone", rev = "3057b116f0fc39643a7937a0f9361eeee35195fc" }
+contacts = { git = "https://github.com/NeoSymbian/phone", rev = "add6e2449050e0aace786e5d41d8c468886aa1a1" }
