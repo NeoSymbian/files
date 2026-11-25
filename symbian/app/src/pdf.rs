@@ -164,7 +164,7 @@ pub(crate) fn open(
         swallow: false,
     });
     w.open(n, o.path.clone(), String::new());
-    ui.set_pdf_ask("".into());
+    set_ask(ui, "");
     ui.set_pdf_ask_error("".into());
     ui.set_pdf_contents_open(false);
     ui.set_pdf_pages(ModelRc::default());
@@ -175,13 +175,21 @@ pub(crate) fn open(
     Ok("pdf")
 }
 
+/// The password or page card: the keyboard goes when it closes (Slint doesn't tell the UI server).
+fn set_ask(ui: &FilesApp, ask: &str) {
+    if ask.is_empty() && !ui.get_pdf_ask().is_empty() {
+        ui.global::<files_ui::KeyboardFocus>().invoke_close();
+    }
+    ui.set_pdf_ask(ask.into());
+}
+
 /// The view's properties from the state.
 fn show(ui: &FilesApp, p: &Open) {
     if let Some(v) = &p.v {
         show_pdf(ui, v, &Pics(p), &info(p.size, v.pages()));
     }
     ui.set_pdf_contents_open(p.contents);
-    ui.set_pdf_ask(p.ask.into());
+    set_ask(ui, p.ask);
 }
 
 /// Asks the worker for the pictures the view wants that aren't in hand; forgets those far from the view.
@@ -359,10 +367,12 @@ pub(crate) fn act(app: &App, ui: &FilesApp, st: &mut State, a: Act) {
                 }
                 _ => Some(i),
             };
-            if let (Some(page), Some(v)) = (page, p.v.as_ref()) {
-                ui.invoke_pdf_scroll_to(v.top_of(page.min(pages.saturating_sub(1))));
+            if let Some(page) = page {
+                go_to(ui, st, page);
             }
-            show(ui, p);
+            if let Some(p) = st.pdf.as_ref() {
+                show(ui, p);
+            }
         }
         Act::ContentsClosed => {
             p.contents = false;
@@ -390,10 +400,10 @@ pub(crate) fn act(app: &App, ui: &FilesApp, st: &mut State, a: Act) {
             "page" => match text.trim().parse::<usize>() {
                 Ok(n) if (1..=pages).contains(&n) => {
                     p.ask = "";
-                    if let Some(v) = p.v.as_ref() {
-                        ui.invoke_pdf_scroll_to(v.top_of(n - 1));
+                    go_to(ui, st, n - 1);
+                    if let Some(p) = st.pdf.as_ref() {
+                        show(ui, p);
                     }
-                    show(ui, p);
                 }
                 _ => ui.set_pdf_ask_error(format!("A page from 1 to {pages}").into()),
             },
@@ -402,7 +412,7 @@ pub(crate) fn act(app: &App, ui: &FilesApp, st: &mut State, a: Act) {
         Act::AskCancelled => {
             if p.ask == "password" && p.v.is_none() {
                 p.ask = "";
-                ui.set_pdf_ask("".into());
+                set_ask(ui, "");
                 // nothing to show without the password: the bytes, saying why
                 close(st);
                 crate::fa7::hex_because(app, ui, st, Error::Password.reason());
@@ -459,7 +469,7 @@ pub(crate) fn clear(ui: &FilesApp) {
     ui.set_pdf_tile_on(false);
     ui.set_pdf_tile(Default::default());
     ui.set_pdf_contents_open(false);
-    ui.set_pdf_ask("".into());
+    set_ask(ui, "");
 }
 
 /// Back: the Contents or an ask close first.
@@ -596,6 +606,19 @@ fn place(st: &State, path: &str, size: u64, modified: i64) -> Option<(usize, f32
     let mut f = line[key.len()..].split('\t').map(|v| v.parse::<u32>().ok());
     let (page, zoom) = (f.next()??, f.next()??);
     Some((page as usize, zoom as f32 / 100.0))
+}
+
+/// A jump (Contents, a thumbnail, Go to page): the view moves now, as Slint tells of the scroll only on its next turn
+/// and the pages there must be in the model already.
+fn go_to(ui: &FilesApp, st: &mut State, page: usize) {
+    let Some(v) = st.pdf.as_mut().and_then(|p| p.v.as_mut()) else {
+        return;
+    };
+    let top = v.top_of(page.min(v.pages().saturating_sub(1)));
+    ui.invoke_pdf_scroll_to(top);
+    v.scroll(top, v.left);
+    save_place(st);
+    request(st);
 }
 
 fn save_place(st: &State) {

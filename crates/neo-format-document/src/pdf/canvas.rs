@@ -11,6 +11,7 @@ use core::cell::Cell;
 use hayro_interpret::encode::EncodedShadingType;
 use hayro_interpret::font::{Glyph, GlyphRun};
 use hayro_interpret::gradient::SvgGradientKind;
+use hayro_interpret::hayro_syntax::object::dict::keys::{BITS_PER_COMPONENT, BPC};
 use hayro_interpret::kurbo::{self, Affine, BezPath, PathEl, Rect, Shape};
 use hayro_interpret::pattern::{Pattern, TilingPattern};
 use hayro_interpret::util::x_y_advances;
@@ -484,7 +485,7 @@ impl Canvas {
         }
         let mask = self.mask_with(props.soft_mask.as_ref());
         let (x, y) = x_y_advances(&transform);
-        // Shrinking or smooth images are filtered; enlarged ones keep their pixels (barcodes, scans).
+        // Shrinking or smooth images are filtered; the others keep their pixels when enlarged.
         let shrinks = x.length() < 1.0 || y.length() < 1.0;
         let quality = if smooth || shrinks {
             sk::FilterQuality::Bilinear
@@ -666,22 +667,31 @@ impl<'a> Device<'a> for Canvas {
             (ceil(y.length() * image.height() as f64) as u32).clamp(1, 4096),
         );
         match image {
-            Image::Raster(r) => r.with_rgba(
-                |data, alpha| {
-                    let (sx, sy) = data.scale_factors();
-                    let smooth = data.interpolate();
-                    let Some(_lease) =
-                        self.lease(data.width() as usize * data.height() as usize * 4)
-                    else {
-                        return;
-                    };
-                    if let Some(rgba) = rgba_of(&data, alpha.as_ref()) {
-                        let t = props.transform * Affine::scale_non_uniform(sx as f64, sy as f64);
-                        self.draw_rgba(rgba, t, &props, smooth);
-                    }
-                },
-                Some(target),
-            ),
+            Image::Raster(r) => {
+                // Enlarged photos are smoothed; 1-bit images (barcodes, scans) keep their pixels.
+                let dict = r.stream().dict();
+                let bpc = dict
+                    .get::<u8>(BPC)
+                    .or_else(|| dict.get::<u8>(BITS_PER_COMPONENT));
+                let photo = bpc != Some(1);
+                r.with_rgba(
+                    |data, alpha| {
+                        let (sx, sy) = data.scale_factors();
+                        let smooth = photo || data.interpolate();
+                        let Some(_lease) =
+                            self.lease(data.width() as usize * data.height() as usize * 4)
+                        else {
+                            return;
+                        };
+                        if let Some(rgba) = rgba_of(&data, alpha.as_ref()) {
+                            let t =
+                                props.transform * Affine::scale_non_uniform(sx as f64, sy as f64);
+                            self.draw_rgba(rgba, t, &props, smooth);
+                        }
+                    },
+                    Some(target),
+                )
+            }
             Image::Stencil(s) => s.with_stencil(
                 |stencil, paint| {
                     let t = props.transform
