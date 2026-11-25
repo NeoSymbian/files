@@ -30,6 +30,7 @@ import { PackItem, WayRow, JobCard, ArchiveBar, ViewOnly, CompressForm, FolderPi
 import { PimLine, PimCard, PimField, EvRow, EvCard, Sample, SampleGroup, GlyphRow, InfoGroup, VcfView, VcfEdit, IcsView, IcsEdit, FontView, CertView, AppView, UnknownView } from "fa7.slint";
 import { AudioView } from "audio.slint";
 import { DText, DImage, DRect, DCell, DocItems, DocProbe, DocView, BookView, SheetView } from "doc.slint";
+import { PSlot, PdfView } from "pdf.slint";
 import { MdSpan, MdRow, CellRow, Col, CodeKeys, StatusLine, FindBar, Segments, MdView, TableGrid, CellBar, TypeChips } from "editor.slint";
 export { DText, DImage, DRect, DCell }
 export { TSpan, TRow, Mark, MdSpan, MdRow, CellRow, Col, TextMetrics, StripItem }
@@ -800,6 +801,40 @@ export component FilesApp inherits Window {
     in property <color> doc-paper: #f7f5f0;
     in property <string> doc-info;
     in property <string> doc-percent;
+    // FA11 (files2-view-pdf): the pages near the view, the zoomed tile, the strip, Contents and the asks
+    in property <[PSlot]> pdf-pages;
+    in property <PSlot> pdf-tile;
+    in property <bool> pdf-tile-on;
+    in property <int> pdf-total;
+    in property <int> pdf-total-w;
+    in property <string> pdf-pill: "Page 1 / 1";
+    in property <[image]> pdf-thumbs;
+    in property <int> pdf-current;
+    in property <string> pdf-info;
+    in property <bool> pdf-contents-open;
+    in property <[string]> pdf-contents;
+    in property <[int]> pdf-contents-depth;
+    in property <int> pdf-contents-current;
+    in property <string> pdf-ask;
+    in-out property <string> pdf-ask-text;
+    in property <string> pdf-ask-error;
+    out property <int> pdf-view-w: pdf-view.view-w;
+    out property <int> pdf-view-h: pdf-view.view-h;
+    callback pdf-resized(int, int);
+    callback pdf-scrolled(int);
+    callback pdf-scrolled-x(int);
+    callback pdf-thumb-picked(int);
+    callback pdf-pill-tapped();
+    callback pdf-contents-chosen(int);
+    callback pdf-contents-closed();
+    callback pdf-ask-done(string);
+    callback pdf-ask-cancelled();
+    public function pdf-scroll-to(px: int) {
+        pdf-view.scroll-to(px);
+    }
+    public function pdf-scroll-x-to(px: int) {
+        pdf-view.scroll-x-to(px);
+    }
     out property <int> doc-view-w: doc-view.view-w;
     out property <int> doc-view-h: doc-view.view-h;
     // FA10: a book (files2-view-epub): its page, title, chapter and page, the theme's colours, the controls, Contents
@@ -1310,7 +1345,7 @@ export component FilesApp inherits Window {
             }
         }
         // FA7 (files2-spec-headers): [← name · share · edit (cards and events) · ⋮]
-        if root.view == "vcf" || root.view == "ics" || root.view == "font" || root.view == "cert" || root.view == "app" || root.view == "unknown" || root.view == "audio" || root.view == "doc" || root.view == "book" || root.view == "sheet": SubHeader {
+        if root.view == "vcf" || root.view == "ics" || root.view == "font" || root.view == "cert" || root.view == "app" || root.view == "unknown" || root.view == "audio" || root.view == "doc" || root.view == "book" || root.view == "sheet" || root.view == "pdf": SubHeader {
             title: root.name;
             title-font: "DejaVu Sans";
             search: false;
@@ -2394,6 +2429,52 @@ export component FilesApp inherits Window {
                 }
                 contents-closed => {
                     root.book-contents-closed();
+                }
+            }
+            pdf-view := PdfView {
+                visible: root.view == "pdf";
+                pages: root.pdf-pages;
+                tile: root.pdf-tile;
+                tile-on: root.pdf-tile-on;
+                total: root.pdf-total;
+                total-w: root.pdf-total-w;
+                pill: root.pdf-pill;
+                thumbs: root.pdf-thumbs;
+                current: root.pdf-current;
+                info: root.pdf-info;
+                contents-open: root.pdf-contents-open;
+                contents: root.pdf-contents;
+                contents-depth: root.pdf-contents-depth;
+                contents-current: root.pdf-contents-current;
+                ask: root.pdf-ask;
+                ask-text <=> root.pdf-ask-text;
+                ask-error: root.pdf-ask-error;
+                resized(w, h) => {
+                    root.pdf-resized(w, h);
+                }
+                scrolled(px) => {
+                    root.pdf-scrolled(px);
+                }
+                scrolled-x(px) => {
+                    root.pdf-scrolled-x(px);
+                }
+                thumb-picked(i) => {
+                    root.pdf-thumb-picked(i);
+                }
+                pill-tapped => {
+                    root.pdf-pill-tapped();
+                }
+                contents-chosen(i) => {
+                    root.pdf-contents-chosen(i);
+                }
+                contents-closed => {
+                    root.pdf-contents-closed();
+                }
+                ask-done(s) => {
+                    root.pdf-ask-done(s);
+                }
+                ask-cancelled => {
+                    root.pdf-ask-cancelled();
                 }
             }
             doc-view := DocView {

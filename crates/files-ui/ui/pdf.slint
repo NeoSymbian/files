@@ -1,0 +1,281 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// FA11 (files2-view-pdf): the pages at the screen's width on grey (Rust draws them with the PDF engine and hands over
+// only the pages near the view, and while zoomed one sharp tile of the view), the "Page 1 / 2" pill, the strip of
+// page thumbnails with the size and page count; Contents (the outline), Go to page and the password ask over it.
+
+import { Theme, TextField } from "@neoui/kit.slint";
+import { ContentsList } from "doc.slint";
+
+// a page's place in the content, px, and its picture (until it is drawn the slot is white)
+export struct PSlot { x: int, y: int, w: int, h: int, image: image, ready: bool }
+
+export component PdfView inherits Rectangle {
+    in property <[PSlot]> pages;
+    // while zoomed: the view drawn sharp, at its place in the content
+    in property <PSlot> tile;
+    in property <bool> tile-on;
+    // the content's size, px
+    in property <int> total;
+    in property <int> total-w;
+    in property <string> pill: "Page 1 / 1";
+    in property <[image]> thumbs;
+    in property <int> current;
+    in property <string> info;
+    in property <string> hint: "Pinch to zoom";
+    in property <bool> contents-open;
+    in property <[string]> contents;
+    in property <[int]> contents-depth;
+    in property <int> contents-current;
+    // "" (none), "password" or "page": a field over the view
+    in property <string> ask;
+    in-out property <string> ask-text;
+    in property <string> ask-error;
+    out property <int> view-w: flick.width / 1px;
+    out property <int> view-h: flick.height / 1px;
+    callback resized(int, int);
+    changed view-w => {
+        root.resized(self.view-w, self.view-h);
+    }
+    changed view-h => {
+        root.resized(self.view-w, self.view-h);
+    }
+    callback scrolled(int);
+    callback scrolled-x(int);
+    callback thumb-picked(int);
+    callback pill-tapped();
+    callback contents-chosen(int);
+    callback contents-closed();
+    callback ask-done(string);
+    callback ask-cancelled();
+    background: #000000;
+    public function scroll-to(px: int) {
+        flick.content-y = -min(max(0, px), max(0, root.total - root.view-h)) * 1px;
+    }
+    public function scroll-x-to(px: int) {
+        flick.content-x = -min(max(0, px), max(0, root.total-w - root.view-w)) * 1px;
+    }
+    // the strip follows the current page
+    changed current => {
+        let at = (16 + root.current * 54) * Theme.dp;
+        if at < -strip.content-x || at + 54 * Theme.dp > -strip.content-x + strip.width {
+            strip.content-x = -max(0px, min(at - strip.width / 2, strip.content-width - strip.width));
+        }
+    }
+
+    VerticalLayout {
+        Rectangle {
+            vertical-stretch: 1;
+            background: #2a2d33;
+            clip: true;
+            flick := Flickable {
+                content-height: max(self.height, root.total * 1px);
+                content-width: max(self.width, root.total-w * 1px);
+                changed content-y => {
+                    root.scrolled(-self.content-y / 1px);
+                }
+                changed content-x => {
+                    root.scrolled-x(-self.content-x / 1px);
+                }
+                for p in root.pages: Rectangle {
+                    x: p.x * 1px;
+                    y: p.y * 1px;
+                    width: p.w * 1px;
+                    height: p.h * 1px;
+                    background: #ffffff;
+                    border-radius: 3 * Theme.dp;
+                    clip: true;
+                    if p.ready: Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: p.image;
+                        image-fit: fill;
+                    }
+                }
+                if root.tile-on: Image {
+                    x: root.tile.x * 1px;
+                    y: root.tile.y * 1px;
+                    width: root.tile.w * 1px;
+                    height: root.tile.h * 1px;
+                    source: root.tile.image;
+                    image-fit: fill;
+                }
+            }
+
+            // Page 1 / 2: a tap asks for a page
+            Rectangle {
+                y: parent.height - self.height - 12 * Theme.dp;
+                height: 28 * Theme.dp;
+                width: pill-text.preferred-width + 28 * Theme.dp;
+                border-radius: 14 * Theme.dp;
+                background: #000000c0;
+                pill-text := Text {
+                    text: root.pill;
+                    color: #ffffff;
+                    font-size: 13 * Theme.dp;
+                    font-weight: 600;
+                }
+
+                TouchArea {
+                    clicked => {
+                        root.pill-tapped();
+                    }
+                }
+            }
+        }
+
+        // the pages' strip, and the file's size and page count
+        Rectangle {
+            height: 88 * Theme.dp;
+            background: #0b0c0e;
+            Rectangle {
+                y: 0;
+                height: max(1px, Theme.dp / 3);
+                background: #ffffff12;
+            }
+
+            HorizontalLayout {
+                padding-right: 16 * Theme.dp;
+                strip := Flickable {
+                    horizontal-stretch: 1;
+                    viewport-width: (16 + root.thumbs.length * 54) * Theme.dp;
+                    for t[i] in root.thumbs: Rectangle {
+                        x: (16 + i * 54) * Theme.dp;
+                        width: 38 * Theme.dp;
+                        Rectangle {
+                            y: 12 * Theme.dp;
+                            height: 54 * Theme.dp;
+                            background: #ffffff;
+                            border-radius: 2 * Theme.dp;
+                            opacity: i == root.current ? 1 : 0.7;
+                            clip: true;
+                            Image {
+                                width: parent.width;
+                                height: parent.height;
+                                source: t;
+                                image-fit: contain;
+                            }
+                        }
+
+                        // the current page's outline, 2 dp outside it
+                        if i == root.current: Rectangle {
+                            x: -4 * Theme.dp;
+                            y: 8 * Theme.dp;
+                            width: parent.width + 8 * Theme.dp;
+                            height: 62 * Theme.dp;
+                            border-radius: 4 * Theme.dp;
+                            border-width: 2 * Theme.dp;
+                            border-color: #3d8bfd;
+                        }
+                        Text {
+                            y: 70 * Theme.dp;
+                            width: parent.width;
+                            text: i + 1;
+                            color: i == root.current ? #b9bec7 : #7d838c;
+                            font-size: 11 * Theme.dp;
+                            horizontal-alignment: center;
+                        }
+
+                        TouchArea {
+                            clicked => {
+                                root.thumb-picked(i);
+                            }
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 3 * Theme.dp;
+                    Text {
+                        text: root.info;
+                        color: #7d838c;
+                        font-size: 12.5 * Theme.dp;
+                        horizontal-alignment: right;
+                    }
+
+                    Text {
+                        text: root.hint;
+                        color: #7d838c;
+                        font-size: 12.5 * Theme.dp;
+                        horizontal-alignment: right;
+                    }
+                }
+            }
+        }
+    }
+
+    if root.contents-open: ContentsList {
+        contents: root.contents;
+        depth: root.contents-depth;
+        current: root.contents-current;
+        chosen(i) => {
+            root.contents-chosen(i);
+        }
+        closed => {
+            root.contents-closed();
+        }
+    }
+
+    // the password or a page number, in a card over the view
+    if root.ask != "": Rectangle {
+        background: #000000a0;
+        TouchArea { }
+        Rectangle {
+            x: 16 * Theme.dp;
+            y: 72 * Theme.dp;
+            width: parent.width - 32 * Theme.dp;
+            height: card.preferred-height;
+            border-radius: 12 * Theme.dp;
+            background: #1d2025;
+            card := VerticalLayout {
+                padding: 20 * Theme.dp;
+                spacing: 12 * Theme.dp;
+                Text {
+                    text: root.ask == "password" ? "This PDF needs a password" : "Go to page";
+                    color: #ffffff;
+                    font-size: 18 * Theme.dp;
+                    font-weight: 600;
+                }
+
+                TextField {
+                    text <=> root.ask-text;
+                    placeholder: root.ask == "password" ? "Password" : "Page";
+                    password: root.ask == "password";
+                    keys: root.ask == "page" ? 3 : 1;
+                    error: root.ask-error;
+                    autofocus: true;
+                    accepted(t) => {
+                        root.ask-done(t);
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8 * Theme.dp;
+                    for b[i] in ["Cancel", root.ask == "password" ? "Open" : "Go"]: Rectangle {
+                        height: 40 * Theme.dp;
+                        width: bt.preferred-width + 32 * Theme.dp;
+                        border-radius: 20 * Theme.dp;
+                        background: i == 1 ? (bta.pressed ? #2f6fd0 : #3d8bfd) : (bta.pressed ? #ffffff22 : transparent);
+                        bt := Text {
+                            text: b;
+                            color: i == 1 ? #ffffff : #cfe0ff;
+                            font-size: 14 * Theme.dp;
+                            font-weight: 600;
+                        }
+
+                        bta := TouchArea {
+                            clicked => {
+                                if i == 1 {
+                                    root.ask-done(root.ask-text);
+                                } else {
+                                    root.ask-cancelled();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

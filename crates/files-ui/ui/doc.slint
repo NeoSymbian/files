@@ -223,6 +223,77 @@ export component DocView inherits Rectangle {
     }
 }
 
+// a list of a document's chapters or bookmarks over the view (the book's and the PDF's Contents): depth indents,
+// the current entry is bold
+export component ContentsList inherits Rectangle {
+    in property <[string]> contents;
+    in property <[int]> depth;
+    in property <int> current;
+    callback chosen(int);
+    callback closed();
+    background: #0b0c0e;
+    TouchArea { }
+    VerticalLayout {
+        Rectangle {
+            height: 48 * Theme.dp;
+            HorizontalLayout {
+                padding-left: 20 * Theme.dp;
+                padding-right: 4 * Theme.dp;
+                Text {
+                    horizontal-stretch: 1;
+                    text: "Contents";
+                    color: #ffffff;
+                    font-size: 19 * Theme.dp;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+
+                Rectangle {
+                    width: 48 * Theme.dp;
+                    Glyph {
+                        source: @image-url("@neoui/icons/sys/close.svg");
+                        size: 24 * Theme.dp;
+                        colorize: #b9bec7;
+                    }
+
+                    TouchArea {
+                        clicked => {
+                            root.closed();
+                        }
+                    }
+                }
+            }
+        }
+
+        Flickable {
+            vertical-stretch: 1;
+            VerticalLayout {
+                for c[i] in root.contents: Rectangle {
+                    height: 52 * Theme.dp;
+                    background: ta.pressed ? #ffffff10 : transparent;
+                    Text {
+                        x: (20 + 16 * root.depth[i]) * Theme.dp;
+                        width: parent.width - self.x - 20 * Theme.dp;
+                        text: c;
+                        color: i == root.current ? #cfe0ff : #e6e8eb;
+                        font-family: "NeoDoc";
+                        font-weight: i == root.current ? 700 : 400;
+                        font-size: 16 * Theme.dp;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+
+                    ta := TouchArea {
+                        clicked => {
+                            root.chosen(i);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // a control on the reader's bar
 component ReaderButton inherits Rectangle {
     in property <string> text;
@@ -425,67 +496,15 @@ export component BookView inherits Rectangle {
         }
     }
 
-    if root.contents-open: Rectangle {
-        background: #0b0c0e;
-        TouchArea { }
-        VerticalLayout {
-            Rectangle {
-                height: 48 * Theme.dp;
-                HorizontalLayout {
-                    padding-left: 20 * Theme.dp;
-                    padding-right: 4 * Theme.dp;
-                    Text {
-                        horizontal-stretch: 1;
-                        text: "Contents";
-                        color: #ffffff;
-                        font-size: 19 * Theme.dp;
-                        font-weight: 600;
-                        vertical-alignment: center;
-                    }
-
-                    Rectangle {
-                        width: 48 * Theme.dp;
-                        Glyph {
-                            source: @image-url("@neoui/icons/sys/close.svg");
-                            size: 24 * Theme.dp;
-                            colorize: #b9bec7;
-                        }
-
-                        TouchArea {
-                            clicked => {
-                                root.contents-closed();
-                            }
-                        }
-                    }
-                }
-            }
-
-            Flickable {
-                vertical-stretch: 1;
-                VerticalLayout {
-                    for c[i] in root.contents: Rectangle {
-                        height: 52 * Theme.dp;
-                        background: ta.pressed ? #ffffff10 : transparent;
-                        Text {
-                            x: (20 + 16 * root.contents-depth[i]) * Theme.dp;
-                            width: parent.width - self.x - 20 * Theme.dp;
-                            text: c;
-                            color: i == root.contents-current ? #cfe0ff : #e6e8eb;
-                            font-family: "NeoDoc";
-                            font-weight: i == root.contents-current ? 700 : 400;
-                            font-size: 16 * Theme.dp;
-                            overflow: elide;
-                            vertical-alignment: center;
-                        }
-
-                        ta := TouchArea {
-                            clicked => {
-                                root.contents-chosen(i);
-                            }
-                        }
-                    }
-                }
-            }
+    if root.contents-open: ContentsList {
+        contents: root.contents;
+        depth: root.contents-depth;
+        current: root.contents-current;
+        chosen(i) => {
+            root.contents-chosen(i);
+        }
+        closed => {
+            root.contents-closed();
         }
     }
 }

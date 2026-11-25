@@ -15,6 +15,7 @@ pub mod audio;
 pub mod doc;
 pub mod image;
 pub mod inspect;
+pub mod pdf;
 pub mod pim;
 pub mod text;
 
