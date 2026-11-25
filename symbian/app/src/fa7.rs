@@ -301,6 +301,7 @@ pub(crate) fn back(app: &App, ui: &FilesApp, st: &mut State) {
     }
     crate::audio::close(st);
     crate::doc::close_all(st);
+    crate::pdf::clear(ui);
     let from = st.fa7.take().map_or(View::Folder, |o| o.from);
     return_to(app, ui, st, from);
 }
@@ -1220,6 +1221,7 @@ pub(crate) fn hex_because(app: &App, ui: &FilesApp, st: &mut State, why: &str) {
 fn hex(app: &App, ui: &FilesApp, st: &mut State, why: &str) {
     crate::audio::close(st);
     crate::doc::close_all(st);
+    crate::pdf::clear(ui);
     let Some(o) = st.fa7.as_mut() else { return };
     let had_viewer = !matches!(o.kind, Kind::Hex);
     o.kind = Kind::Hex;

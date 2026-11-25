@@ -25,8 +25,12 @@ use hayro_interpret::util::{RectExt, TransformExt};
 use hayro_interpret::{Context, InterpreterCache, InterpreterSettings, interpret_page};
 use neo_format_image::Pixels;
 
-/// At most this many pixels in one drawing (a page or a window of one).
-pub const MAX_PIXELS: u64 = 12_000_000;
+/// At most this many pixels in one drawing (a page or a window of one): 16 MB while drawn.
+pub const MAX_PIXELS: u64 = 4_000_000;
+/// What a drawing may hold besides its own pixels (layers, masks, pattern cells, decoded images).
+const BUDGET: usize = 24 << 20;
+/// A page is at most this many times as tall as it is wide (and the other way round), as the viewer lays it out.
+const MAX_RATIO: f32 = 50.0;
 /// A page side is at most this many points (200 inches, the PDF limit) as the viewer lays it out.
 pub const MAX_SIDE: f32 = 14_400.0;
 /// The outline (Contents) keeps at most this many entries, this deep.
@@ -78,11 +82,12 @@ impl Pdf {
                 or
             }
         };
+        let ratio = |(w, h): (f32, f32)| (w.max(h / MAX_RATIO), h.max(w / MAX_RATIO));
         let sizes: Vec<(f32, f32)> = doc
             .pages()
             .iter()
             .map(|p| p.render_dimensions())
-            .map(|(w, h)| (fit(w, 612.0), fit(h, 792.0)))
+            .map(|(w, h)| ratio((fit(w, 612.0), fit(h, 792.0))))
             .collect();
         if sizes.is_empty() {
             return Err(Error::Bad("It has no pages"));
@@ -215,6 +220,7 @@ impl<'a> Renderer<'a> {
             tiny_skia::Color::WHITE,
             self.glyphs.clone(),
             partial.clone(),
+            canvas::Budget::new(BUDGET),
         )
         .ok_or(Error::TooBig)?;
         let crop = transform.transform_rect_bbox(p.intersected_crop_box().to_kurbo());
@@ -226,14 +232,13 @@ impl<'a> Renderer<'a> {
         if clip {
             hayro_interpret::Device::pop_clip(&mut canvas);
         }
-        let pix = canvas.finish();
-        // Opaque white under everything: the premultiplied RGBA is the RGB.
-        let mut rgb = Vec::new();
-        rgb.try_reserve_exact(w as usize * h as usize * 3)
-            .map_err(|_| Error::TooBig)?;
-        for p in pix.data().as_chunks::<4>().0 {
-            rgb.extend_from_slice(&p[..3]);
+        // Opaque white under everything: the premultiplied RGBA is the RGB, packed in place (no second copy).
+        let mut rgb = canvas.finish().take();
+        for i in 0..w as usize * h as usize {
+            rgb.copy_within(i * 4..i * 4 + 3, i * 3);
         }
+        rgb.truncate(w as usize * h as usize * 3);
+        rgb.shrink_to_fit();
         let partial = partial.get() || warnings.load(Ordering::Relaxed) > 0;
         Ok(Drawn {
             px: Pixels {

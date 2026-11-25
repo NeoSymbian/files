@@ -11,6 +11,7 @@ and `cupsfilter` the Quartz-written copy, both kept in git so other machines don
 - locked.pdf: RC4 128-bit (R3) with the user password 1234.
 - deep.pdf: forms nested 200 deep; loop.pdf: a page tree that loops and a huge MediaBox; broken-xref.pdf: every
   cross-reference offset wrong.
+- tiling.pdf: a 3e9-wide tiling cell; masks.pdf: 40 nested soft-masked groups.
 - quartz.pdf: cupsfilter's PDF of a text with Armenian and Cyrillic (macOS Quartz, subset fonts).
 """
 
@@ -888,6 +889,43 @@ def hostile():
     open(os.path.join(HERE, "broken-xref.pdf"), "wb").write(bytes(data))
 
 
+
+def hostile_paint():
+    """tiling.pdf: a tiling pattern whose cell is 3e9 wide with a step of 1; masks.pdf: 40 groups nested, each under
+    its own soft mask (drawing them all at once would need gigabytes)."""
+    p = Pdf()
+    cell = p.stream("/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 3000000000 1] /XStep 1 "
+                    "/YStep 1 /Resources << >>", b"0 0 1 rg 0 0 1 1 re f")
+    pages = p.reserve()
+    c = p.stream("", b"/Pattern cs /P0 scn 0 0 200 200 re f 1 0 0 rg 0 0 20 20 re f")
+    page = p.add("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 200 200] /Resources << /Pattern << /P0 %d 0 R >> >> "
+                 "/Contents %d 0 R >>" % (pages, cell, c))
+    p.set(pages, "<< /Type /Pages /Kids [%d 0 R] /Count 1 >>" % page)
+    root = p.add("<< /Type /Catalog /Pages %d 0 R >>" % pages)
+    p.save("tiling.pdf", root)
+
+    p = Pdf()
+    gs = []
+    for i in range(40):
+        g = p.stream("/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Group << /S /Transparency /CS /DeviceGray >>",
+                     b"%.3f g 0 0 %d 200 re f" % (i / 40, 5 * (i + 1)))
+        gs.append(p.add("<< /Type /ExtGState /SMask << /Type /Mask /S /Luminosity /G %d 0 R >> /ca 0.9 >>" % g))
+    forms = [p.reserve() for _ in range(40)]
+    for i, n in enumerate(forms):
+        inner = (b"/G%d gs /X%d Do" % (i, i + 1)) if i + 1 < 40 else b"0 0 1 rg 0 0 200 200 re f"
+        res = "/ExtGState << /G%d %d 0 R >>" % (i, gs[i])
+        if i + 1 < 40:
+            res += " /XObject << /X%d %d 0 R >>" % (i + 1, forms[i + 1])
+        p.set(n, "<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] /Group << /S /Transparency >> "
+                 "/Resources << %s >> /Length %d >>" % (res, len(inner)), inner)
+    pages = p.reserve()
+    c = p.stream("", b"/X0 Do 1 0 0 rg 150 150 50 50 re f")
+    page = p.add("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 200 200] /Resources << /XObject << /X0 %d 0 R >> >> "
+                 "/Contents %d 0 R >>" % (pages, forms[0], c))
+    p.set(pages, "<< /Type /Pages /Kids [%d 0 R] /Count 1 >>" % page)
+    root = p.add("<< /Type /Catalog /Pages %d 0 R >>" % pages)
+    p.save("masks.pdf", root)
+
 def quartz():
     """macOS's own PDF writer (cupsfilter's text filter), for an outside view of fonts and structure."""
     out = os.path.join(HERE, "quartz.pdf")
@@ -910,4 +948,5 @@ if __name__ == "__main__":
     book_100()
     locked()
     hostile()
+    hostile_paint()
     quartz()

@@ -221,6 +221,17 @@ fn hostile_files() {
             let _ = pdf.renderer().render(n, 1e-6, (0, 0, 64, 64));
         }
     }
+    // A tiling cell 3e9 wide with a step of 1: refused (no 2^31 copies), the rest of the page draws, quickly.
+    let t0 = std::time::Instant::now();
+    let pdf = Pdf::open(data("tiling.pdf"), "").unwrap();
+    let d = pdf.renderer().render(0, 2.0, (0, 0, 400, 400)).unwrap();
+    assert!(t0.elapsed().as_secs() < 10);
+    assert_eq!(at(&d.px, 20.0, 380.0), [255, 0, 0]);
+    // 40 nested groups, each under its own soft mask, at a big size: within the memory budget (partly left out),
+    // the last red box still drawn.
+    let pdf = Pdf::open(data("masks.pdf"), "").unwrap();
+    let d = pdf.renderer().render(0, 10.0, (0, 0, 2000, 2000)).unwrap();
+    assert_eq!(at(&d.px, 1900.0, 100.0), [255, 0, 0]);
     // The cross-reference offsets are all wrong: hayro finds the objects again.
     let pdf = Pdf::open(data("broken-xref.pdf"), "").unwrap();
     let px = page(&pdf, 0, 1.0);

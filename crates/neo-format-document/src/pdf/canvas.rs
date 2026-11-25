@@ -26,12 +26,52 @@ const MAX_LAYERS: usize = 6;
 /// A tiling pattern's cell or a shading's texture is at most this many pixels a side.
 const MAX_TEXTURE: f64 = 4096.0;
 
+/// At most this many soft masks of a page are kept.
+const MAX_SOFT: usize = 8;
+
+/// The bytes a page's drawing may hold besides its own pixmap (layers, masks, pattern cells, images): one budget
+/// shared by a canvas and its children. tiny-skia's allocations can't fail softly (and a failed one ends the worker),
+/// so what would go over it is left out and the page marked partial.
+pub(crate) struct Budget(Cell<usize>);
+
+impl Budget {
+    pub(crate) fn new(bytes: usize) -> Rc<Budget> {
+        Rc::new(Budget(Cell::new(bytes)))
+    }
+}
+
+/// Bytes taken from the budget, given back when dropped.
+struct Lease(usize, Rc<Budget>);
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        self.1.0.set(self.1.0.get() + self.0);
+    }
+}
+
+/// A mask with its bytes on the budget.
+struct Held(
+    sk::Mask,
+    #[allow(dead_code, reason = "held for its Drop")] Lease,
+);
+
+impl core::ops::Deref for Held {
+    type Target = sk::Mask;
+    fn deref(&self) -> &sk::Mask {
+        &self.0
+    }
+}
+
+type MaskRc = Rc<Held>;
+
 /// One layer: the page, or an open transparency group.
 struct Layer {
     pix: sk::Pixmap,
+    #[allow(dead_code, reason = "held for its Drop")]
+    lease: Option<Lease>,
     opacity: f32,
     blend: sk::BlendMode,
-    mask: Option<Rc<sk::Mask>>,
+    mask: Option<MaskRc>,
 }
 
 /// Draws a page (or a soft mask, a pattern cell) into a pixmap of `w` × `h`.
@@ -42,9 +82,12 @@ pub(crate) struct Canvas {
     /// One entry per open transparency group: whether it has a layer of its own (or draws straight through).
     groups: Vec<bool>,
     /// The clip stack: `None` = nothing clipped (the clip covers the whole canvas).
-    clips: Vec<Option<Rc<sk::Mask>>>,
-    /// Soft masks by their cache key, drawn once a page.
-    soft: BTreeMap<u128, Rc<sk::Mask>>,
+    clips: Vec<Option<MaskRc>>,
+    /// Soft masks by their cache key, drawn once a page (at most [`MAX_SOFT`]).
+    soft: BTreeMap<u128, MaskRc>,
+    /// The last clip × soft mask (the clip, the soft mask's key, the product): a run of glyphs reuses it.
+    combined: Option<(MaskRc, u128, MaskRc)>,
+    budget: Rc<Budget>,
     /// Glyph outlines by glyph, converted once.
     glyphs: Rc<GlyphCache>,
     inside_pattern: bool,
@@ -69,6 +112,19 @@ impl Canvas {
         bg: sk::Color,
         glyphs: Rc<GlyphCache>,
         partial: Rc<Cell<bool>>,
+        budget: Rc<Budget>,
+    ) -> Option<Self> {
+        Self::with_lease(w, h, bg, glyphs, partial, budget, None)
+    }
+
+    fn with_lease(
+        w: u32,
+        h: u32,
+        bg: sk::Color,
+        glyphs: Rc<GlyphCache>,
+        partial: Rc<Cell<bool>>,
+        budget: Rc<Budget>,
+        lease: Option<Lease>,
     ) -> Option<Self> {
         let mut pix = sk::Pixmap::new(w, h)?;
         pix.fill(bg);
@@ -77,6 +133,7 @@ impl Canvas {
             h,
             layers: vec![Layer {
                 pix,
+                lease,
                 opacity: 1.0,
                 blend: sk::BlendMode::SourceOver,
                 mask: None,
@@ -84,6 +141,8 @@ impl Canvas {
             groups: Vec::new(),
             clips: Vec::new(),
             soft: BTreeMap::new(),
+            combined: None,
+            budget,
             glyphs,
             inside_pattern: false,
             in_type3: false,
@@ -101,18 +160,54 @@ impl Canvas {
     }
 
     fn child(&self, w: u32, h: u32) -> Option<Canvas> {
-        let mut c = Canvas::new(
+        let lease = self.lease(w as usize * h as usize * 4)?;
+        let mut c = Canvas::with_lease(
             w,
             h,
             sk::Color::TRANSPARENT,
             self.glyphs.clone(),
             self.partial.clone(),
+            self.budget.clone(),
+            Some(lease),
         )?;
         c.inside_pattern = self.inside_pattern;
         Some(c)
     }
 
-    fn clip(&self) -> Option<&Rc<sk::Mask>> {
+    /// `n` bytes from the budget, or `None` (and the page partial) when they would go over it.
+    fn lease(&self, n: usize) -> Option<Lease> {
+        let left = self.budget.0.get();
+        if n > left {
+            self.partial.set(true);
+            return None;
+        }
+        self.budget.0.set(left - n);
+        Some(Lease(n, self.budget.clone()))
+    }
+
+    /// A mask of the canvas's size, every byte `fill`.
+    fn new_mask(&self, fill: u8) -> Option<Held> {
+        let lease = self.lease(self.w as usize * self.h as usize)?;
+        let mut m = sk::Mask::new(self.w, self.h)?;
+        m.data_mut().fill(fill);
+        Some(Held(m, lease))
+    }
+
+    fn copy_mask(&self, m: &sk::Mask) -> Option<Held> {
+        let lease = self.lease(m.data().len())?;
+        Some(Held(m.clone(), lease))
+    }
+
+    /// `a` × `b` as a new mask (or `None` over the budget).
+    fn product(&self, a: &sk::Mask, b: &sk::Mask) -> Option<MaskRc> {
+        let mut m = self.copy_mask(a)?;
+        for (x, y) in m.0.data_mut().iter_mut().zip(b.data()) {
+            *x = mul(*x, *y);
+        }
+        Some(Rc::new(m))
+    }
+
+    fn clip(&self) -> Option<&MaskRc> {
         self.clips.last().and_then(|c| c.as_ref())
     }
 
@@ -124,27 +219,34 @@ impl Canvas {
         !bbox.overlaps(Rect::new(0.0, 0.0, self.w as f64, self.h as f64))
     }
 
-    /// The clip mask with a soft mask multiplied in (a new mask), or the clip as it is.
-    fn mask_with(&mut self, soft: Option<&SoftMask<'_>>) -> Option<Rc<sk::Mask>> {
+    /// The clip mask with a soft mask multiplied in (a new mask, kept for the next draw), or the clip as it is.
+    fn mask_with(&mut self, soft: Option<&SoftMask<'_>>) -> Option<MaskRc> {
         let clip = self.clip().cloned();
         let Some(soft) = soft else { return clip };
-        let soft = self.soft_mask(soft)?;
-        Some(match clip {
-            None => soft,
-            Some(clip) => {
-                let mut m = (*soft).clone();
-                for (a, b) in m.data_mut().iter_mut().zip(clip.data()) {
-                    *a = mul(*a, *b);
-                }
-                Rc::new(m)
-            }
-        })
+        let key = soft.cache_key();
+        let Some(soft) = self.soft_mask(soft) else {
+            return clip;
+        };
+        let Some(clip) = clip else { return Some(soft) };
+        if let Some((c, k, m)) = &self.combined
+            && Rc::ptr_eq(c, &clip)
+            && *k == key
+        {
+            return Some(m.clone());
+        }
+        self.combined = None;
+        let m = self.product(&soft, &clip).unwrap_or(clip.clone());
+        self.combined = Some((clip, key, m.clone()));
+        Some(m)
     }
 
-    fn soft_mask(&mut self, m: &SoftMask<'_>) -> Option<Rc<sk::Mask>> {
+    fn soft_mask(&mut self, m: &SoftMask<'_>) -> Option<MaskRc> {
         let key = m.cache_key();
         if let Some(found) = self.soft.get(&key) {
             return Some(found.clone());
+        }
+        if self.soft.len() >= MAX_SOFT {
+            self.soft.clear();
         }
         let mut c = self.child(self.w, self.h)?;
         let bg = m.background_color().to_rgba().to_rgba8();
@@ -158,36 +260,46 @@ impl Canvas {
             MaskType::Luminosity => sk::MaskType::Luminance,
             MaskType::Alpha => sk::MaskType::Alpha,
         };
+        let lease = self.lease(self.w as usize * self.h as usize)?;
         let mut mask = sk::Mask::from_pixmap(pix.as_ref(), kind);
+        drop(pix);
         if let Some(f) = m.transfer_function() {
             f.apply_to(mask.data_mut());
         }
-        let mask = Rc::new(mask);
+        let mask = Rc::new(Held(mask, lease));
         self.soft.insert(key, mask.clone());
         Some(mask)
     }
 
     fn push_clip_device(&mut self, path: &BezPath, rule: FillRule) {
+        // Over the budget the clip stays as it was (the page drawn partly unclipped, marked partial).
         let next = match to_path(path, Affine::IDENTITY) {
-            None => {
-                // An empty clip hides everything.
-                Some(Rc::new(sk::Mask::new(self.w, self.h).unwrap()))
-            }
+            // An empty clip hides everything.
+            None => self
+                .new_mask(0)
+                .map(Rc::new)
+                .or_else(|| self.clip().cloned()),
             Some(p) => {
                 let whole = Rect::new(0.0, 0.0, self.w as f64, self.h as f64);
                 if is_rect(path).is_some_and(|r| r.contains_rect(whole)) {
                     self.clip().cloned()
                 } else {
-                    let mut m = match self.clip() {
-                        Some(m) => (**m).clone(),
-                        None => {
-                            let mut m = sk::Mask::new(self.w, self.h).unwrap();
-                            m.data_mut().fill(255);
-                            m
-                        }
+                    let m = match self.clip() {
+                        Some(m) => self.copy_mask(m),
+                        None => self.new_mask(255),
                     };
-                    m.intersect_path(&p, fill_rule(rule), true, sk::Transform::identity());
-                    Some(Rc::new(m))
+                    match m {
+                        Some(mut m) => {
+                            m.0.intersect_path(
+                                &p,
+                                fill_rule(rule),
+                                true,
+                                sk::Transform::identity(),
+                            );
+                            Some(Rc::new(m))
+                        }
+                        None => self.clip().cloned(),
+                    }
                 }
             }
         };
@@ -216,18 +328,16 @@ impl Canvas {
         let mut mask = mask;
         if let Some(cp) = clip_path.as_ref() {
             // A shading's /BBox clips its paint (in user space of the draw).
-            let mut m = match mask.as_deref() {
-                Some(m) => m.clone(),
-                None => {
-                    let mut m = sk::Mask::new(self.w, self.h).unwrap();
-                    m.data_mut().fill(255);
-                    m
-                }
+            let m = match mask.as_deref() {
+                Some(m) => self.copy_mask(m),
+                None => self.new_mask(255),
             };
-            if let Some(p) = to_path(cp, Affine::IDENTITY) {
-                m.intersect_path(&p, sk::FillRule::Winding, true, ts);
+            if let Some(mut m) = m {
+                if let Some(p) = to_path(cp, Affine::IDENTITY) {
+                    m.0.intersect_path(&p, sk::FillRule::Winding, true, ts);
+                }
+                mask = Some(Rc::new(m));
             }
-            mask = Some(Rc::new(m));
         }
         let (w, h) = (self.w, self.h);
         let stroke_width = match how {
@@ -250,9 +360,10 @@ impl Canvas {
                     ..Default::default()
                 };
                 let target = canvas.target();
+                let mask = mask.as_deref().map(|m| &m.0);
                 match how {
-                    How::Fill(rule) => target.fill_path(path, &paint, rule, ts, mask.as_deref()),
-                    How::Stroke(s) => target.stroke_path(path, &paint, s, ts, mask.as_deref()),
+                    How::Fill(rule) => target.fill_path(path, &paint, rule, ts, mask),
+                    How::Stroke(s) => target.stroke_path(path, &paint, s, ts, mask),
                 }
             },
         );
@@ -394,8 +505,9 @@ impl Canvas {
             ..Default::default()
         };
         let r = sk::Rect::from_xywh(0.0, 0.0, rgba.width() as f32, rgba.height() as f32).unwrap();
+        let mask = mask.as_deref().map(|m| &m.0);
         self.target()
-            .fill_rect(r, &paint, transform_of(transform), mask.as_deref());
+            .fill_rect(r, &paint, transform_of(transform), mask);
     }
 }
 
@@ -424,12 +536,13 @@ impl<'a> Device<'a> for Canvas {
         mode: BlendMode,
     ) {
         let plain = opacity >= 1.0 && mask.is_none() && matches!(mode, BlendMode::Normal);
-        let pix = if plain || self.layers.len() > MAX_LAYERS {
+        let layer = if plain || self.layers.len() > MAX_LAYERS {
             None
         } else {
-            sk::Pixmap::new(self.w, self.h)
+            self.lease(self.w as usize * self.h as usize * 4)
+                .and_then(|l| Some((sk::Pixmap::new(self.w, self.h)?, l)))
         };
-        let Some(pix) = pix else {
+        let Some((pix, lease)) = layer else {
             // Drawn straight into the layer under it: exact for an opaque normal group, an approximation otherwise.
             if !plain {
                 self.partial.set(true);
@@ -440,6 +553,7 @@ impl<'a> Device<'a> for Canvas {
         let mask = mask.and_then(|m| self.soft_mask(&m));
         self.layers.push(Layer {
             pix,
+            lease: Some(lease),
             opacity,
             blend: blend(mode),
             mask,
@@ -453,16 +567,10 @@ impl<'a> Device<'a> for Canvas {
         }
         let top = self.layers.pop().unwrap();
         let mut mask = self.clip().cloned();
-        if let Some(soft) = top.mask {
+        if let Some(soft) = top.mask.clone() {
             mask = Some(match mask {
                 None => soft,
-                Some(clip) => {
-                    let mut m = (*soft).clone();
-                    for (a, b) in m.data_mut().iter_mut().zip(clip.data()) {
-                        *a = mul(*a, *b);
-                    }
-                    Rc::new(m)
-                }
+                Some(clip) => self.product(&soft, &clip).unwrap_or(soft),
             });
         }
         let paint = sk::PixmapPaint {
@@ -476,7 +584,7 @@ impl<'a> Device<'a> for Canvas {
             top.pix.as_ref(),
             &paint,
             sk::Transform::identity(),
-            mask.as_deref(),
+            mask.as_deref().map(|m| &m.0),
         );
     }
 
@@ -552,15 +660,21 @@ impl<'a> Device<'a> for Canvas {
 
     fn draw_image(&mut self, image: Image<'a, '_>, props: ImageDrawProps<'a>) {
         let (x, y) = x_y_advances(&props.transform);
+        // Decoded at most at the size it is drawn (and never over 4096 a side).
         let target = (
-            (ceil(x.length() * image.width() as f64) as u32).clamp(1, 8192),
-            (ceil(y.length() * image.height() as f64) as u32).clamp(1, 8192),
+            (ceil(x.length() * image.width() as f64) as u32).clamp(1, 4096),
+            (ceil(y.length() * image.height() as f64) as u32).clamp(1, 4096),
         );
         match image {
             Image::Raster(r) => r.with_rgba(
                 |data, alpha| {
                     let (sx, sy) = data.scale_factors();
                     let smooth = data.interpolate();
+                    let Some(_lease) =
+                        self.lease(data.width() as usize * data.height() as usize * 4)
+                    else {
+                        return;
+                    };
                     if let Some(rgba) = rgba_of(&data, alpha.as_ref()) {
                         let t = props.transform * Affine::scale_non_uniform(sx as f64, sy as f64);
                         self.draw_rgba(rgba, t, &props, smooth);
@@ -599,13 +713,18 @@ impl<'a> Device<'a> for Canvas {
                                 },
                                 true,
                             );
-                            let mut m =
-                                sk::Mask::from_pixmap(c.finish().as_ref(), sk::MaskType::Alpha);
+                            let pix = c.finish();
+                            let Some(lease) = self.lease(self.w as usize * self.h as usize) else {
+                                return;
+                            };
+                            let mut m = sk::Mask::from_pixmap(pix.as_ref(), sk::MaskType::Alpha);
+                            drop(pix);
                             if let Some(clip) = self.clip() {
                                 for (a, b) in m.data_mut().iter_mut().zip(clip.data()) {
                                     *a = mul(*a, *b);
                                 }
                             }
+                            let m = Held(m, lease);
                             let whole = Rect::new(0.0, 0.0, self.w as f64, self.h as f64);
                             let rect = whole.to_path(0.1);
                             if let Some(p) = to_path(&rect, Affine::IDENTITY) {
@@ -789,8 +908,8 @@ fn tiling(
     c.inside_pattern = true;
     let to_texture =
         Affine::scale_non_uniform(x.scale, y.scale) * Affine::translate((-x.start, -y.start));
-    let copies = (x.copies.end() - x.copies.start() + 1) as i64
-        * (y.copies.end() - y.copies.start() + 1) as i64;
+    let copies = (i64::from(*x.copies.end()) - i64::from(*x.copies.start()) + 1).max(0)
+        * (i64::from(*y.copies.end()) - i64::from(*y.copies.start()) + 1).max(0);
     if copies > 4096 {
         return None;
     }
@@ -827,6 +946,14 @@ impl Axis {
         }
         let width = cell.end - cell.start;
         let visible = (area.end - area.start).max(0.0);
+        // Copy indices beyond a few thousand cells are refused before they are cast (a huge /BBox or a tiny step).
+        let fits = |v: f64| v.is_finite() && v.abs() <= 4096.0;
+        if !fits(width / step)
+            || !fits((area.start - cell.end) / step)
+            || !fits((area.end - cell.start) / step)
+        {
+            return None;
+        }
         let scale = round(step * scale).max(1.0) / step;
         let axis = if visible >= step {
             Axis {
@@ -1025,7 +1152,15 @@ mod tests {
 
     #[test]
     fn an_image_draws() {
-        let mut c = Canvas::new(100, 100, sk::Color::WHITE, Rc::default(), Rc::default()).unwrap();
+        let mut c = Canvas::new(
+            100,
+            100,
+            sk::Color::WHITE,
+            Rc::default(),
+            Rc::default(),
+            Budget::new(1 << 20),
+        )
+        .unwrap();
         let mut img = sk::Pixmap::new(10, 5).unwrap();
         img.fill(sk::Color::from_rgba8(255, 0, 0, 255));
         let props = ImageDrawProps {

@@ -8,6 +8,8 @@ import { ContentsList } from "doc.slint";
 
 // a page's place in the content, px, and its picture (until it is drawn the slot is white)
 export struct PSlot { x: int, y: int, w: int, h: int, image: image, ready: bool }
+// a page's thumbnail in the strip (only those near the current page are in the model): its page from 0
+export struct PThumb { n: int, image: image }
 
 export component PdfView inherits Rectangle {
     in property <[PSlot]> pages;
@@ -18,7 +20,8 @@ export component PdfView inherits Rectangle {
     in property <int> total;
     in property <int> total-w;
     in property <string> pill: "Page 1 / 1";
-    in property <[image]> thumbs;
+    in property <[PThumb]> thumbs;
+    in property <int> count;
     in property <int> current;
     in property <string> info;
     in property <string> hint: "Pinch to zoom";
@@ -137,27 +140,27 @@ export component PdfView inherits Rectangle {
                 padding-right: 16 * Theme.dp;
                 strip := Flickable {
                     horizontal-stretch: 1;
-                    content-width: (16 + root.thumbs.length * 54) * Theme.dp;
-                    for t[i] in root.thumbs: Rectangle {
-                        x: (16 + i * 54) * Theme.dp;
+                    content-width: (16 + root.count * 54) * Theme.dp;
+                    for t in root.thumbs: Rectangle {
+                        x: (16 + t.n * 54) * Theme.dp;
                         width: 38 * Theme.dp;
                         Rectangle {
                             y: 12 * Theme.dp;
                             height: 54 * Theme.dp;
                             background: #ffffff;
                             border-radius: 2 * Theme.dp;
-                            opacity: i == root.current ? 1 : 0.7;
+                            opacity: t.n == root.current ? 1 : 0.7;
                             clip: true;
                             Image {
                                 width: parent.width;
                                 height: parent.height;
-                                source: t;
+                                source: t.image;
                                 image-fit: contain;
                             }
                         }
 
                         // the current page's outline, 2 dp outside it
-                        if i == root.current: Rectangle {
+                        if t.n == root.current: Rectangle {
                             x: -4 * Theme.dp;
                             y: 8 * Theme.dp;
                             width: parent.width + 8 * Theme.dp;
@@ -169,15 +172,15 @@ export component PdfView inherits Rectangle {
                         Text {
                             y: 70 * Theme.dp;
                             width: parent.width;
-                            text: i + 1;
-                            color: i == root.current ? #b9bec7 : #7d838c;
+                            text: t.n + 1;
+                            color: t.n == root.current ? #b9bec7 : #7d838c;
                             font-size: 11 * Theme.dp;
                             horizontal-alignment: center;
                         }
 
                         TouchArea {
                             clicked => {
-                                root.thumb-picked(i);
+                                root.thumb-picked(t.n);
                             }
                         }
                     }

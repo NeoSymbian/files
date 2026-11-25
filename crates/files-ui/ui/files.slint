@@ -30,7 +30,7 @@ import { PackItem, WayRow, JobCard, ArchiveBar, ViewOnly, CompressForm, FolderPi
 import { PimLine, PimCard, PimField, EvRow, EvCard, Sample, SampleGroup, GlyphRow, InfoGroup, VcfView, VcfEdit, IcsView, IcsEdit, FontView, CertView, AppView, UnknownView } from "fa7.slint";
 import { AudioView } from "audio.slint";
 import { DText, DImage, DRect, DCell, DocItems, DocProbe, DocView, BookView, SheetView } from "doc.slint";
-import { PSlot, PdfView } from "pdf.slint";
+import { PSlot, PThumb, PdfView } from "pdf.slint";
 import { MdSpan, MdRow, CellRow, Col, CodeKeys, StatusLine, FindBar, Segments, MdView, TableGrid, CellBar, TypeChips } from "editor.slint";
 export { DText, DImage, DRect, DCell }
 export { TSpan, TRow, Mark, MdSpan, MdRow, CellRow, Col, TextMetrics, StripItem }
@@ -808,7 +808,8 @@ export component FilesApp inherits Window {
     in property <int> pdf-total;
     in property <int> pdf-total-w;
     in property <string> pdf-pill: "Page 1 / 1";
-    in property <[image]> pdf-thumbs;
+    in property <[PThumb]> pdf-thumbs;
+    in property <int> pdf-count;
     in property <int> pdf-current;
     in property <string> pdf-info;
     in property <bool> pdf-contents-open;
@@ -2440,6 +2441,7 @@ export component FilesApp inherits Window {
                 total-w: root.pdf-total-w;
                 pill: root.pdf-pill;
                 thumbs: root.pdf-thumbs;
+                count: root.pdf-count;
                 current: root.pdf-current;
                 info: root.pdf-info;
                 contents-open: root.pdf-contents-open;

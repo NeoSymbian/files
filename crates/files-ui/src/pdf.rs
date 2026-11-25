@@ -4,7 +4,7 @@
 //! view at that width, one sharp tile of the view while zoomed, and the strip's thumbnails near the current page.
 //! [`show_pdf`] hands the UI only the pages near the view.
 
-use crate::{FilesApp, PSlot};
+use crate::{FilesApp, PSlot, PThumb};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -19,8 +19,10 @@ const BOTTOM: f32 = 52.0;
 pub const THUMB_DP: f32 = 38.0;
 /// How far one can zoom in.
 pub const ZOOM_MAX: f32 = 4.0;
-/// Thumbnails this far either side of the current page are wanted.
+/// Thumbnails this far either side of the current page are wanted (and only those are in the strip's model).
 const THUMBS_NEAR: usize = 8;
+/// A whole page is drawn with at most this many pixels (a very tall page is drawn smaller and stretched).
+const PAGE_PX: f32 = 3_000_000.0;
 
 /// A part of a scaled page: x, y, w, h px.
 pub type Rect = (u32, u32, u32, u32);
@@ -101,12 +103,15 @@ impl PdfViewer {
         let gap = (GAP * self.dp) as i32;
         let mut y = (TOP * self.dp) as i32;
         self.slots.clear();
+        // Saturating: thousands of tall pages at 4× would pass i32 (the content then just ends there).
         for &(pw, ph) in &self.sizes {
             let ht = ((ph * width as f32 / pw.max(1.0)) as i32).max(1);
             self.slots.push((x, y, width, ht));
-            y += ht + gap;
+            y = y.saturating_add(ht).saturating_add(gap);
         }
-        self.total = y - gap + (BOTTOM * self.dp) as i32;
+        self.total = y
+            .saturating_sub(gap)
+            .saturating_add((BOTTOM * self.dp) as i32);
     }
 
     /// The page's slot in the content, px.
@@ -168,10 +173,20 @@ impl PdfViewer {
         let mut pages: Vec<usize> = self.near().collect();
         pages.sort_by_key(|&p| p.abs_diff(cur));
         for p in pages {
-            // Whole pages at the screen's width: zoomed, they stretch until the tile comes.
-            let s = self.scale(p) * fit;
+            // Whole pages at the screen's width: zoomed, they stretch until the tile comes. A very tall page is
+            // drawn smaller (and stretched too).
             let (_, _, w, h) = self.slot(p);
-            let size = ((w as f32 * fit) as u32, (h as f32 * fit) as u32);
+            let px = w as f32 * fit * h as f32 * fit;
+            let shrink = if px > PAGE_PX {
+                libm::sqrtf(PAGE_PX / px)
+            } else {
+                1.0
+            };
+            let s = self.scale(p) * fit * shrink;
+            let size = (
+                (w as f32 * fit * shrink) as u32,
+                (h as f32 * fit * shrink) as u32,
+            );
             out.push(Want {
                 kind: Kind::Page,
                 page: p,
@@ -328,10 +343,16 @@ pub fn show_pdf(ui: &FilesApp, v: &PdfViewer, pics: &impl Pictures, info: &str) 
     ui.set_pdf_total_w(v.total_w);
     ui.set_pdf_pill(v.pill().into());
     ui.set_pdf_current(v.current() as i32);
-    let thumbs: Vec<Image> = (0..v.pages())
-        .map(|p| pics.thumb(p).unwrap_or_default())
+    let cur = v.current();
+    let thumbs: Vec<PThumb> = (cur.saturating_sub(THUMBS_NEAR)
+        ..(cur + THUMBS_NEAR + 1).min(v.pages()))
+        .map(|p| PThumb {
+            n: p as i32,
+            image: pics.thumb(p).unwrap_or_default(),
+        })
         .collect();
     ui.set_pdf_thumbs(ModelRc::new(VecModel::from(thumbs)));
+    ui.set_pdf_count(v.pages() as i32);
     ui.set_pdf_info(info.into());
 }
 

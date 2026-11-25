@@ -286,9 +286,15 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
             }
         }
     }
-    if stuck && st.pdf.is_some() {
+    if stuck {
+        // a slow worker is told to stop; a dead one is forgotten either way: the next PDF starts a new one
         dprintln!("files: pdf worker stopped answering");
-        st.pdfw = None;
+        if let Some(w) = st.pdfw.take() {
+            w.close();
+        }
+        if st.pdf.is_none() {
+            return;
+        }
         close(st);
         crate::fa7::hex_because(app, ui, st, "It couldn't be drawn");
         return;
@@ -308,6 +314,10 @@ pub(crate) fn act(app: &App, ui: &FilesApp, st: &mut State, a: Act) {
         Act::Resized(w, h) => {
             let Some(v) = p.v.as_mut() else { return };
             v.layout(w, h);
+            // the pictures were drawn for the old width
+            p.pages.clear();
+            p.thumbs.clear();
+            p.tile = None;
             let (top, left) = (v.top, v.left);
             request(st);
             if let Some(p) = st.pdf.as_ref() {
@@ -418,7 +428,10 @@ pub(crate) fn menu(ui: &FilesApp, st: &mut State, m: &str) -> bool {
         return false;
     };
     match m {
-        "Contents" => p.contents = true,
+        "Contents" => {
+            p.contents = true;
+            ui.set_pdf_contents_current(contents_current(p));
+        }
         "Go to page…" => {
             p.ask = "page";
             ui.set_pdf_ask_text("".into());
@@ -428,6 +441,25 @@ pub(crate) fn menu(ui: &FilesApp, st: &mut State, m: &str) -> bool {
     }
     show(ui, p);
     true
+}
+
+/// The outline entry for the current page: the last one at or before it (-1: none).
+fn contents_current(p: &Open) -> i32 {
+    let cur = p.v.as_ref().map_or(0, |v| v.current());
+    p.outline
+        .iter()
+        .rposition(|e| e.page.is_some_and(|pg| pg <= cur))
+        .map_or(-1, |i| i as i32)
+}
+
+/// The view's pictures let go (Back, the hex view): Slint would keep the last ones alive.
+pub(crate) fn clear(ui: &FilesApp) {
+    ui.set_pdf_pages(ModelRc::default());
+    ui.set_pdf_thumbs(ModelRc::default());
+    ui.set_pdf_tile_on(false);
+    ui.set_pdf_tile(Default::default());
+    ui.set_pdf_contents_open(false);
+    ui.set_pdf_ask("".into());
 }
 
 /// Back: the Contents or an ask close first.
@@ -608,6 +640,8 @@ struct Queue {
     started: bool,
     /// When the worker took its current job (ms), while it works on it.
     since: Option<u64>,
+    /// The picture being drawn (not asked for again while it is).
+    doing: Option<Want>,
 }
 
 /// The file's bytes in a chunk of their own (closed when the document is).
@@ -633,21 +667,38 @@ impl Worker {
         })))
     }
 
-    fn start(&'static self) {
+    /// Starts the thread (once); false when it can't be.
+    fn start(&'static self) -> bool {
         if core::mem::replace(&mut self.q.lock().started, true) {
-            return;
+            return true;
         }
         let r = e32::thread::spawn_with_stack(STACK, move || {
-            let Ok(fs) = E32Fs::connect() else { return -1 };
+            let Ok(fs) = E32Fs::connect() else {
+                self.fail(Error::Io(-1));
+                return -1;
+            };
             loop {
-                self.wake.wait();
-                while let Some((n, path, password)) = self.q.lock().open.take() {
-                    self.serve(&fs, n, &path, &password);
+                // the job is taken in a statement of its own: the lock is free again while it is served
+                let job = self.q.lock().open.take();
+                match job {
+                    Some((n, path, password)) => self.serve(&fs, n, &path, &password),
+                    None => self.wake.wait(),
                 }
             }
         });
         if r.is_err() {
-            self.q.lock().started = false;
+            self.fail(Error::TooBig);
+            return false;
+        }
+        true
+    }
+
+    /// No worker: the document waiting to open gets `e` (the UI shows the bytes), the next one starts a new thread.
+    fn fail(&self, e: Error) {
+        let mut q = self.q.lock();
+        q.started = false;
+        if let Some((n, ..)) = q.open.take() {
+            q.done.push(Done::Opened(n, Err(e)));
         }
     }
 
@@ -660,8 +711,9 @@ impl Worker {
             q.close = false;
             q.done.clear();
         }
-        self.start();
-        self.wake.signal();
+        if self.start() {
+            self.wake.signal();
+        }
     }
 
     fn want(&self, n: u32, wants: Vec<Want>) {
@@ -669,7 +721,8 @@ impl Worker {
         if q.n != n {
             return;
         }
-        q.wants = wants.into();
+        let doing = q.doing;
+        q.wants = wants.into_iter().filter(|w| Some(*w) != doing).collect();
         drop(q);
         self.wake.signal();
     }
@@ -732,6 +785,7 @@ impl Worker {
                 }
                 let w = q.wants.pop_front();
                 q.since = w.map(|_| e32::time::millis());
+                q.doing = w;
                 w
             };
             let Some(want) = want else {
@@ -753,13 +807,16 @@ impl Worker {
                     }
                     let mut q = self.q.lock();
                     q.since = None;
+                    q.doing = None;
                     if q.n == n && !q.close {
                         q.done.push(Done::Drawn(n, want, d.px));
                     }
                 }
                 Err(e) => {
                     dprintln!("files: pdf page {} {}", want.page + 1, e.reason());
-                    self.q.lock().since = None;
+                    let mut q = self.q.lock();
+                    q.since = None;
+                    q.doing = None;
                 }
             }
         }
@@ -798,7 +855,7 @@ pub(crate) fn test_files(st: &State) {
     if st.fs.entry(&format!("{DIR}boarding-pass.pdf")).is_ok() {
         return;
     }
-    let files: [(&str, &[u8]); 7] = [
+    let files: [(&str, &[u8]); 9] = [
         (
             "boarding-pass.pdf",
             include_bytes!("../../../crates/neo-format-document/tests/data/boarding-pass.pdf"),
@@ -826,6 +883,14 @@ pub(crate) fn test_files(st: &State) {
         (
             "broken-xref.pdf",
             include_bytes!("../../../crates/neo-format-document/tests/data/broken-xref.pdf"),
+        ),
+        (
+            "tiling.pdf",
+            include_bytes!("../../../crates/neo-format-document/tests/data/tiling.pdf"),
+        ),
+        (
+            "masks.pdf",
+            include_bytes!("../../../crates/neo-format-document/tests/data/masks.pdf"),
         ),
     ];
     for (name, bytes) in files {

@@ -23,6 +23,8 @@ neo-format-inspect = { workspace = true }
 
 # documents (FA10): EPUB, docx, odt, rtf and xlsx, laid out here at the advances Slint draws
 neo-format-document = { workspace = true }
+# float maths without std (the PDF viewer's page sizes)
+libm = "0.2"
 
 [build-dependencies]
 # the neoui kit (@neoui/kit.slint): theme, fonts, glyphs and components
