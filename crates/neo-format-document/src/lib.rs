@@ -12,6 +12,8 @@ pub mod html;
 pub mod layout;
 pub mod model;
 pub mod odt;
+#[cfg(feature = "pdf")]
+pub mod pdf;
 pub mod rtf;
 pub mod xlsx;
 pub mod xml;
@@ -32,6 +34,8 @@ pub enum Error {
     TooBig,
     /// DRM.
     Protected,
+    /// It needs a password (none was given, or a wrong one).
+    Password,
     /// The file system's error code.
     Io(i32),
 }
@@ -44,6 +48,7 @@ impl Error {
             Error::Bad(why) => why,
             Error::TooBig => "It is too big to show",
             Error::Protected => "It is protected (DRM)",
+            Error::Password => "It needs a password",
             Error::Io(_) => "It couldn't be read",
         }
     }

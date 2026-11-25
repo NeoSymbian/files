@@ -22,6 +22,7 @@ mod fa7;
 mod fa8;
 mod image;
 mod job;
+mod pdf;
 mod pics;
 mod scan;
 mod sheet;
@@ -174,6 +175,7 @@ enum Action {
     // FA10
     Doc(doc::Act),
     Book(book::Act),
+    Pdf(pdf::Act),
     Sheet(sheet::Act),
 }
 
@@ -330,6 +332,10 @@ struct State {
     fonts: Option<files_ui::doc::Fonts>,
     /// The documents opened so far (a picture is matched to its document by this).
     doc_n: u32,
+    // FA11
+    pdf: Option<pdf::Open>,
+    /// The PDF worker (started with the first PDF).
+    pdfw: Option<&'static pdf::Worker>,
 }
 
 fn run() -> Result<(), i32> {
@@ -410,6 +416,8 @@ fn run() -> Result<(), i32> {
         counter: book::Counter::new().ok(),
         fonts: None,
         doc_n: 0,
+        pdf: None,
+        pdfw: None,
     };
     load_settings(&app, &ui, &mut st);
     fa3::load(&mut st);
@@ -423,6 +431,7 @@ fn run() -> Result<(), i32> {
         fa8::test_files(&st);
         audio::test_files(&st);
         doc::test_files(&st);
+        pdf::test_files(&st);
     }
     show_drives(&app, &ui, &mut st);
     fa8::restore_clip(&app, &ui, &mut st);
@@ -464,6 +473,9 @@ fn run() -> Result<(), i32> {
                     if st.counter.is_some_and(|c| c.busy()) {
                         wait = wait.min(book::POLL_US);
                     }
+                    if st.pdfw.is_some_and(|w| w.busy()) {
+                        wait = wait.min(pdf::POLL_US);
+                    }
                     let watch_dir =
                         (st.view == View::Folder && st.dir != st.unwatched).then(|| st.dir.clone());
                     let watch = async {
@@ -497,6 +509,7 @@ fn run() -> Result<(), i32> {
                             image::poll(&app, &ui, &mut st);
                             audio::poll(&app, &ui, &mut st);
                             book::poll(&ui, &mut st);
+                            pdf::poll(&app, &ui, &mut st);
                             // a flick goes on without events: its scroll callbacks wait here
                             loop {
                                 let next = actions.borrow_mut().pop_front();
@@ -531,6 +544,8 @@ fn run() -> Result<(), i32> {
                 // a document's page view reads a pinch the same way
                 AppEvent::Input(InputEvent::Touch { id, x, y, phase })
                     if st.view == View::Fa7 && doc::touch(&app, &ui, &mut st, id, x, y, phase) => {}
+                AppEvent::Input(InputEvent::Touch { id, x, y, phase })
+                    if st.view == View::Fa7 && pdf::touch(&app, &ui, &mut st, id, x, y, phase) => {}
                 _ => app.handle(&e),
             }
             // the player: "Stops when you leave Files"
@@ -742,6 +757,7 @@ fn bind(ui: &FilesApp, actions: &Rc<RefCell<VecDeque<Action>>>) {
     audio::bind(ui, actions);
     doc::bind(ui, actions);
     book::bind(ui, actions);
+    pdf::bind(ui, actions);
     sheet::bind(ui, actions);
     {
         let q = actions.clone();
@@ -890,6 +906,7 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
         Action::Audio(a) => audio::act(app, ui, st, a),
         Action::Doc(a) => doc::act(ui, st, a),
         Action::Book(a) => book::act(app, ui, st, a),
+        Action::Pdf(a) => pdf::act(app, ui, st, a),
         Action::Sheet(a) => sheet::act(ui, st, a),
         Action::Edit if st.view == View::Fa7 => fa7::edit(ui, st),
         Action::Row(i) if st.view == View::Folder => {

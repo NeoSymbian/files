@@ -426,6 +426,7 @@ pub(crate) fn close_all(st: &mut State) {
     close(st);
     crate::book::close(st);
     crate::sheet::close(st);
+    crate::pdf::close(st);
 }
 
 /// `C:\Data\fa10\`: the plan as docx, odt and rtf (and textutil's copies), each with a broken copy as FA7's.

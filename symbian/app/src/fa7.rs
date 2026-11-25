@@ -87,6 +87,8 @@ enum Kind {
     Book,
     /// FA10's grid (sheet.rs keeps its state).
     Sheet,
+    /// FA11's PDF viewer (pdf.rs keeps its state).
+    Pdf,
     Hex,
 }
 
@@ -247,6 +249,10 @@ pub(crate) fn open(app: &App, ui: &FilesApp, st: &mut State, path: &str) {
     };
     let ext = neo_view::ext_of(&o.name).to_ascii_lowercase();
     let r = match neo_view::family_of(&o.name) {
+        _ if crate::pdf::is_pdf(&o.name) => {
+            o.kind = Kind::Pdf;
+            crate::pdf::open(app, ui, st, &o)
+        }
         _ if crate::doc::is_doc(&o.name) => {
             o.kind = Kind::Doc;
             crate::doc::open(ui, st, &o)
@@ -290,11 +296,12 @@ pub(crate) fn back(app: &App, ui: &FilesApp, st: &mut State) {
     if st.fa7.as_ref().is_some_and(|o| o.form.is_some()) {
         return cancel(app, ui, st);
     }
-    if crate::book::back(ui, st) {
+    if crate::book::back(ui, st) || crate::pdf::back(ui, st) {
         return;
     }
     crate::audio::close(st);
     crate::doc::close_all(st);
+    crate::pdf::clear(ui);
     let from = st.fa7.take().map_or(View::Folder, |o| o.from);
     return_to(app, ui, st, from);
 }
@@ -406,7 +413,7 @@ fn menu(app: &App, ui: &FilesApp, st: &mut State, m: &str) {
     let Some(path) = st.fa7.as_ref().map(|o| o.path.clone()) else {
         return;
     };
-    if crate::book::menu(app, ui, st, m) {
+    if crate::book::menu(app, ui, st, m) || crate::pdf::menu(ui, st, m) {
         return;
     }
     match m {
@@ -421,6 +428,11 @@ fn show(app: &App, ui: &FilesApp, st: &mut State) {
     let Some(o) = st.fa7.as_ref() else { return };
     ui.set_name(o.name.as_str().into());
     let hexing = matches!(o.kind, Kind::Hex);
+    let pdf: Vec<&str> = crate::pdf::menu_items(st)
+        .iter()
+        .chain(&["Show as hex…", "Open with…", "Details"])
+        .copied()
+        .collect();
     ui.set_fa7_menu(strs(if hexing {
         &["Open with…", "Details"]
     } else if matches!(o.kind, Kind::Book) {
@@ -432,6 +444,8 @@ fn show(app: &App, ui: &FilesApp, st: &mut State) {
             "Open with…",
             "Details",
         ]
+    } else if matches!(o.kind, Kind::Pdf) {
+        &pdf
     } else {
         &["Show as hex…", "Open with…", "Details"]
     }));
@@ -1192,11 +1206,22 @@ fn package(ui: &FilesApp, st: &State, o: &mut Open7, ext: &str) -> Result<&'stat
     Ok("app")
 }
 
+/// The ⋮ menu again (a viewer's items changed: a PDF's Contents once it is open).
+pub(crate) fn refresh_menu(app: &App, ui: &FilesApp, st: &mut State) {
+    show(app, ui, st);
+}
+
+/// The bytes, saying why the viewer couldn't show the file (a viewer that finds out after opening).
+pub(crate) fn hex_because(app: &App, ui: &FilesApp, st: &mut State, why: &str) {
+    hex(app, ui, st, why);
+}
+
 /// The bytes (files2-view-unknown); `why` is the reason a viewer couldn't read the file ("" none: no viewer, or
 /// Show as hex…).
 fn hex(app: &App, ui: &FilesApp, st: &mut State, why: &str) {
     crate::audio::close(st);
     crate::doc::close_all(st);
+    crate::pdf::clear(ui);
     let Some(o) = st.fa7.as_mut() else { return };
     let had_viewer = !matches!(o.kind, Kind::Hex);
     o.kind = Kind::Hex;

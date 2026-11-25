@@ -10,3 +10,13 @@ license.workspace = true
 neo-format-archive = { workspace = true }
 xmlparser = { version = "0.13", default-features = false }
 unicode-linebreak = "0.1"
+# PDF (FA11): NeoSymbian/hayro (branch neosymbian): hayro-interpret and its parser without std; the 14 standard
+# fonts embedded (Foxit, BSD), no ICC (moxcms needs std), no predefined CJK CMaps (their brotli needs std)
+hayro-interpret = { git = "https://github.com/NeoSymbian/hayro", rev = "5d3563462b293e6f1eb37f6e5b6b9f98f8c15897", default-features = false, features = ["embed-fonts"], optional = true }
+tiny-skia = { version = "0.12", default-features = false, features = ["no-std-float"], optional = true }
+neo-format-image = { workspace = true, optional = true }
+libm = { version = "0.2", optional = true }
+
+[features]
+default = ["pdf"]
+pdf = ["dep:hayro-interpret", "dep:tiny-skia", "dep:neo-format-image", "dep:libm"]
