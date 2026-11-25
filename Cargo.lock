@@ -3946,7 +3946,7 @@ dependencies = [
 [[package]]
 name = "rust_h264"
 version = "0.6.1"
-source = "git+https://github.com/NeoSymbian/rust_h264?rev=4e9f47b4febe23dbea66f7e808d0577be25d70ff#4e9f47b4febe23dbea66f7e808d0577be25d70ff"
+source = "git+https://github.com/NeoSymbian/rust_h264?rev=77b87a5a17f6882ddfa9106205f32ff0b62d59c4#77b87a5a17f6882ddfa9106205f32ff0b62d59c4"
 
 [[package]]
 name = "rustc-hash"

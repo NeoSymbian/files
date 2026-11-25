@@ -68,6 +68,17 @@ fn boost(ms: usize) {
     }
 }
 
+/// The Pixel's second A75 (CPUs 6-7 are the fast cluster).
+const FAST_CPU: usize = 7;
+
+/// `EKernelHalLockThreadToCpu` (kernel group 0, function 19): Files' e32 pin predates `thread::lock_to_cpu`.
+fn pin(cpu: usize) {
+    // SAFETY: the kernel takes the CPU as a plain value in a1; a CPU it doesn't run is refused (KErrArgument).
+    unsafe {
+        e32::sys::ui::hal_function(0, 19, cpu as *mut u8, core::ptr::null_mut());
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Play {
     #[default]
@@ -118,6 +129,9 @@ struct Shared {
     clock: Clock,
     buffered_us: u64,
     started: bool,
+    /// Pictures decoded and the time spent decoding them (µs), since the UI last read them.
+    decoded: u32,
+    decode_us: u64,
 }
 
 pub struct Worker {
@@ -151,6 +165,9 @@ struct Now<'a> {
     input_done: bool,
     /// Paused after an open or a seek: one picture is still to be shown.
     still: bool,
+    /// After an open or a seek the sound waits (and the clock stands) until a few pictures are decoded, so the
+    /// first ones aren't late: on the Pixel the first 5 s ran 400 ms behind without it.
+    preroll: bool,
     boosted_at: u32,
     pictures: Vec<Frame>,
 }
@@ -172,6 +189,8 @@ impl Worker {
             return true;
         }
         let r = e32::thread::spawn_with_stack(STACK, move || {
+            // the decoder needs a fast core: left to the scheduler it ran on the A55s at 20 fps (Pixel, 2026-11-26)
+            pin(FAST_CPU);
             let Ok(fs) = E32Fs::connect() else {
                 self.q.lock().started = false;
                 return -1;
@@ -385,6 +404,7 @@ impl Worker {
             muted: false,
             input_done: false,
             still: true,
+            preroll: true,
             boosted_at: 0,
             pictures: Vec::new(),
         };
@@ -414,6 +434,7 @@ impl Worker {
         p.skip_us = us as i64;
         p.input_done = false;
         p.still = true;
+        p.preroll = true;
         if p.state == Play::Ended {
             p.state = Play::Paused;
         }
@@ -441,7 +462,8 @@ impl Worker {
         let rate = p.rate * p.speed / 100;
         match Out::open(rate, p.channels as u8) {
             Ok(o) => {
-                if p.state != Play::Playing {
+                // paused until the pre-roll ends (or Play)
+                if p.state != Play::Playing || p.preroll {
                     o.call(op::PAUSE, 1);
                 }
                 if p.muted {
@@ -468,7 +490,14 @@ impl Worker {
             worked = true;
             match p.demux.next() {
                 Ok(Some(pk)) if pk.track == p.vtrack => {
+                    let t0 = time::fast_counter();
                     p.vdec.decode(&pk, &mut p.pictures).ok();
+                    let us = elapsed_us(t0);
+                    {
+                        let mut q = self.q.lock();
+                        q.decoded += 1;
+                        q.decode_us += u64::from(us);
+                    }
                     self.keep(p);
                 }
                 Ok(Some(pk)) if Some(pk.track) == p.strack => {
@@ -493,6 +522,16 @@ impl Worker {
                     p.vdec.flush(&mut p.pictures);
                     self.keep(p);
                 }
+            }
+        }
+        if p.preroll && (p.input_done || self.q.lock().frames.len() >= AHEAD) {
+            p.preroll = false;
+            if p.state == Play::Playing {
+                if let Some(o) = p.out.as_ref() {
+                    o.call(op::PAUSE, 0);
+                    p.f0 = o.info().frames;
+                }
+                p.started_at = time::fast_counter();
             }
         }
         if p.state == Play::Playing {
@@ -551,7 +590,7 @@ impl Worker {
 
     /// Publishes the clock and notices the end.
     fn tick(&self, p: &mut Now<'_>) {
-        let playing = p.state == Play::Playing;
+        let playing = p.state == Play::Playing && !p.preroll;
         let clock = match p.out.as_ref() {
             Some(o) if playing => {
                 let i = o.info();
@@ -612,6 +651,9 @@ pub struct Video {
     since: u32,
     worst_us: i64,
     saved_us: u64,
+    present_us: u64,
+    /// The picture last shown: handed to Slint when the raw path stops (paused, ended, controls shown).
+    last: Option<Frame>,
 }
 
 pub(crate) fn is_video(name: &str) -> bool {
@@ -695,6 +737,8 @@ pub(crate) fn open(st: &mut State, ui: &FilesApp, o: &Open7) -> Result<&'static 
         since: time::fast_counter(),
         worst_us: 0,
         saved_us: at,
+        present_us: 0,
+        last: None,
     });
     ui.set_video_error("".into());
     ui.set_video_error_detail("".into());
@@ -801,6 +845,7 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
         v.worst_us = v.worst_us.max(gap.abs());
         v.shown_us = f.pts_us;
         v.shown += 1;
+        let t0 = time::fast_counter();
         let (x, y, w, h) = p.place();
         if raw {
             let r = Rect::new(
@@ -819,22 +864,42 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
         } else {
             ui.set_video_frame(slint_frame(&f, w, h));
         }
+        v.present_us += u64::from(elapsed_us(t0));
         v.raw = raw;
+        v.last = Some(f);
+    } else if v.raw && !raw {
+        // the raw path stopped with no new picture due (paused, ended, the controls shown): Slint shows the last one
+        if let Some(f) = v.last.as_ref() {
+            let (_, _, w, h) = p.place();
+            ui.set_video_frame(slint_frame(f, w, h));
+        }
+        v.raw = false;
     }
     screen::show_video(ui, p, v.shown_us.max(0) as u64, v.buffered_us, playing);
     // a line every 5 s while playing: what the gate measures
     if elapsed_us(v.since) >= 5_000_000 {
         let secs = elapsed_us(v.since) as u64;
+        let (decoded, decode_us) = {
+            let mut q = w.q.lock();
+            (
+                core::mem::take(&mut q.decoded),
+                core::mem::take(&mut q.decode_us),
+            )
+        };
         if v.shown > 0 {
             dprintln!(
-                "files: video {}.{} fps shown, {} dropped, worst A/V {} ms{}",
+                "files: video {}.{} fps shown, {} dropped, worst A/V {} ms{}; decode {} at {} ms, present {} ms",
                 u64::from(v.shown) * 1_000_000 / secs,
                 u64::from(v.shown) * 10_000_000 / secs % 10,
                 v.dropped,
                 v.worst_us / 1000,
-                if v.raw { ", raw" } else { "" }
+                if v.raw { ", raw" } else { "" },
+                decoded,
+                decode_us / 1000 / u64::from(decoded.max(1)),
+                v.present_us / 1000 / u64::from(v.shown)
             );
         }
+        v.present_us = 0;
         v.shown = 0;
         v.dropped = 0;
         v.worst_us = 0;
@@ -927,13 +992,13 @@ pub(crate) fn act(app: &App, ui: &FilesApp, st: &mut State, a: Act) {
         let (pos, buffered, playing) = (
             pos,
             st.video.as_ref().map_or(0, |v| v.buffered_us),
-            v_playing(st),
+            playing(st),
         );
         screen::show_video(ui, p, pos, buffered, playing);
     }
 }
 
-fn v_playing(st: &State) -> bool {
+pub(crate) fn playing(st: &State) -> bool {
     st.video.as_ref().is_some_and(|v| v.state == Play::Playing)
 }
 

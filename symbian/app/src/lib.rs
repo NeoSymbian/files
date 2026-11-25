@@ -796,8 +796,9 @@ fn describe(app: &App, ui: &FilesApp, st: &mut State) -> Result<(), i32> {
             || st.compress.is_some()
             || ui.get_clash_open()
             || ui.global::<Kit>().get_layers() > 0,
-        // FA12: a clip full screen or turned
+        // FA12: a clip full screen or turned, and the screen kept on while it plays
         full: st.view == View::Fa7 && video::full(st),
+        awake: st.view == View::Fa7 && video::playing(st),
     };
     if page != st.page {
         app.page(&page)?;

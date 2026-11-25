@@ -16,15 +16,15 @@ e32::main!(main);
 
 const DIR: &str = "C:\\Data\\fa12\\";
 const CLIPS: &[&str] = &[
-    "vp8_720.ivf",
-    "vp9_720.ivf",
     "phone720.h264",
+    "baseline720.h264",
+    "deblock1080.h264",
     "bench_720p_300f_bframes_complex.h264",
     "bench_720p_300f_ponly_complex.h264",
     "bench_1080p_100f_complex.h264",
 ];
 /// The fast cluster's last CPU and the slow cluster's first (Pixel 3a XL: 0-5 A55, 6-7 A75).
-const CPUS: &[u32] = &[7, 0];
+const CPUS: &[u32] = &[7];
 
 /// `EKernelHalLockThreadToCpu` (19): Files' e32 pin predates `thread::lock_to_cpu`; 0xffff_ffff unpins.
 fn pin(cpu: u32) -> bool {
@@ -67,12 +67,57 @@ fn read(fs: &E32Fs, name: &str) -> Option<Vec<u8>> {
     Some(data)
 }
 
+/// FNV-1a over every picture's planes: the same on the Mac and the phone when the NEON kernels are right.
+static SUM: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+fn fnv(h: u64, b: &[u8]) -> u64 {
+    b.iter()
+        .fold(h, |h, &x| (h ^ u64::from(x)).wrapping_mul(0x100_0000_01b3))
+}
+
+/// The player's colour conversion: a 720p picture to the 1080x607 place on screen, straight and turned.
+fn yuv_bench(f: &rust_h264::decoder::Frame) {
+    use neo_format_media::av::{video::Frame, yuv};
+    let fr = Frame {
+        width: f.width,
+        height: f.height,
+        y: f.y.clone(),
+        u: f.u.clone(),
+        v: f.v.clone(),
+        y_stride: f.width as usize,
+        uv_stride: f.chroma_width() as usize,
+        pts_us: 0,
+    };
+    let mut px = vec![0u32; 1920 * 1080];
+    for (turn, w, h) in [
+        (yuv::Turn::None, 1080, 607),
+        (yuv::Turn::Quarter, 1080, 1920),
+    ] {
+        let t0 = time::fast_counter();
+        for _ in 0..10 {
+            yuv::draw(&fr, turn, &mut px, w as usize, w, h);
+        }
+        let us = time::counter_us(t0, time::fast_counter(), time::fast_counter_hz()) / 10;
+        dprintln!(
+            "vbench: yuv {}x{} -> {}x{} {:?}: {} us",
+            f.width,
+            f.height,
+            w,
+            h,
+            turn,
+            us
+        );
+    }
+}
+
 /// Frames, size, total and slowest decode time in microseconds.
 fn h264(data: &[u8]) -> (u32, (u32, u32), u64, u32) {
     let hz = time::fast_counter_hz();
     let nals = rust_h264::nal::parse_annex_b(data);
     let mut dec = rust_h264::decoder::Decoder::new();
     let (mut frames, mut size, mut total, mut slowest) = (0, (0, 0), 0u64, 0);
+    let mut sum = 0xcbf2_9ce4_8422_2325u64;
+    let mut last = None;
     for (i, nal) in nals.iter().enumerate() {
         if i % 16 == 0 {
             boost(2000);
@@ -85,13 +130,20 @@ fn h264(data: &[u8]) -> (u32, (u32, u32), u64, u32) {
         if let Ok(Some(f)) = out {
             frames += 1;
             size = (f.width, f.height);
+            sum = fnv(fnv(fnv(sum, &f.y), &f.u), &f.v);
+            last = Some(f);
         }
+    }
+    if let Some(f) = last.take() {
+        yuv_bench(&f);
     }
     let t0 = time::fast_counter();
     while let Some(f) = dec.flush() {
         frames += 1;
         size = (f.width, f.height);
+        sum = fnv(fnv(fnv(sum, &f.y), &f.u), &f.v);
     }
+    SUM.store(sum, core::sync::atomic::Ordering::Relaxed);
     total += u64::from(time::counter_us(t0, time::fast_counter(), hz));
     (frames, size, total, slowest)
 }
@@ -172,7 +224,7 @@ fn main() -> i32 {
                 .checked_div(us)
                 .unwrap_or(0);
             dprintln!(
-                "vbench: {} cpu {}: {} frames {}x{} in {} ms = {}.{} fps, slowest {} ms",
+                "vbench: {} cpu {}: {} frames {}x{} in {} ms = {}.{} fps, slowest {} ms, sum {:x}",
                 name,
                 cpu,
                 frames,
@@ -181,7 +233,8 @@ fn main() -> i32 {
                 ms,
                 fps10 / 10,
                 fps10 % 10,
-                slowest / 1000
+                slowest / 1000,
+                SUM.load(core::sync::atomic::Ordering::Relaxed)
             );
         }
     }

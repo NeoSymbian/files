@@ -2955,7 +2955,7 @@ version = "0.1.0"
 [[package]]
 name = "neoapp"
 version = "0.1.0"
-source = "git+https://github.com/NeoSymbian/neoui?rev=afa3b40d05b575d6c5c8086b84e2e8fd10c1c95e#afa3b40d05b575d6c5c8086b84e2e8fd10c1c95e"
+source = "git+https://github.com/NeoSymbian/neoui?rev=4c73684d23367c975a32e0ba55c9e14e5b31f954#4c73684d23367c975a32e0ba55c9e14e5b31f954"
 dependencies = [
  "e32",
  "neoui-proto",
@@ -3004,7 +3004,7 @@ dependencies = [
 [[package]]
 name = "neoui-proto"
 version = "0.1.0"
-source = "git+https://github.com/NeoSymbian/neoui?rev=afa3b40d05b575d6c5c8086b84e2e8fd10c1c95e#afa3b40d05b575d6c5c8086b84e2e8fd10c1c95e"
+source = "git+https://github.com/NeoSymbian/neoui?rev=4c73684d23367c975a32e0ba55c9e14e5b31f954#4c73684d23367c975a32e0ba55c9e14e5b31f954"
 
 [[package]]
 name = "nix"
@@ -4014,7 +4014,7 @@ dependencies = [
 [[package]]
 name = "rust_h264"
 version = "0.6.1"
-source = "git+https://github.com/NeoSymbian/rust_h264?rev=4e9f47b4febe23dbea66f7e808d0577be25d70ff#4e9f47b4febe23dbea66f7e808d0577be25d70ff"
+source = "git+https://github.com/NeoSymbian/rust_h264?rev=77b87a5a17f6882ddfa9106205f32ff0b62d59c4#77b87a5a17f6882ddfa9106205f32ff0b62d59c4"
 
 [[package]]
 name = "rustc-hash"
@@ -5037,6 +5037,7 @@ version = "0.1.0"
 dependencies = [
  "e32",
  "fs-e32",
+ "neo-format-media",
  "neo-fs",
  "rust_h264",
  "rusty_vp9",
