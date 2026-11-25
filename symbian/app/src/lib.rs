@@ -246,7 +246,7 @@ struct Running {
 
 struct State {
     fs: Rc<E32Fs>,
-    slot: &'static job::Slot,
+    slot: alloc::sync::Arc<job::Slot>,
     view: View,
     /// Drive letters in card order, and whether each is read-only.
     drives: Vec<(char, bool)>,

@@ -5,8 +5,8 @@
 //! bin for good (FA3) runs here too: the UI thread takes the items out of the bin (`trash::purge`: the journal is
 //! only ever written there), and a [`DeleteTree`] here removes the `.~del` leftovers it hands over.
 
-use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use e32::sync::{Mutex, Semaphore};
 use files_ops::archive::{ArchiveMember, Compress, Extract, Packing, Pick, ScanGz};
@@ -54,28 +54,28 @@ pub struct Shared {
     ended: bool,
 }
 
-/// One job at a time; made once and kept (its mutex and semaphore are kernel objects, and ARMv5TE has no
-/// compare-and-swap for an `Arc`).
+/// One job at a time; made once and kept, shared with each job's worker thread.
 pub struct Slot {
     pub shared: Mutex<Shared>,
     wake: Semaphore,
 }
 
 impl Slot {
-    pub fn new() -> Result<&'static Slot, i32> {
-        Ok(Box::leak(Box::new(Slot {
+    pub fn new() -> Result<Arc<Slot>, i32> {
+        Ok(Arc::new(Slot {
             shared: Mutex::new(Shared::default())?,
             wake: Semaphore::new(0)?,
-        })))
+        }))
     }
 
     /// Start `work` on a new worker thread.
-    pub fn start(&'static self, work: Work) -> Result<(), i32> {
+    pub fn start(self: &Arc<Self>, work: Work) -> Result<(), i32> {
         *self.shared.lock() = Shared::default();
+        let slot = Arc::clone(self);
         e32::thread::spawn_with_stack(STACK, move || {
             let result = match work {
-                Work::Transfer(kind, sources, dest) => run(self, kind, sources, &dest),
-                Work::Purge(doomed, items) => purge(self, doomed, items),
+                Work::Transfer(kind, sources, dest) => run(&slot, kind, sources, &dest),
+                Work::Purge(doomed, items) => purge(&slot, doomed, items),
                 Work::Extract {
                     archive,
                     pick,
@@ -86,15 +86,15 @@ impl Slot {
                     if replace {
                         x.replace_all();
                     }
-                    drive(self, &fs, &mut x)
+                    drive(&slot, &fs, &mut x)
                 }),
                 Work::Compress(sources, out, packing) => E32Fs::connect().and_then(|fs| {
                     let mut c = Compress::new(&fs, &sources, &out, packing)?;
-                    drive(self, &fs, &mut c)
+                    drive(&slot, &fs, &mut c)
                 }),
-                Work::List(archive) => list(self, &archive),
+                Work::List(archive) => list(&slot, &archive),
             };
-            let mut s = self.shared.lock();
+            let mut s = slot.shared.lock();
             s.done = Some(result);
             s.ended = true;
             0

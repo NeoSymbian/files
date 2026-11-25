@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # The host workspace of Files: the portable crates (files-core, neo-fs, files-ops, neo-view; Apache-2.0) and the Slint UI
-# (files-ui, GPL-3.0: it links Slint), tested on the host. The app EXE is the separate symbian/ workspace (armv5te,
+# (files-ui, GPL-3.0: it links Slint), tested on the host. The app EXE is the separate symbian/ workspace (ARMv8,
 # nightly build-std).
 [workspace]
 resolver = "3"
