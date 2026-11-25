@@ -42,6 +42,11 @@ use slint::{Image, Rgb8Pixel, SharedPixelBuffer};
 const STACK: i32 = 512 * 1024;
 /// Pictures decoded ahead (720p: 1.4 MB each).
 const AHEAD: usize = 4;
+/// The most pictures queued even while the sound wants more packets: the queue is bounded (8 at 1080p is 25 MB of
+/// the 64 MB heap). Without it the worker read on for sound and queued pictures without limit (VP8, Pixel).
+const AHEAD_MAX: usize = 8;
+/// A picture this late is dropped when a newer one is due too; a less late one is shown, the next right after.
+const LATE_US: i64 = 50_000;
 /// Sound decoded ahead of NeoAudio, besides its own 250 ms queue.
 const SOUND_AHEAD_US: u64 = 400_000;
 /// NeoAudio's queue is topped up while it holds less than this.
@@ -481,12 +486,13 @@ impl Worker {
     fn step(&self, p: &mut Now<'_>) -> bool {
         let mut worked = false;
         // the picture shown after an open or a seek decodes while paused too
-        let want_pictures = self.q.lock().frames.len() < AHEAD;
+        let queued = self.q.lock().frames.len();
+        let want_pictures = queued < AHEAD;
         let sound_ahead =
             (p.pcm.len() / p.channels.max(1)) as u64 * 1_000_000 / u64::from(p.rate.max(1));
         let want_sound = p.sdec.is_some() && sound_ahead < SOUND_AHEAD_US;
         let paused = p.state != Play::Playing && !p.still;
-        if !p.input_done && (want_pictures || want_sound) && !paused {
+        if !p.input_done && (want_pictures || want_sound) && !paused && queued < AHEAD_MAX {
             worked = true;
             match p.demux.next() {
                 Ok(Some(pk)) if pk.track == p.vtrack => {
@@ -786,22 +792,20 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
         v.buffered_us = q.buffered_us;
         let now = now_us(&q.clock);
         let mut late = 0;
-        // the newest picture whose time has come; the ones before it are dropped (shown nowhere)
+        // the oldest picture whose time has come; one more than LATE_US late is dropped when a newer one is due too
         let mut due = None;
-        while q
-            .frames
-            .front()
-            .is_some_and(|f| f.pts_us <= now || v.shown_us < 0)
-        {
-            let f = q.frames.pop_front().unwrap();
-            if due.is_some() {
-                late += 1;
-            }
-            let first = v.shown_us < 0;
-            due = Some(f);
-            if first || q.frames.front().is_none_or(|n| n.pts_us > now) {
+        while let Some(front) = q.frames.front() {
+            if front.pts_us > now && v.shown_us >= 0 {
                 break;
             }
+            let f = q.frames.pop_front().unwrap();
+            let newer_due = q.frames.front().is_some_and(|n| n.pts_us <= now);
+            if v.shown_us >= 0 && newer_due && now - f.pts_us > LATE_US {
+                late += 1;
+                continue;
+            }
+            due = Some(f);
+            break;
         }
         if due.is_some() {
             w.wake.signal(); // room to decode ahead again
@@ -969,11 +973,13 @@ pub(crate) fn act(app: &App, ui: &FilesApp, st: &mut State, a: Act) {
             if let Some(p) = v.v.as_mut() {
                 p.landscape = !p.landscape;
                 app.set_landscape(p.landscape);
+                dprintln!("files: video landscape {}", p.landscape);
             }
         }
         Act::Full => {
             if let Some(p) = v.v.as_mut() {
                 p.full = !p.full;
+                dprintln!("files: video full screen {}", p.full);
             }
         }
         Act::OpenWith => {
@@ -981,6 +987,7 @@ pub(crate) fn act(app: &App, ui: &FilesApp, st: &mut State, a: Act) {
             crate::fa8::open_with(ui, st, path);
         }
         Act::Resized(wd, h) => {
+            dprintln!("files: video area {}x{}", wd, h);
             if let Some(p) = v.v.as_mut() {
                 p.layout(wd.max(1) as u32, h.max(1) as u32);
             }
