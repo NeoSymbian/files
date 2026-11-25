@@ -137,7 +137,7 @@ export component PdfView inherits Rectangle {
                 padding-right: 16 * Theme.dp;
                 strip := Flickable {
                     horizontal-stretch: 1;
-                    viewport-width: (16 + root.thumbs.length * 54) * Theme.dp;
+                    content-width: (16 + root.thumbs.length * 54) * Theme.dp;
                     for t[i] in root.thumbs: Rectangle {
                         x: (16 + i * 54) * Theme.dp;
                         width: 38 * Theme.dp;
