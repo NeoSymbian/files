@@ -1,0 +1,395 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// FA12 (files2-view-video): the video on black at the area's width (or turned, filling the screen), and over it, while
+// the controls show, a see-through header [← name · Share · ⋮], back 10 s · play/pause · forward 10 s in the middle, and
+// at the bottom the info line, the seek bar (played blue, buffered grey) with the times, mute, the speed chip, rotate
+// and full screen. A tap shows or hides the controls; while they are hidden and a clip plays, Rust writes the frames
+// straight into the app's surface (neoapp App::raw), so nothing here may change over the picture then.
+
+import { Theme, Glyph, SubHeader } from "@neoui/kit.slint";
+
+// a round button over the picture: an icon, and a small label under it ("10")
+component Round inherits Rectangle {
+    in property <image> icon;
+    in property <length> size: 22 * Theme.dp;
+    in property <string> label;
+    callback clicked;
+    border-radius: self.width / 2;
+    background: touch.pressed ? #000000d0 : #00000080;
+    VerticalLayout {
+        alignment: center;
+        Glyph {
+            source: root.icon;
+            size: root.size;
+            colorize: #ffffff;
+        }
+        if root.label != "": Text {
+            text: root.label;
+            color: #ffffff;
+            font-size: 10 * Theme.dp;
+            font-weight: 600;
+            horizontal-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// a button in the bottom row
+component Tool inherits Rectangle {
+    in property <image> icon;
+    callback clicked;
+    width: 48 * Theme.dp;
+    height: 48 * Theme.dp;
+    border-radius: self.width / 2;
+    background: touch.pressed ? #ffffff22 : transparent;
+    Glyph {
+        source: root.icon;
+        size: 24 * Theme.dp;
+        colorize: #ffffff;
+    }
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// the seek bar: the knob follows the finger; the place is sent when it lifts
+component Seek inherits Rectangle {
+    in property <float> played;
+    in property <float> buffered;
+    callback seek(float);
+    property <bool> dragging: touch.pressed;
+    property <float> drag;
+    property <float> shown: self.dragging ? self.drag : self.played;
+    height: 24 * Theme.dp;
+    Rectangle {
+        y: 10 * Theme.dp;
+        height: 4 * Theme.dp;
+        border-radius: 2 * Theme.dp;
+        background: #ffffff40;
+    }
+    Rectangle {
+        x: 0;
+        y: 10 * Theme.dp;
+        width: root.width * max(root.buffered, root.shown);
+        height: 4 * Theme.dp;
+        border-radius: 2 * Theme.dp;
+        background: #ffffff70;
+    }
+    Rectangle {
+        x: 0;
+        y: 10 * Theme.dp;
+        width: root.width * root.shown;
+        height: 4 * Theme.dp;
+        border-radius: 2 * Theme.dp;
+        background: #3d8bfd;
+    }
+    Rectangle {
+        x: root.width * root.shown - self.width / 2;
+        y: (root.height - self.height) / 2;
+        width: (root.dragging ? 20 : 16) * Theme.dp;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: #ffffff;
+    }
+    touch := TouchArea {
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down || e.kind == PointerEventKind.move {
+                root.drag = max(0, min(1, self.mouse-x / root.width));
+            } else if e.kind == PointerEventKind.up {
+                root.seek(root.drag);
+            }
+        }
+    }
+}
+
+export component VideoView inherits Rectangle {
+    in property <string> name;
+    in property <[string]> menu;
+    // the frame while the controls show or the clip is paused (Slint draws it); otherwise Rust writes the surface
+    in property <image> frame;
+    // the picture's place in the view, px (Rust fits it: VideoPlayer::picture)
+    in property <int> vx;
+    in property <int> vy;
+    in property <int> vw;
+    in property <int> vh;
+    in property <bool> controls: true;
+    in property <bool> playing;
+    in property <bool> muted;
+    in property <string> now;
+    in property <string> total;
+    in property <string> info;
+    in property <string> speed: "1×";
+    in property <float> played;
+    in property <float> buffered;
+    // "Can't play this video: …" with Open with
+    in property <string> error;
+    in property <string> error-detail;
+    out property <int> view-w: self.width / 1px;
+    out property <int> view-h: self.height / 1px;
+    callback resized(int, int);
+    callback tapped();
+    callback play-pause();
+    callback back10();
+    callback forward10();
+    callback seek(float);
+    callback mute();
+    callback speed-tapped();
+    callback rotate();
+    callback full();
+    callback back();
+    callback share();
+    callback menu-picked(int);
+    callback open-with();
+    changed view-w => {
+        root.resized(self.view-w, self.view-h);
+    }
+    changed view-h => {
+        root.resized(self.view-w, self.view-h);
+    }
+    background: #000000;
+
+    Image {
+        x: root.vx * 1px;
+        y: root.vy * 1px;
+        width: root.vw * 1px;
+        height: root.vh * 1px;
+        source: root.frame;
+        image-fit: fill;
+    }
+
+    TouchArea {
+        clicked => {
+            root.tapped();
+        }
+    }
+
+    if root.controls && root.error == "": Rectangle {
+        // the middle: back 10 s · play/pause · forward 10 s
+        HorizontalLayout {
+            y: (root.height - 64 * Theme.dp) / 2;
+            height: 64 * Theme.dp;
+            alignment: center;
+            spacing: 28 * Theme.dp;
+            Round {
+                y: 6 * Theme.dp;
+                width: 52 * Theme.dp;
+                height: 52 * Theme.dp;
+                icon: @image-url("@neoui/icons/sys/prev.svg");
+                label: "10";
+                clicked => {
+                    root.back10();
+                }
+            }
+            Round {
+                width: 64 * Theme.dp;
+                height: 64 * Theme.dp;
+                background: #000000a0;
+                icon: root.playing ? @image-url("@neoui/icons/sys/pause.svg") : @image-url("@neoui/icons/sys/play.svg");
+                size: 34 * Theme.dp;
+                clicked => {
+                    root.play-pause();
+                }
+            }
+            Round {
+                y: 6 * Theme.dp;
+                width: 52 * Theme.dp;
+                height: 52 * Theme.dp;
+                icon: @image-url("@neoui/icons/sys/next.svg");
+                label: "10";
+                clicked => {
+                    root.forward10();
+                }
+            }
+        }
+
+        // the top: [← name · Share · ⋮] on a fade from black
+        Rectangle {
+            y: 0;
+            height: Theme.header-h + 28 * Theme.dp;
+            background: @linear-gradient(180deg, #000000c0 0%, #00000000 100%);
+            SubHeader {
+                y: 0;
+                height: Theme.header-h;
+                background: transparent;
+                title: root.name;
+                title-font: "DejaVu Sans";
+                search: false;
+                actions: [{ icon: @image-url("@neoui/icons/sys/share.svg"), label: "Share" }];
+                menu: root.menu;
+                back => {
+                    root.back();
+                }
+                action(i) => {
+                    root.share();
+                }
+                menu-picked(i) => {
+                    root.menu-picked(i);
+                }
+            }
+        }
+
+        // the bottom: the info line, the seek bar and its times, the tools
+        Rectangle {
+            y: root.height - self.height;
+            height: bottom.preferred-height + 36 * Theme.dp;
+            background: @linear-gradient(180deg, #00000000 0%, #000000e0 45%);
+            bottom := VerticalLayout {
+                y: 36 * Theme.dp;
+                height: self.preferred-height;
+                padding-bottom: 8 * Theme.dp;
+                Text {
+                    x: 16 * Theme.dp;
+                    width: root.width - 32 * Theme.dp;
+                    text: root.info;
+                    color: #b9bec7;
+                    font-size: 13 * Theme.dp;
+                    overflow: elide;
+                }
+                HorizontalLayout {
+                    padding-left: 16 * Theme.dp;
+                    padding-right: 16 * Theme.dp;
+                    padding-top: 8 * Theme.dp;
+                    spacing: 10 * Theme.dp;
+                    Text {
+                        text: root.now;
+                        color: #ffffff;
+                        font-size: 12.5 * Theme.dp;
+                        vertical-alignment: center;
+                    }
+                    Seek {
+                        horizontal-stretch: 1;
+                        played: root.played;
+                        buffered: root.buffered;
+                        seek(f) => {
+                            root.seek(f);
+                        }
+                    }
+                    Text {
+                        text: root.total;
+                        color: #b9bec7;
+                        font-size: 12.5 * Theme.dp;
+                        vertical-alignment: center;
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 8 * Theme.dp;
+                    padding-right: 8 * Theme.dp;
+                    padding-top: 4 * Theme.dp;
+                    alignment: space-between;
+                    HorizontalLayout {
+                        spacing: 4 * Theme.dp;
+                        Tool {
+                            icon: root.muted ? @image-url("@neoui/icons/sys/silent.svg") : @image-url("@neoui/icons/sys/volume.svg");
+                            clicked => {
+                                root.mute();
+                            }
+                        }
+                        Rectangle {
+                            y: (48 - 28) / 2 * Theme.dp;
+                            height: 28 * Theme.dp;
+                            width: chip.preferred-width + 20 * Theme.dp;
+                            border-radius: 14 * Theme.dp;
+                            border-width: 1px;
+                            border-color: #ffffff40;
+                            background: chip-touch.pressed ? #ffffff22 : transparent;
+                            chip := Text {
+                                text: root.speed;
+                                color: #ffffff;
+                                font-size: 13 * Theme.dp;
+                                font-weight: 600;
+                            }
+                            chip-touch := TouchArea {
+                                clicked => {
+                                    root.speed-tapped();
+                                }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        Tool {
+                            icon: @image-url("icons/rotate.svg");
+                            clicked => {
+                                root.rotate();
+                            }
+                        }
+                        Tool {
+                            icon: @image-url("icons/fullscreen.svg");
+                            clicked => {
+                                root.full();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // a clip we can't play: what it is and why, with Open with (the header stays, for Back and ⋮)
+    if root.error != "": Rectangle {
+        SubHeader {
+            y: 0;
+            height: Theme.header-h;
+            background: transparent;
+            title: root.name;
+            title-font: "DejaVu Sans";
+            search: false;
+            menu: root.menu;
+            back => {
+                root.back();
+            }
+            menu-picked(i) => {
+                root.menu-picked(i);
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 12 * Theme.dp;
+            padding: 32 * Theme.dp;
+            Glyph {
+                source: @image-url("@neoui/icons/sys/video.svg");
+                size: 48 * Theme.dp;
+                colorize: #b9bec7;
+            }
+            Text {
+                text: root.error;
+                color: #ffffff;
+                font-size: 17 * Theme.dp;
+                font-weight: 600;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            Text {
+                text: root.error-detail;
+                color: #b9bec7;
+                font-size: 13 * Theme.dp;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                alignment: center;
+                Rectangle {
+                    height: 40 * Theme.dp;
+                    width: ow.preferred-width + 32 * Theme.dp;
+                    border-radius: 20 * Theme.dp;
+                    background: ot.pressed ? #2f6fd0 : #3d8bfd;
+                    ow := Text {
+                        text: "Open with…";
+                        color: #ffffff;
+                        font-size: 14 * Theme.dp;
+                        font-weight: 600;
+                    }
+                    ot := TouchArea {
+                        clicked => {
+                            root.open-with();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

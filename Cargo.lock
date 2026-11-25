@@ -1082,6 +1082,7 @@ dependencies = [
  "neo-format-document",
  "neo-format-image",
  "neo-format-inspect",
+ "neo-format-media",
  "neo-format-pim",
  "neo-format-text",
  "neo-view",

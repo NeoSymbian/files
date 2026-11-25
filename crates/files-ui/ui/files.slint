@@ -31,6 +31,7 @@ import { PimLine, PimCard, PimField, EvRow, EvCard, Sample, SampleGroup, GlyphRo
 import { AudioView } from "audio.slint";
 import { DText, DImage, DRect, DCell, DocItems, DocProbe, DocView, BookView, SheetView } from "doc.slint";
 import { PSlot, PThumb, PdfView } from "pdf.slint";
+import { VideoView } from "video.slint";
 import { MdSpan, MdRow, CellRow, Col, CodeKeys, StatusLine, FindBar, Segments, MdView, TableGrid, CellBar, TypeChips } from "editor.slint";
 export { DText, DImage, DRect, DCell }
 export { TSpan, TRow, Mark, MdSpan, MdRow, CellRow, Col, TextMetrics, StripItem }
@@ -830,6 +831,36 @@ export component FilesApp inherits Window {
     callback pdf-contents-closed();
     callback pdf-ask-done(string);
     callback pdf-ask-cancelled();
+    // FA12 (files2-view-video): the frame while Slint draws it, the picture's place, the controls and their state
+    in property <image> video-frame;
+    in property <int> video-x;
+    in property <int> video-y;
+    in property <int> video-w;
+    in property <int> video-h;
+    in property <bool> video-controls: true;
+    in property <bool> video-playing;
+    in property <bool> video-muted;
+    in property <string> video-now;
+    in property <string> video-total;
+    in property <string> video-info;
+    in property <string> video-speed: "1×";
+    in property <float> video-played;
+    in property <float> video-buffered;
+    in property <string> video-error;
+    in property <string> video-error-detail;
+    out property <int> video-view-w: video-view.view-w;
+    out property <int> video-view-h: video-view.view-h;
+    callback video-resized(int, int);
+    callback video-tapped();
+    callback video-play-pause();
+    callback video-back10();
+    callback video-forward10();
+    callback video-seek(float);
+    callback video-mute();
+    callback video-speed-tapped();
+    callback video-rotate();
+    callback video-full();
+    callback video-open-with();
     public function pdf-scroll-to(px: int) {
         pdf-view.scroll-to(px);
     }
@@ -2477,6 +2508,69 @@ export component FilesApp inherits Window {
                 }
                 ask-cancelled => {
                     root.pdf-ask-cancelled();
+                }
+            }
+            video-view := VideoView {
+                visible: root.view == "video";
+                name: root.name;
+                menu: root.fa7-menu;
+                frame: root.video-frame;
+                vx: root.video-x;
+                vy: root.video-y;
+                vw: root.video-w;
+                vh: root.video-h;
+                controls: root.video-controls;
+                playing: root.video-playing;
+                muted: root.video-muted;
+                now: root.video-now;
+                total: root.video-total;
+                info: root.video-info;
+                speed: root.video-speed;
+                played: root.video-played;
+                buffered: root.video-buffered;
+                error: root.video-error;
+                error-detail: root.video-error-detail;
+                resized(w, h) => {
+                    root.video-resized(w, h);
+                }
+                tapped => {
+                    root.video-tapped();
+                }
+                play-pause => {
+                    root.video-play-pause();
+                }
+                back10 => {
+                    root.video-back10();
+                }
+                forward10 => {
+                    root.video-forward10();
+                }
+                seek(f) => {
+                    root.video-seek(f);
+                }
+                mute => {
+                    root.video-mute();
+                }
+                speed-tapped => {
+                    root.video-speed-tapped();
+                }
+                rotate => {
+                    root.video-rotate();
+                }
+                full => {
+                    root.video-full();
+                }
+                back => {
+                    root.up();
+                }
+                share => {
+                    root.share();
+                }
+                menu-picked(i) => {
+                    root.fa7-menu-picked(root.fa7-menu[i]);
+                }
+                open-with => {
+                    root.video-open-with();
                 }
             }
             doc-view := DocView {

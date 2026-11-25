@@ -18,6 +18,7 @@ pub mod inspect;
 pub mod pdf;
 pub mod pim;
 pub mod text;
+pub mod video;
 
 /// `0xRRGGBB` as an opaque colour.
 pub fn colour(rgb: u32) -> slint::Color {
