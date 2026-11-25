@@ -4,7 +4,7 @@
 # (it defines the global allocator) and one Slint in the ROM.
 [workspace]
 resolver = "3"
-members = ["app", "fs-e32"]
+members = ["app", "fs-e32", "vbench"]
 
 [workspace.dependencies]
 e32 = { git = "https://github.com/NeoSymbian/e32-rs", rev = "206b6c28cf49ef2f6e746580df97f05921500c35", features = ["critical-section"] }

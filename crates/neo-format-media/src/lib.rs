@@ -8,6 +8,8 @@
 
 extern crate alloc;
 
+#[cfg(feature = "video")]
+pub mod av;
 pub mod wav;
 
 pub use neo_format_archive::ReadAt;
