@@ -1097,6 +1097,7 @@ dependencies = [
  "neo-format-document",
  "neo-format-image",
  "neo-format-inspect",
+ "neo-format-media",
  "neo-format-pim",
  "neo-format-text",
  "neo-view",
@@ -2954,7 +2955,7 @@ version = "0.1.0"
 [[package]]
 name = "neoapp"
 version = "0.1.0"
-source = "git+https://github.com/NeoSymbian/neoui?rev=222c43f8116a6dba9ff170997ae7dc0feef055a0#222c43f8116a6dba9ff170997ae7dc0feef055a0"
+source = "git+https://github.com/NeoSymbian/neoui?rev=afa3b40d05b575d6c5c8086b84e2e8fd10c1c95e#afa3b40d05b575d6c5c8086b84e2e8fd10c1c95e"
 dependencies = [
  "e32",
  "neoui-proto",
@@ -3003,7 +3004,7 @@ dependencies = [
 [[package]]
 name = "neoui-proto"
 version = "0.1.0"
-source = "git+https://github.com/NeoSymbian/neoui?rev=222c43f8116a6dba9ff170997ae7dc0feef055a0#222c43f8116a6dba9ff170997ae7dc0feef055a0"
+source = "git+https://github.com/NeoSymbian/neoui?rev=afa3b40d05b575d6c5c8086b84e2e8fd10c1c95e#afa3b40d05b575d6c5c8086b84e2e8fd10c1c95e"
 
 [[package]]
 name = "nix"

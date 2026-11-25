@@ -848,6 +848,8 @@ export component FilesApp inherits Window {
     in property <float> video-buffered;
     in property <string> video-error;
     in property <string> video-error-detail;
+    out property <int> video-view-x: video-view.view-x;
+    out property <int> video-view-y: video-view.view-y;
     out property <int> video-view-w: video-view.view-w;
     out property <int> video-view-h: video-view.view-h;
     callback video-resized(int, int);

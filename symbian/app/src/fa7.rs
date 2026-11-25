@@ -81,6 +81,8 @@ enum Kind {
     Fixed,
     /// FA9's player (audio.rs keeps its state).
     Audio,
+    /// FA12's player (video.rs keeps its state).
+    Video,
     /// FA10's document viewer (doc.rs keeps its state).
     Doc,
     /// FA10's reader (book.rs keeps its state).
@@ -249,6 +251,10 @@ pub(crate) fn open(app: &App, ui: &FilesApp, st: &mut State, path: &str) {
     };
     let ext = neo_view::ext_of(&o.name).to_ascii_lowercase();
     let r = match neo_view::family_of(&o.name) {
+        _ if crate::video::is_video(&o.name) => {
+            o.kind = Kind::Video;
+            crate::video::open(st, ui, &o)
+        }
         _ if crate::pdf::is_pdf(&o.name) => {
             o.kind = Kind::Pdf;
             crate::pdf::open(app, ui, st, &o)
@@ -300,6 +306,7 @@ pub(crate) fn back(app: &App, ui: &FilesApp, st: &mut State) {
         return;
     }
     crate::audio::close(st);
+    crate::video::close(app, ui, st);
     crate::doc::close_all(st);
     crate::pdf::clear(ui);
     let from = st.fa7.take().map_or(View::Folder, |o| o.from);
@@ -1220,6 +1227,7 @@ pub(crate) fn hex_because(app: &App, ui: &FilesApp, st: &mut State, why: &str) {
 /// Show as hex…).
 fn hex(app: &App, ui: &FilesApp, st: &mut State, why: &str) {
     crate::audio::close(st);
+    crate::video::close(app, ui, st);
     crate::doc::close_all(st);
     crate::pdf::clear(ui);
     let Some(o) = st.fa7.as_mut() else { return };

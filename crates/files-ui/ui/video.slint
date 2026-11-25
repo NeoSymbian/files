@@ -129,6 +129,9 @@ export component VideoView inherits Rectangle {
     // "Can't play this video: …" with Open with
     in property <string> error;
     in property <string> error-detail;
+    // where the view is in the window (the raw path writes the surface there)
+    out property <int> view-x: self.absolute-position.x / 1px;
+    out property <int> view-y: self.absolute-position.y / 1px;
     out property <int> view-w: self.width / 1px;
     out property <int> view-h: self.height / 1px;
     callback resized(int, int);

@@ -133,8 +133,8 @@ pub fn why(code: i32) -> String {
     }
 }
 
-/// NeoAudio's stream for one track.
-struct Out {
+/// NeoAudio's stream for one track (the video player's sound too).
+pub(crate) struct Out {
     s: Session,
     rate: u32,
     /// INFO's frame count when the position was last set, and that position (frames).
@@ -143,7 +143,7 @@ struct Out {
 }
 
 impl Out {
-    fn open(rate: u32, channels: u8) -> Result<Out, i32> {
+    pub(crate) fn open(rate: u32, channels: u8) -> Result<Out, i32> {
         let (major, minor, build) = neoaudio::VERSION;
         let s = Session::connect(
             neoaudio::NAME,
@@ -172,7 +172,7 @@ impl Out {
         })
     }
 
-    fn info(&self) -> Info {
+    pub(crate) fn info(&self) -> Info {
         let mut b = [0u8; Info::SIZE];
         let mut des = TPtr8::new(&mut b);
         let mut a = TIpcArgs::new();
@@ -183,13 +183,13 @@ impl Out {
         }
     }
 
-    fn call(&self, o: i32, v: i32) {
+    pub(crate) fn call(&self, o: i32, v: i32) {
         let mut a = TIpcArgs::new();
         a.int(0, v);
         let _ = self.s.send_receive(o, &a);
     }
 
-    fn write(&self, pcm: &[u8]) -> Result<(), i32> {
+    pub(crate) fn write(&self, pcm: &[u8]) -> Result<(), i32> {
         let des = TPtrC8::new(pcm);
         let mut a = TIpcArgs::new();
         a.desc8(0, &des);
@@ -202,7 +202,7 @@ impl Out {
     }
 
     /// Drop what is queued and go on from `frame`.
-    fn restart_at(&mut self, frame: u64) {
+    pub(crate) fn restart_at(&mut self, frame: u64) {
         self.call(op::STOP, 0);
         self.f0 = self.info().frames;
         self.base = frame;
