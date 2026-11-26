@@ -959,6 +959,7 @@ export component FilesApp inherits Window {
     callback vcf-toggle(int);
     callback vcf-open(int);
     callback vcf-add();
+    callback ics-add();
     callback pim-cancel();
     callback pim-save();
     callback label-tap(bool, int);
@@ -2316,6 +2317,9 @@ export component FilesApp inherits Window {
                 footer: root.ics-footer;
                 open(i) => {
                     root.ics-open(i);
+                }
+                add => {
+                    root.ics-add();
                 }
             }
             if root.view == "font": FontView {
