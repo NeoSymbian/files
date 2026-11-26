@@ -534,6 +534,7 @@ fn run() -> Result<(), i32> {
                     thumbs_tick(&app, &ui, &mut st);
                     describe(&app, &ui, &mut st)?;
                     sync_keyboard(&app, &ui, &mut st);
+                    video::settle(&mut st);
                     app.redraw()?;
                 }
             };
@@ -603,6 +604,7 @@ fn run() -> Result<(), i32> {
             thumbs_tick(&app, &ui, &mut st);
             describe(&app, &ui, &mut st)?;
             sync_keyboard(&app, &ui, &mut st);
+            video::settle(&mut st);
             app.redraw()?;
         }
         Ok::<(), i32>(())

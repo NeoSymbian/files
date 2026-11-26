@@ -2955,7 +2955,7 @@ version = "0.1.0"
 [[package]]
 name = "neoapp"
 version = "0.1.0"
-source = "git+https://github.com/NeoSymbian/neoui?rev=4c73684d23367c975a32e0ba55c9e14e5b31f954#4c73684d23367c975a32e0ba55c9e14e5b31f954"
+source = "git+https://github.com/NeoSymbian/neoui?rev=baf5c7dcebc06c8ff36bf8f8785023472d30c889#baf5c7dcebc06c8ff36bf8f8785023472d30c889"
 dependencies = [
  "e32",
  "neoui-proto",
@@ -3004,7 +3004,7 @@ dependencies = [
 [[package]]
 name = "neoui-proto"
 version = "0.1.0"
-source = "git+https://github.com/NeoSymbian/neoui?rev=4c73684d23367c975a32e0ba55c9e14e5b31f954#4c73684d23367c975a32e0ba55c9e14e5b31f954"
+source = "git+https://github.com/NeoSymbian/neoui?rev=baf5c7dcebc06c8ff36bf8f8785023472d30c889#baf5c7dcebc06c8ff36bf8f8785023472d30c889"
 
 [[package]]
 name = "nix"

@@ -8,8 +8,8 @@ members = ["app", "fs-e32", "vbench"]
 
 [workspace.dependencies]
 e32 = { git = "https://github.com/NeoSymbian/e32-rs", rev = "206b6c28cf49ef2f6e746580df97f05921500c35", features = ["critical-section"] }
-neoui-proto = { git = "https://github.com/NeoSymbian/neoui", rev = "4c73684d23367c975a32e0ba55c9e14e5b31f954" }
-neoapp = { git = "https://github.com/NeoSymbian/neoui", rev = "4c73684d23367c975a32e0ba55c9e14e5b31f954" }
+neoui-proto = { git = "https://github.com/NeoSymbian/neoui", rev = "baf5c7dcebc06c8ff36bf8f8785023472d30c889" }
+neoapp = { git = "https://github.com/NeoSymbian/neoui", rev = "baf5c7dcebc06c8ff36bf8f8785023472d30c889" }
 slint = { version = "=1.18.1", default-features = false, features = ["compat-1-2", "unsafe-single-threaded", "libm", "renderer-software"] }
 files-core = { path = "../crates/files-core" }
 neo-fs = { path = "../crates/neo-fs" }
