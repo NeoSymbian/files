@@ -52,6 +52,8 @@ pub struct Shot {
     pub ui: FilesApp,
     /// the app's height now: 2037 in Gestures (679 dp), 1917 in Buttons mode (639 dp)
     h: std::cell::Cell<u32>,
+    /// its width: 1080, or the screen's height while landscape (FA12's video)
+    w: std::cell::Cell<u32>,
 }
 
 /// The app at the Pixel's size; call once per test binary.
@@ -67,14 +69,21 @@ pub fn app() -> Shot {
         window,
         ui,
         h: std::cell::Cell::new(H),
+        w: std::cell::Cell::new(W),
     }
 }
 
 impl Shot {
     /// The app's height in px (the navigation mode changes it).
     pub fn resize(&self, h: u32) {
+        self.size(W, h);
+    }
+
+    /// Any size: landscape is the screen turned (2160 x 1080).
+    pub fn size(&self, w: u32, h: u32) {
+        self.w.set(w);
         self.h.set(h);
-        self.window.set_size(slint::PhysicalSize::new(W, h));
+        self.window.set_size(slint::PhysicalSize::new(w, h));
     }
 
     /// A finger down at (x, y) dp, and up again when `release`.
@@ -115,7 +124,7 @@ impl Shot {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../snapshots");
         std::fs::create_dir_all(&root).unwrap();
         let file = std::fs::File::create(root.join(format!("{name}.png"))).unwrap();
-        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), W, self.h.get());
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), self.w.get(), self.h.get());
         enc.set_color(png::ColorType::Rgb);
         enc.set_depth(png::BitDepth::Eight);
         let mut w = enc.write_header().unwrap();
@@ -127,17 +136,17 @@ impl Shot {
         px
     }
 
-    /// Draw (timers and animations first) and return the pixels, 0xRRGGBB by rows of [`W`].
+    /// Draw (timers and animations first) and return the pixels, 0xRRGGBB by rows of the width.
     pub fn pixels(&self) -> Vec<u32> {
         // change handlers run first (they may start an animation), then a second passes
         slint::platform::update_timers_and_animations();
         NOW.set(NOW.get() + core::time::Duration::from_secs(1));
         slint::platform::update_timers_and_animations();
         self.window.request_redraw();
-        let h = self.h.get();
-        let mut px = vec![Px(0); (W * h) as usize];
+        let (w, h) = (self.w.get(), self.h.get());
+        let mut px = vec![Px(0); (w * h) as usize];
         self.window.draw_if_needed(|r| {
-            r.render(&mut px, W as usize);
+            r.render(&mut px, w as usize);
         });
         px.into_iter().map(|p| p.0).collect()
     }

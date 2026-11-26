@@ -11,6 +11,8 @@ license = "GPL-3.0-only"
 slint = { workspace = true }
 # a row from the model, as the app and the snapshot tests both make it
 files-core = { workspace = true }
+# FA12: the picture's fit and turn (av::yuv)
+neo-format-media = { workspace = true }
 neo-view = { workspace = true }
 # the text model, highlighting and layout behind the viewer and the editors (FA4)
 neo-format-text = { workspace = true }

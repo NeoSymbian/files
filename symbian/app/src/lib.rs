@@ -26,6 +26,7 @@ mod pdf;
 mod pics;
 mod scan;
 mod sheet;
+mod video;
 
 use alloc::collections::VecDeque;
 use alloc::format;
@@ -176,6 +177,7 @@ enum Action {
     Doc(doc::Act),
     Book(book::Act),
     Pdf(pdf::Act),
+    Video(video::Act),
     Sheet(sheet::Act),
 }
 
@@ -336,6 +338,9 @@ struct State {
     pdf: Option<pdf::Open>,
     /// The PDF worker (started with the first PDF).
     pdfw: Option<&'static pdf::Worker>,
+    /// FA12: the open clip and the player's worker
+    video: Option<video::Video>,
+    videow: Option<&'static video::Worker>,
 }
 
 fn run() -> Result<(), i32> {
@@ -418,6 +423,8 @@ fn run() -> Result<(), i32> {
         doc_n: 0,
         pdf: None,
         pdfw: None,
+        video: None,
+        videow: None,
     };
     load_settings(&app, &ui, &mut st);
     fa3::load(&mut st);
@@ -476,6 +483,9 @@ fn run() -> Result<(), i32> {
                     if st.pdfw.is_some_and(|w| w.busy()) {
                         wait = wait.min(pdf::POLL_US);
                     }
+                    if let Some(us) = video::wake_us(&st) {
+                        wait = wait.min(us);
+                    }
                     let watch_dir =
                         (st.view == View::Folder && st.dir != st.unwatched).then(|| st.dir.clone());
                     let watch = async {
@@ -489,7 +499,7 @@ fn run() -> Result<(), i32> {
                     };
                     match rt::select(
                         next.as_mut(),
-                        rt::select(watch, time::delay(wait.max(1000))),
+                        rt::select(watch, video::delay(wait.max(1000))),
                     )
                     .await
                     {
@@ -510,6 +520,7 @@ fn run() -> Result<(), i32> {
                             audio::poll(&app, &ui, &mut st);
                             book::poll(&ui, &mut st);
                             pdf::poll(&app, &ui, &mut st);
+                            video::poll(&app, &ui, &mut st);
                             // a flick goes on without events: its scroll callbacks wait here
                             loop {
                                 let next = actions.borrow_mut().pop_front();
@@ -523,6 +534,7 @@ fn run() -> Result<(), i32> {
                     thumbs_tick(&app, &ui, &mut st);
                     describe(&app, &ui, &mut st)?;
                     sync_keyboard(&app, &ui, &mut st);
+                    video::settle(&mut st);
                     app.redraw()?;
                 }
             };
@@ -551,6 +563,7 @@ fn run() -> Result<(), i32> {
             // the player: "Stops when you leave Files"
             if let AppEvent::Visible(shown) = e {
                 audio::visible(&mut st, shown);
+                video::visible(&mut st, shown);
             }
             match e {
                 AppEvent::Quit => break,
@@ -591,6 +604,7 @@ fn run() -> Result<(), i32> {
             thumbs_tick(&app, &ui, &mut st);
             describe(&app, &ui, &mut st)?;
             sync_keyboard(&app, &ui, &mut st);
+            video::settle(&mut st);
             app.redraw()?;
         }
         Ok::<(), i32>(())
@@ -758,6 +772,7 @@ fn bind(ui: &FilesApp, actions: &Rc<RefCell<VecDeque<Action>>>) {
     doc::bind(ui, actions);
     book::bind(ui, actions);
     pdf::bind(ui, actions);
+    video::bind(ui, actions);
     sheet::bind(ui, actions);
     {
         let q = actions.clone();
@@ -783,7 +798,9 @@ fn describe(app: &App, ui: &FilesApp, st: &mut State) -> Result<(), i32> {
             || st.compress.is_some()
             || ui.get_clash_open()
             || ui.global::<Kit>().get_layers() > 0,
-        ..Page::default()
+        // FA12: a clip full screen or turned, and the screen kept on while it plays
+        full: st.view == View::Fa7 && video::full(st),
+        awake: st.view == View::Fa7 && video::playing(st),
     };
     if page != st.page {
         app.page(&page)?;
@@ -907,6 +924,7 @@ fn act(app: &App, ui: &FilesApp, st: &mut State, a: Action) {
         Action::Doc(a) => doc::act(ui, st, a),
         Action::Book(a) => book::act(app, ui, st, a),
         Action::Pdf(a) => pdf::act(app, ui, st, a),
+        Action::Video(a) => video::act(app, ui, st, a),
         Action::Sheet(a) => sheet::act(ui, st, a),
         Action::Edit if st.view == View::Fa7 => fa7::edit(ui, st),
         Action::Row(i) if st.view == View::Folder => {
