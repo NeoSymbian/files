@@ -2996,7 +2996,7 @@ dependencies = [
 [[package]]
 name = "neoui-kit"
 version = "0.1.0"
-source = "git+https://github.com/NeoSymbian/neoui?rev=b19d5978a01605c4766f86c54e648d21c5a9d10c#b19d5978a01605c4766f86c54e648d21c5a9d10c"
+source = "git+https://github.com/NeoSymbian/neoui?rev=4e50da2d464c4abf1cd5e6e42763671f05d0ad54#4e50da2d464c4abf1cd5e6e42763671f05d0ad54"
 dependencies = [
  "slint-build",
 ]
@@ -4072,7 +4072,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 [[package]]
 name = "rusty_vp9"
 version = "0.3.0"
-source = "git+https://github.com/NeoSymbian/rusty_vp9?rev=570deeeabe7530b28c7c682e9e16d090a619ce40#570deeeabe7530b28c7c682e9e16d090a619ce40"
+source = "git+https://github.com/NeoSymbian/rusty_vp9?rev=108144251907edbfd97415912c81d1a545c8fa70#108144251907edbfd97415912c81d1a545c8fa70"
 dependencies = [
  "spin",
 ]

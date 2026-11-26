@@ -19,4 +19,4 @@ neo-fs.workspace = true
 fs-e32.workspace = true
 rust_h264 = { git = "https://github.com/NeoSymbian/rust_h264", rev = "77b87a5a17f6882ddfa9106205f32ff0b62d59c4", default-features = false }
 vp8-decoder = { git = "https://github.com/NeoSymbian/vp8", rev = "e8bb46e8bd0ab0e5431c7da2fe7c207e53d3b500", default-features = false }
-rusty_vp9 = { git = "https://github.com/NeoSymbian/rusty_vp9", rev = "570deeeabe7530b28c7c682e9e16d090a619ce40", default-features = false }
+rusty_vp9 = { git = "https://github.com/NeoSymbian/rusty_vp9", rev = "108144251907edbfd97415912c81d1a545c8fa70", default-features = false }
