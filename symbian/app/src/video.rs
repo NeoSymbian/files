@@ -78,6 +78,8 @@ const CONVERT_CPU: usize = 6;
 const CONVERT_STACK: i32 = 64 * 1024;
 /// The longest the UI waits for the converter before Slint may draw over the surface picture it is writing.
 const CONVERT_WAIT_US: i32 = 200_000;
+/// NeoAudio's queue standing still this long at the end of a clip: the sound is over.
+const DRAIN_STUCK_US: u32 = 500_000;
 /// A converter silent this long has died (a panic ends the thread): the clip stops with the error card.
 const CONVERT_DEAD_US: u32 = 2_000_000;
 
@@ -319,6 +321,8 @@ struct Now<'a> {
     /// first ones aren't late: on the Pixel the first 5 s ran 400 ms behind without it.
     preroll: bool,
     boosted_at: u32,
+    /// NeoAudio's queue (bytes) and when it last changed: one that stops draining counts as played out.
+    drain: (u32, u32),
     pictures: Vec<Frame>,
 }
 
@@ -574,6 +578,7 @@ impl Worker {
             still: true,
             preroll: true,
             boosted_at: 0,
+            drain: (0, 0),
             pictures: Vec::new(),
         };
         self.seek(&mut p, at_us);
@@ -791,7 +796,17 @@ impl Worker {
             return;
         }
         q.clock = clock;
-        let sound_left = p.out.as_ref().is_some_and(|o| o.info().queued > 0) || !p.pcm.is_empty();
+        let queued = p.out.as_ref().map_or(0, |o| o.info().queued);
+        if queued != p.drain.0 {
+            p.drain = (queued, time::fast_counter());
+        }
+        // a clip stayed "playing" at its end, black once the controls hid (Pixel, 2026-11-26): the sound may never
+        // drain to 0, so a queue standing still this long counts as played out
+        let stuck = queued > 0 && elapsed_us(p.drain.1) > DRAIN_STUCK_US;
+        if stuck && playing && p.input_done && q.frames.is_empty() && p.state == Play::Playing {
+            dprintln!("files: video end, {} sound bytes never played", queued);
+        }
+        let sound_left = (queued > 0 && !stuck) || !p.pcm.is_empty();
         if playing && p.input_done && q.frames.is_empty() && !sound_left {
             p.state = Play::Ended;
             q.clock.running = false;
