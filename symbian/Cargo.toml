@@ -31,9 +31,46 @@ files-ui = { path = "../crates/files-ui" }
 
 [profile.release]
 panic = "abort"
-opt-level = 3
+opt-level = "s"
 codegen-units = 1
 lto = true
 
-[profile.dev]
-panic = "abort"
+# For size, except the hot code: the decoders, the colour conversion, sound and image decoding stay at opt-level 3.
+[profile.release.package.rust_h264]
+opt-level = 3
+
+[profile.release.package.rusty_vp9]
+opt-level = 3
+
+[profile.release.package.vp8-decoder]
+opt-level = 3
+
+[profile.release.package.neo-format-media]
+opt-level = 3
+
+[profile.release.package.opus-rs]
+opt-level = 3
+
+[profile.release.package.symphonia-codec-aac]
+opt-level = 3
+
+[profile.release.package.symphonia-codec-vorbis]
+opt-level = 3
+
+[profile.release.package.symphonia-core]
+opt-level = 3
+
+[profile.release.package.zune-jpeg]
+opt-level = 3
+
+[profile.release.package.image-webp]
+opt-level = 3
+
+[profile.release.package.tiny-skia]
+opt-level = 3
+
+[profile.release.package.zune-inflate]
+opt-level = 3
+
+[profile.release.package.miniz_oxide]
+opt-level = 3
