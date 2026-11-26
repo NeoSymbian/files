@@ -111,8 +111,27 @@ impl Colour {
     }
 }
 
+/// A pixel `draw` can write: XRGB8888 (`u32`, the app's surface) or packed RGB (`[u8; 3]`, a Slint image's bytes).
+pub trait Px: Copy {
+    fn from_xrgb(v: u32) -> Self;
+}
+
+impl Px for u32 {
+    #[inline(always)]
+    fn from_xrgb(v: u32) -> Self {
+        v
+    }
+}
+
+impl Px for [u8; 3] {
+    #[inline(always)]
+    fn from_xrgb(v: u32) -> Self {
+        [(v >> 16) as u8, (v >> 8) as u8, v as u8]
+    }
+}
+
 /// Draws `f` scaled into the `w` x `h` rectangle at `dst` (rows `stride` pixels apart), turned by `turn`.
-pub fn draw(f: &Frame, turn: Turn, dst: &mut [u32], stride: usize, w: u32, h: u32) {
+pub fn draw<P: Px>(f: &Frame, turn: Turn, dst: &mut [P], stride: usize, w: u32, h: u32) {
     if w == 0 || h == 0 || f.width == 0 || f.height == 0 {
         return;
     }
@@ -151,7 +170,7 @@ pub fn draw(f: &Frame, turn: Turn, dst: &mut [u32], stride: usize, w: u32, h: u3
                 let line = &mut dst[dy * stride..dy * stride + w as usize];
                 for (d, tx) in line.iter_mut().zip(&xs) {
                     let (u, v) = chroma(tx, ty);
-                    *d = c.px(luma(tx, ty), u, v);
+                    *d = P::from_xrgb(c.px(luma(tx, ty), u, v));
                 }
             }
         }
@@ -166,7 +185,7 @@ pub fn draw(f: &Frame, turn: Turn, dst: &mut [u32], stride: usize, w: u32, h: u3
                 for (dx, ty) in ys_.iter().enumerate() {
                     for (k, tx) in band.iter().enumerate() {
                         let (u, v) = chroma(tx, ty);
-                        dst[(b * BAND + k) * stride + dx] = c.px(luma(tx, ty), u, v);
+                        dst[(b * BAND + k) * stride + dx] = P::from_xrgb(c.px(luma(tx, ty), u, v));
                     }
                 }
             }

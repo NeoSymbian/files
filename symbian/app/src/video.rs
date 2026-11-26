@@ -21,7 +21,6 @@ use alloc::collections::VecDeque;
 use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 use e32::sync::{Mutex, Semaphore};
@@ -45,8 +44,10 @@ const AHEAD: usize = 4;
 /// The most pictures queued even while the sound wants more packets: the queue is bounded (8 at 1080p is 25 MB of
 /// the 64 MB heap). Without it the worker read on for sound and queued pictures without limit (VP8, Pixel).
 const AHEAD_MAX: usize = 8;
-/// A picture this late is dropped when a newer one is due too; a less late one is shown, the next right after.
-const LATE_US: i64 = 50_000;
+/// A picture this late is dropped when a newer one is due too. 0: showing late ones instead (50 ms) let the
+/// presentation fall 150 ms behind on the Pixel, since one picture costs about 18 ms to convert plus the server's
+/// copy; dropping keeps the sound in sync until the conversion moves off the UI thread.
+const LATE_US: i64 = 0;
 /// Sound decoded ahead of NeoAudio, besides its own 250 ms queue.
 const SOUND_AHEAD_US: u64 = 400_000;
 /// NeoAudio's queue is topped up while it holds less than this.
@@ -918,18 +919,12 @@ fn ms() -> u64 {
     time::millis()
 }
 
-/// The picture converted for Slint at the size it shows (opaque RGB: Slint draws it without blending).
+/// The picture converted for Slint at the size it shows (opaque RGB: Slint draws it without blending), straight into
+/// the image's bytes: an XRGB copy as well ran a landscape picture out of heap on the Pixel (8.3 MB, 2026-11-26).
 fn slint_frame(f: &Frame, w: u32, h: u32) -> Image {
-    let mut px = vec![0u32; (w * h) as usize];
-    yuv::draw(f, Turn::None, &mut px, w as usize, w, h);
     let mut buf = SharedPixelBuffer::<Rgb8Pixel>::new(w, h);
-    for (d, s) in buf.make_mut_slice().iter_mut().zip(&px) {
-        *d = Rgb8Pixel {
-            r: (s >> 16) as u8,
-            g: (s >> 8) as u8,
-            b: *s as u8,
-        };
-    }
+    let (px, _) = buf.make_mut_bytes().as_chunks_mut::<3>();
+    yuv::draw(f, Turn::None, px, w as usize, w, h);
     Image::from_rgb8(buf)
 }
 
