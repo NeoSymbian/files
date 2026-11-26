@@ -78,6 +78,8 @@ const CONVERT_CPU: usize = 6;
 const CONVERT_STACK: i32 = 64 * 1024;
 /// The longest the UI waits for the converter before Slint may draw over the surface picture it is writing.
 const CONVERT_WAIT_US: i32 = 200_000;
+/// A converter silent this long has died (a panic ends the thread): the clip stops with the error card.
+const CONVERT_DEAD_US: u32 = 2_000_000;
 
 /// `EKernelHalLockThreadToCpu` (kernel group 0, function 19): Files' e32 pin predates `thread::lock_to_cpu`.
 fn pin(cpu: usize) {
@@ -156,8 +158,8 @@ pub struct Worker {
 enum Target {
     /// Straight into the app's surface (the controls hidden, playing), turned: the UI's DAMAGE shows it later.
     Surface(neoapp::RawTarget, Turn),
-    /// A Slint image of this size, for under the controls.
-    Slint(u32, u32),
+    /// A Slint image of this size, for under the controls, into the buffer given when it is that size.
+    Slint(u32, u32, Option<SharedPixelBuffer<Rgb8Pixel>>),
 }
 
 struct Job {
@@ -179,6 +181,8 @@ struct Done {
     slint: Option<SharedPixelBuffer<Rgb8Pixel>>,
     count: bool,
     us: u32,
+    /// No memory for the Slint image.
+    failed: bool,
 }
 
 #[derive(Default)]
@@ -231,13 +235,17 @@ impl Converter {
 
 fn convert(j: Job) -> Done {
     let t0 = time::fast_counter();
-    let (surface, slint) = match j.target {
+    let (surface, slint, failed) = match j.target {
         Target::Surface(mut t, turn) => {
             let (stride, r) = (t.stride, t.rect);
             yuv::draw(&j.frame, turn, t.pixels(), stride, r.w, r.h);
-            (Some(r), None)
+            (Some(r), None, false)
         }
-        Target::Slint(w, h) => (None, Some(slint_buffer(&j.frame, w, h))),
+        Target::Slint(w, h, reuse) => {
+            let b = slint_buffer(&j.frame, w, h, reuse);
+            let failed = b.is_none();
+            (None, b, failed)
+        }
     };
     Done {
         layout: j.layout,
@@ -247,16 +255,38 @@ fn convert(j: Job) -> Done {
         slint,
         count: j.count,
         us: elapsed_us(t0),
+        failed,
     }
 }
 
 /// The picture for Slint at the size it shows (opaque RGB: Slint draws it without blending), straight into the image's
-/// bytes: an XRGB copy as well ran a landscape picture out of heap on the Pixel (8.3 MB, 2026-11-26).
-fn slint_buffer(f: &Frame, w: u32, h: u32) -> SharedPixelBuffer<Rgb8Pixel> {
-    let mut buf = SharedPixelBuffer::<Rgb8Pixel>::new(w, h);
+/// bytes: an XRGB copy as well ran a landscape picture out of heap on the Pixel (8.3 MB, 2026-11-26). The buffer is
+/// reused: a new 2–6 MB one per picture fragmented the first-fit heap until one failed (Pixel, 2026-11-26). None: no
+/// memory for it (a failed allocation would panic and end the converter thread).
+fn slint_buffer(
+    f: &Frame,
+    w: u32,
+    h: u32,
+    reuse: Option<SharedPixelBuffer<Rgb8Pixel>>,
+) -> Option<SharedPixelBuffer<Rgb8Pixel>> {
+    let mut buf = match reuse {
+        Some(b) if (b.width(), b.height()) == (w, h) => b,
+        old => {
+            drop(old); // freed first: the heap is nearly full in landscape
+            // shortcut: the probe is freed before Slint allocates, so another thread could take the room in between;
+            // a fallible SharedPixelBuffer is the upgrade if that ever shows.
+            if Vec::<u8>::new()
+                .try_reserve_exact(w as usize * h as usize * 3 + 64)
+                .is_err()
+            {
+                return None;
+            }
+            SharedPixelBuffer::new(w, h)
+        }
+    };
     let (px, _) = buf.make_mut_bytes().as_chunks_mut::<3>();
     yuv::draw(f, Turn::None, px, w as usize, w, h);
-    buf
+    Some(buf)
 }
 
 /// A clip open in the worker.
@@ -313,12 +343,7 @@ impl Worker {
         if core::mem::replace(&mut self.q.lock().started, true) {
             return true;
         }
-        let conv = &self.conv;
-        let c = e32::thread::spawn_with_stack(CONVERT_STACK, move || {
-            pin(CONVERT_CPU);
-            conv.run()
-        });
-        if c.is_err() {
+        if !self.spawn_converter() {
             self.q.lock().started = false;
             return false;
         }
@@ -337,6 +362,15 @@ impl Worker {
             return false;
         }
         true
+    }
+
+    fn spawn_converter(&'static self) -> bool {
+        let conv = &self.conv;
+        e32::thread::spawn_with_stack(CONVERT_STACK, move || {
+            pin(CONVERT_CPU);
+            conv.run()
+        })
+        .is_ok()
     }
 
     fn send(&'static self, c: Cmd) {
@@ -799,6 +833,14 @@ pub struct Video {
     ready: Option<Done>,
     converted: u32,
     convert_us: u64,
+    /// When the picture at the converter went there.
+    posted_at: u32,
+    /// The Slint image's buffer and a spare for the next (reused: see `slint_buffer`); the layout the image is for.
+    showing: Option<SharedPixelBuffer<Rgb8Pixel>>,
+    spare: Option<SharedPixelBuffer<Rgb8Pixel>>,
+    slint_layout: u32,
+    /// The converter failed: the error card shows.
+    failed: bool,
 }
 
 /// Pictures straight into the surface; the picture's place in the view; landscape.
@@ -893,6 +935,11 @@ pub(crate) fn open(st: &mut State, ui: &FilesApp, o: &Open7) -> Result<&'static 
         ready: None,
         converted: 0,
         convert_us: 0,
+        posted_at: 0,
+        showing: None,
+        spare: None,
+        slint_layout: u32::MAX,
+        failed: false,
     });
     ui.set_video_error("".into());
     ui.set_video_error_detail("".into());
@@ -942,7 +989,7 @@ fn pick(frames: &mut VecDeque<Frame>, now: i64, shown: bool) -> (Option<Frame>, 
     (None, late)
 }
 
-/// Where the next picture goes: the surface rectangle and turn, or None for Slint at the picture's size.
+/// Where the next picture goes: the surface rectangle and turn, or None for Slint at this size.
 #[derive(Clone, Copy)]
 struct Spec {
     surface: Option<(Rect, Turn)>,
@@ -951,11 +998,15 @@ struct Spec {
 }
 
 fn post(app: &App, w: &Worker, v: &mut Video, spec: Spec, frame: Frame, count: bool, epoch: u32) {
-    let target = spec
+    let target = match spec
         .surface
         .and_then(|(r, turn)| app.raw_target(r).map(|t| Target::Surface(t, turn)))
-        .unwrap_or(Target::Slint(spec.w, spec.h));
+    {
+        Some(t) => t,
+        None => Target::Slint(spec.w, spec.h, v.spare.take()),
+    };
     v.pending = Some(matches!(target, Target::Surface(..)));
+    v.posted_at = time::fast_counter();
     w.conv.post(Job {
         layout: v.layout,
         epoch,
@@ -1005,10 +1056,14 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
             }
         }
     }
+    if v.failed {
+        return;
+    }
     let Some(p) = v.v.as_mut() else { return };
     let playing = v.state == Play::Playing;
     if p.tick(ms(), playing) {
         ui.set_video_frame(Image::default()); // the Slint frame goes: the surface shows the pictures from now
+        v.spare = v.showing.take().or(v.spare.take()); // one buffer kept for when the controls come back
     }
     let key: Key = (!p.controls && playing, p.place(), p.landscape);
     let fresh = key != v.key;
@@ -1028,8 +1083,9 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
             let turn = if key.2 { Turn::Quarter } else { Turn::None };
             (app.to_surface(r), turn)
         }),
-        w: pw,
-        h: ph,
+        // turned, Slint draws a half-size picture scaled up: 1.5 MB, not 6.2 MB (out of heap on the Pixel, 2026-11-26)
+        w: if key.2 { (pw / 2).max(1) } else { pw },
+        h: if key.2 { (ph / 2).max(1) } else { ph },
     };
     // the converter's answer; one from before a seek goes
     if v.pending.is_some()
@@ -1038,12 +1094,23 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
         v.pending = None;
         v.converted += 1;
         v.convert_us += u64::from(d.us);
+        if d.failed {
+            dprintln!("files: video no memory for a {}x{} picture", spec.w, spec.h);
+            return fail(ui, w, v, "Files ran out of memory for this video.");
+        }
         v.ready = Some(d);
     }
-    if let Some(d) = v.ready.take_if(|d| d.epoch != epoch)
-        && !d.count
-    {
-        v.last = Some(d.frame);
+    if v.pending.is_some() && elapsed_us(v.posted_at) > CONVERT_DEAD_US {
+        dprintln!("files: video converter stopped answering, started again");
+        v.pending = None;
+        w.spawn_converter();
+        return fail(ui, w, v, "Files's player stopped.");
+    }
+    if let Some(mut d) = v.ready.take_if(|d| d.epoch != epoch) {
+        v.spare = v.spare.take().or(d.slint.take());
+        if !d.count {
+            v.last = Some(d.frame);
+        }
     }
     // the picture that is due, converted for this layout
     let now = now_us(&v.clock);
@@ -1055,7 +1122,9 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
             let _ = app.damage(r);
         }
         if let Some(b) = d.slint {
-            ui.set_video_frame(Image::from_rgb8(b));
+            ui.set_video_frame(Image::from_rgb8(b.clone()));
+            v.spare = v.showing.replace(b); // the image it replaced is gone: its buffer takes the next picture
+            v.slint_layout = d.layout;
         }
         v.present_us += u64::from(elapsed_us(t0));
         if d.count {
@@ -1069,7 +1138,8 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
     // the next picture to the converter: one converted for another layout again, else the next one queued. Not on the
     // turn the surface takes over: Slint clears the area in this turn's redraw first.
     if v.pending.is_none() && !(fresh && key.0) {
-        if let Some(d) = v.ready.take_if(|d| d.layout != v.layout) {
+        if let Some(mut d) = v.ready.take_if(|d| d.layout != v.layout) {
+            v.spare = v.spare.take().or(d.slint.take());
             post(app, w, v, spec, d.frame, d.count, d.epoch);
         } else if v.ready.is_none() {
             let (f, late) = {
@@ -1084,11 +1154,12 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
             if let Some(f) = f {
                 w.wake.signal(); // room to decode ahead again
                 post(app, w, v, spec, f, true, epoch);
-            } else if v.raw
-                && !key.0
+            } else if !key.0
+                && v.slint_layout != v.layout
                 && let Some(f) = v.last.take()
             {
-                // the surface stopped with no new picture due (paused, ended, the controls shown): Slint shows the last
+                // no new picture due and Slint's is missing or for another layout (the surface stopped, or turned after
+                // the end): Slint shows the last
                 post(app, w, v, spec, f, false, epoch);
             }
         }
@@ -1130,6 +1201,18 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
             save_place(st);
         }
     }
+}
+
+/// The converter can't go on: the clip pauses and the error card shows.
+fn fail(ui: &FilesApp, w: &'static Worker, v: &mut Video, why: &str) {
+    v.failed = true;
+    v.ready = None;
+    v.showing = None;
+    v.spare = None;
+    w.send(Cmd::Pause);
+    ui.set_video_frame(Image::default());
+    ui.set_video_error("Can't play this video".into());
+    ui.set_video_error_detail(why.into());
 }
 
 fn ms() -> u64 {
