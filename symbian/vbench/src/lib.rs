@@ -77,8 +77,7 @@ fn fnv(h: u64, b: &[u8]) -> u64 {
 
 /// The player's colour conversion: a 720p picture to the 1080x607 place on screen, straight and turned.
 fn yuv_bench(f: &rust_h264::decoder::Frame) {
-    use neo_format_media::av::{video::Frame, yuv};
-    let fr = Frame {
+    yuv_time(&neo_format_media::av::video::Frame {
         width: f.width,
         height: f.height,
         y: f.y.clone(),
@@ -87,7 +86,38 @@ fn yuv_bench(f: &rust_h264::decoder::Frame) {
         y_stride: f.width as usize,
         uv_stride: f.chroma_width() as usize,
         pts_us: 0,
+    });
+}
+
+/// A made-up 720p picture (no clip needed), pinned to an A75 like the player's converter.
+fn yuv_synthetic() {
+    let mut seed = 1u32;
+    let mut rnd = |n: usize| -> Vec<u8> {
+        (0..n)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 24) as u8
+            })
+            .collect()
     };
+    let f = neo_format_media::av::video::Frame {
+        width: 1280,
+        height: 720,
+        y: rnd(1280 * 720),
+        u: rnd(640 * 360),
+        v: rnd(640 * 360),
+        y_stride: 1280,
+        uv_stride: 640,
+        pts_us: 0,
+    };
+    pin(6);
+    boost(2000);
+    yuv_time(&f);
+    pin(0xffff_ffff);
+}
+
+fn yuv_time(f: &neo_format_media::av::video::Frame) {
+    use neo_format_media::av::yuv;
     let mut px = vec![0u32; 1920 * 1080];
     for (turn, w, h) in [
         (yuv::Turn::None, 1080, 607),
@@ -95,7 +125,7 @@ fn yuv_bench(f: &rust_h264::decoder::Frame) {
     ] {
         let t0 = time::fast_counter();
         for _ in 0..10 {
-            yuv::draw(&fr, turn, &mut px, w as usize, w, h);
+            yuv::draw(f, turn, &mut px, w as usize, w, h);
         }
         let us = time::counter_us(t0, time::fast_counter(), time::fast_counter_hz()) / 10;
         dprintln!(
@@ -198,6 +228,7 @@ fn main() -> i32 {
     };
     let mut failed = 0;
     dprintln!("vbench: boost {}", boost(2000));
+    yuv_synthetic();
     for name in CLIPS {
         let Some(data) = read(&fs, name) else {
             dprintln!("vbench: {} missing", name);

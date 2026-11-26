@@ -68,45 +68,33 @@ fn taps(dst: u32, src: u32, reverse: bool) -> Vec<Tap> {
         .collect()
 }
 
-/// The colour tables: limited-range luma x 298, and each chroma value's part of red, green and blue (x 256).
+/// The colour sums (x 256): limited-range luma x 298, and each chroma value's part of red, green and blue. Plain
+/// arithmetic, no tables, so the turned path's loops vectorize.
 struct Colour {
-    y: [i32; 256],
-    rv: [i32; 256],
-    g: [[i32; 256]; 2],
-    bu: [i32; 256],
+    rv: i32,
+    gu: i32,
+    gv: i32,
+    bu: i32,
 }
 
 impl Colour {
     fn new(hd: bool) -> Self {
-        // (r from v, g from u, g from v, b from u) x 256: BT.709 for HD, BT.601 below
+        // BT.709 for HD, BT.601 below
         let (rv, gu, gv, bu) = if hd {
             (459, 55, 136, 541)
         } else {
             (409, 100, 208, 516)
         };
-        let mut c = Colour {
-            y: [0; 256],
-            rv: [0; 256],
-            g: [[0; 256]; 2],
-            bu: [0; 256],
-        };
-        for i in 0..256 {
-            let d = i as i32 - 128;
-            c.y[i] = (i as i32 - 16) * 298 + 128;
-            c.rv[i] = rv * d;
-            c.g[0][i] = gu * d;
-            c.g[1][i] = gv * d;
-            c.bu[i] = bu * d;
-        }
-        c
+        Colour { rv, gu, gv, bu }
     }
 
     #[inline(always)]
     fn px(&self, y: u32, u: u8, v: u8) -> u32 {
-        let l = self.y[y as usize];
-        let r = (l + self.rv[v as usize]) >> 8;
-        let g = (l - self.g[0][u as usize] - self.g[1][v as usize]) >> 8;
-        let b = (l + self.bu[u as usize]) >> 8;
+        let l = (y as i32 - 16) * 298 + 128;
+        let (u, v) = (i32::from(u) - 128, i32::from(v) - 128);
+        let r = (l + self.rv * v) >> 8;
+        let g = (l - self.gu * u - self.gv * v) >> 8;
+        let b = (l + self.bu * u) >> 8;
         (r.clamp(0, 255) as u32) << 16 | (g.clamp(0, 255) as u32) << 8 | b.clamp(0, 255) as u32
     }
 }
@@ -178,14 +166,45 @@ pub fn draw<P: Px>(f: &Frame, turn: Turn, dst: &mut [P], stride: usize, w: u32, 
         Turn::Quarter | Turn::ThreeQuarters => {
             let q = turn == Turn::Quarter;
             let (ys_, rows) = (taps(w, f.height, q), taps(h, f.width, !q));
-            // in bands of screen rows, each screen column inside: the source is read along its rows (a column at a
-            // time it missed the cache on every pixel: 41 ms for 1080x1920 on an A75)
+            // In bands of BAND screen rows (BAND source columns): every source row is blended along x once, at the
+            // band's columns; each screen column is then a vertical blend of two of those, BAND pixels side by side,
+            // which the compiler vectorizes. The same sums as `luma`, so the same bytes. Gathering four samples per
+            // pixel took 37 ms for 1080x1920 on an A75 (Pixel, 2026-11-26).
             const BAND: usize = 32;
+            let fh = f.height as usize;
+            let mut hb = alloc::vec![0u16; fh * BAND];
+            let (mut ub, mut vb) = (alloc::vec![0u8; ch * BAND], alloc::vec![0u8; ch * BAND]);
+            let mut out = [0u32; BAND];
             for (b, band) in rows.chunks(BAND).enumerate() {
-                for (dx, ty) in ys_.iter().enumerate() {
+                let n = band.len();
+                for r in 0..fh {
+                    let src = &f.y[r * ys..];
+                    for (hv, tx) in hb[r * BAND..r * BAND + n].iter_mut().zip(band) {
+                        // at most 255 x 256: fits
+                        *hv = (u32::from(src[tx.i0 as usize]) * (256 - tx.w)
+                            + u32::from(src[tx.i1 as usize]) * tx.w)
+                            as u16;
+                    }
+                }
+                for r in 0..ch {
                     for (k, tx) in band.iter().enumerate() {
-                        let (u, v) = chroma(tx, ty);
-                        dst[(b * BAND + k) * stride + dx] = P::from_xrgb(c.px(luma(tx, ty), u, v));
+                        let x = (tx.i0 as usize / 2).min(cw - 1);
+                        ub[r * BAND + k] = f.u[r * us + x];
+                        vb[r * BAND + k] = f.v[r * vs + x];
+                    }
+                }
+                for (dx, ty) in ys_.iter().enumerate() {
+                    let t0 = &hb[ty.i0 as usize * BAND..][..n];
+                    let t1 = &hb[ty.i1 as usize * BAND..][..n];
+                    let cr = (ty.i0 as usize / 2).min(ch - 1) * BAND;
+                    let (u, v) = (&ub[cr..cr + n], &vb[cr..cr + n]);
+                    let wy = ty.w;
+                    for (k, o) in out[..n].iter_mut().enumerate() {
+                        let l = (u32::from(t0[k]) * (256 - wy) + u32::from(t1[k]) * wy) >> 16;
+                        *o = c.px(l, u[k], v[k]);
+                    }
+                    for (k, o) in out[..n].iter().enumerate() {
+                        dst[(b * BAND + k) * stride + dx] = P::from_xrgb(*o);
                     }
                 }
             }
@@ -310,6 +329,96 @@ mod tests {
                         "{x},{y}: {got:?} {want:?}"
                     );
                 }
+            }
+        }
+    }
+
+    /// The per-pixel conversion `draw` started from (colour tables, four luma samples gathered per pixel).
+    fn reference(f: &Frame, turn: Turn, dst: &mut [u32], stride: usize, w: u32, h: u32) {
+        let hd = f.height >= 720 || f.width >= 1280;
+        let (rv, gu, gv, bu) = if hd {
+            (459, 55, 136, 541)
+        } else {
+            (409, 100, 208, 516)
+        };
+        let (mut ty_, mut trv, mut tgu, mut tgv, mut tbu) =
+            ([0i32; 256], [0; 256], [0; 256], [0; 256], [0; 256]);
+        for i in 0..256 {
+            let d = i as i32 - 128;
+            ty_[i] = (i as i32 - 16) * 298 + 128;
+            (trv[i], tgu[i], tgv[i], tbu[i]) = (rv * d, gu * d, gv * d, bu * d);
+        }
+        let px = |y: u32, u: u8, v: u8| {
+            let l = ty_[y as usize];
+            let r = (l + trv[v as usize]) >> 8;
+            let g = (l - tgu[u as usize] - tgv[v as usize]) >> 8;
+            let b = (l + tbu[u as usize]) >> 8;
+            (r.clamp(0, 255) as u32) << 16 | (g.clamp(0, 255) as u32) << 8 | b.clamp(0, 255) as u32
+        };
+        let (cw, ch) = (f.chroma_width() as usize, f.chroma_height() as usize);
+        let at = |x: &Tap, y: &Tap| {
+            let (r0, r1) = (y.i0 as usize * f.y_stride, y.i1 as usize * f.y_stride);
+            let s = |i: usize| u32::from(f.y[i]);
+            let top = s(r0 + x.i0 as usize) * (256 - x.w) + s(r0 + x.i1 as usize) * x.w;
+            let bottom = s(r1 + x.i0 as usize) * (256 - x.w) + s(r1 + x.i1 as usize) * x.w;
+            let i = (y.i0 as usize / 2).min(ch - 1) * f.uv_stride + (x.i0 as usize / 2).min(cw - 1);
+            px((top * (256 - y.w) + bottom * y.w) >> 16, f.u[i], f.v[i])
+        };
+        if matches!(turn, Turn::None | Turn::Half) {
+            let rev = turn == Turn::Half;
+            let (xs, rows) = (taps(w, f.width, rev), taps(h, f.height, rev));
+            for (dy, ty) in rows.iter().enumerate() {
+                for (dx, tx) in xs.iter().enumerate() {
+                    dst[dy * stride + dx] = at(tx, ty);
+                }
+            }
+        } else {
+            let q = turn == Turn::Quarter;
+            let (ys, rows) = (taps(w, f.height, q), taps(h, f.width, !q));
+            for (dy, tx) in rows.iter().enumerate() {
+                for (dx, ty) in ys.iter().enumerate() {
+                    dst[dy * stride + dx] = at(tx, ty);
+                }
+            }
+        }
+    }
+
+    /// Random pictures of odd and even sizes, scaled up and down, every turn: the same bytes as the reference.
+    #[test]
+    fn same_bytes_as_the_reference() {
+        let mut seed = 7u32;
+        let mut rnd = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            seed >> 8
+        };
+        for (pw, ph, w, h) in [
+            (64, 36, 64, 36),
+            (37, 23, 80, 51),
+            (128, 72, 45, 70),
+            (160, 90, 300, 169),
+            (33, 65, 17, 9),
+        ] {
+            let f = Frame {
+                width: pw,
+                height: ph,
+                y: (0..(pw + 3) * ph).map(|_| rnd() as u8).collect(),
+                u: (0..(pw.div_ceil(2) + 1) * ph.div_ceil(2))
+                    .map(|_| rnd() as u8)
+                    .collect(),
+                v: (0..(pw.div_ceil(2) + 1) * ph.div_ceil(2))
+                    .map(|_| rnd() as u8)
+                    .collect(),
+                y_stride: pw as usize + 3,
+                uv_stride: pw.div_ceil(2) as usize + 1,
+                pts_us: 0,
+            };
+            for t in [Turn::None, Turn::Quarter, Turn::Half, Turn::ThreeQuarters] {
+                let stride = w as usize + 5;
+                let (mut got, mut want) =
+                    (vec![0; stride * h as usize], vec![0; stride * h as usize]);
+                draw(&f, t, &mut got, stride, w, h);
+                reference(&f, t, &mut want, stride, w, h);
+                assert!(got == want, "{pw}x{ph} -> {w}x{h} {t:?}");
             }
         }
     }
