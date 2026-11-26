@@ -22,7 +22,7 @@ neo-format-inspect = { path = "../crates/neo-format-inspect" }
 neo-format-media = { path = "../crates/neo-format-media" }
 neo-format-document = { path = "../crates/neo-format-document" }
 # NeoSymbian/phone's contacts model (Apache): the vCard import and the book NEOCONT writes
-contacts = { git = "https://github.com/NeoSymbian/phone", rev = "add6e2449050e0aace786e5d41d8c468886aa1a1" }
+contacts = { git = "https://github.com/NeoSymbian/phone", rev = "5f49e5c850c85cd791bac46b16c1c6cff37e9bf3" }
 files-ops = { path = "../crates/files-ops" }
 fs-e32 = { path = "fs-e32" }
 # NeoSymbian/neohw: the NeoAudio contract (AUDIOD.EXE plays the player's PCM; Apache-2.0), at neoui's pin

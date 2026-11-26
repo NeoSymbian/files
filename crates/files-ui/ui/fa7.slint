@@ -624,6 +624,8 @@ export component IcsView inherits Rectangle {
     in property <[EvCard]> events;
     in property <string> footer;
     callback open(int);
+    // datetime DT6: the events go to NEOCAL's import page
+    callback add();
     background: Theme.bg;
     VerticalLayout {
         NeoList {
@@ -752,6 +754,12 @@ export component IcsView inherits Rectangle {
 
         Footer {
             text: root.footer;
+            Button {
+                text: "Add to Calendar";
+                clicked => {
+                    root.add();
+                }
+            }
         }
     }
 }

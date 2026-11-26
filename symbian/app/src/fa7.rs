@@ -34,6 +34,7 @@ pub(crate) enum Act {
     VcfToggle(usize),
     VcfOpen(usize),
     VcfAdd,
+    IcsAdd,
     Cancel,
     Save,
     LabelTap(bool, usize),
@@ -58,6 +59,10 @@ const CONTACTS_IMPORT: u16 = 3;
 const BOOK: &str = "C:\\private\\e0005001\\contacts.dat";
 /// The ticked cards handed to NEOCONT.
 const ADD: &str = "C:\\private\\e0006001\\open\\add.vcf";
+/// NEOCAL (NeoSymbian/datetime) and its import page (`datetime_core::pages::calendar` 6, a path as its argument)
+const CALENDAR: &str = "calendar";
+const CALENDAR_IMPORT: u16 = 6;
+const ADD_ICS: &str = "C:\\private\\e0006001\\open\\add.ics";
 /// The largest file each viewer reads whole.
 const CARDS_MAX: u64 = 16 << 20;
 const FONT_MAX: u64 = 32 << 20;
@@ -148,6 +153,8 @@ pub(crate) fn bind(
     ui.on_vcf_open(move |n| p(Act::VcfOpen(i(n))));
     let p = push(q);
     ui.on_vcf_add(move || p(Act::VcfAdd));
+    let p = push(q);
+    ui.on_ics_add(move || p(Act::IcsAdd));
     let p = push(q);
     ui.on_pim_cancel(move || p(Act::Cancel));
     let p = push(q);
@@ -361,6 +368,7 @@ pub(crate) fn act(app: &App, ui: &FilesApp, st: &mut State, a: Act) {
         }
         Act::VcfOpen(i) => edit_card(ui, st, i),
         Act::VcfAdd => add(app, ui, st),
+        Act::IcsAdd => add_to_calendar(app, st),
         Act::Cancel => cancel(app, ui, st),
         Act::Save => save(app, ui, st),
         Act::LabelTap(email, i) => label_tap(ui, st, email, i),
@@ -579,6 +587,24 @@ fn add(app: &App, ui: &FilesApp, st: &mut State) {
         Err(e) => note_with(app, &format!("Contacts didn't open ({e})"), ""),
     }
     let _ = ui;
+}
+
+/// Add to Calendar: the whole file, as it is, goes to NEOCAL's import page (it shows what's new and what clashes).
+fn add_to_calendar(app: &App, st: &mut State) {
+    let Some(Open7 {
+        kind: Kind::Ics(ics),
+        ..
+    }) = st.fa7.as_ref()
+    else {
+        return;
+    };
+    if let Err(e) = store::write(&*st.fs, ADD_ICS, ics.write().as_bytes()) {
+        return toast(app, "", e.code());
+    }
+    match app.open(CALENDAR, CALENDAR_IMPORT, ADD_ICS) {
+        Ok(()) => dprintln!("files: add to calendar {}", ADD_ICS),
+        Err(e) => note_with(app, &format!("Calendar didn't open ({e})"), ""),
+    }
 }
 
 fn edit_card(ui: &FilesApp, st: &mut State, i: usize) {

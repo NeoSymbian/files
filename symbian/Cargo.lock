@@ -610,7 +610,7 @@ checksum = "be95d4a884358a21a199689323c29e9256b4a1b315e22f183d155422041d3a9a"
 [[package]]
 name = "contacts"
 version = "0.1.0"
-source = "git+https://github.com/NeoSymbian/phone?rev=add6e2449050e0aace786e5d41d8c468886aa1a1#add6e2449050e0aace786e5d41d8c468886aa1a1"
+source = "git+https://github.com/NeoSymbian/phone?rev=5f49e5c850c85cd791bac46b16c1c6cff37e9bf3#5f49e5c850c85cd791bac46b16c1c6cff37e9bf3"
 dependencies = [
  "phone-rules",
 ]
