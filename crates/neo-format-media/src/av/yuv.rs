@@ -120,7 +120,22 @@ impl Px for [u8; 3] {
 
 /// Draws `f` scaled into the `w` x `h` rectangle at `dst` (rows `stride` pixels apart), turned by `turn`.
 pub fn draw<P: Px>(f: &Frame, turn: Turn, dst: &mut [P], stride: usize, w: u32, h: u32) {
-    if w == 0 || h == 0 || f.width == 0 || f.height == 0 {
+    draw_rows(f, turn, dst, stride, w, h, 0..h);
+}
+
+/// The screen rows `part` of [`draw`]'s rectangle only, `dst` starting at row `part.start`: two threads can draw one
+/// picture into disjoint rows (`split_at_mut`), with the same bytes as one `draw`.
+pub fn draw_rows<P: Px>(
+    f: &Frame,
+    turn: Turn,
+    dst: &mut [P],
+    stride: usize,
+    w: u32,
+    h: u32,
+    part: core::ops::Range<u32>,
+) {
+    let part = part.start.min(h) as usize..part.end.min(h) as usize;
+    if w == 0 || part.is_empty() || f.width == 0 || f.height == 0 {
         return;
     }
     let c = Colour::new(f.height >= 720 || f.width >= 1280);
@@ -154,7 +169,7 @@ pub fn draw<P: Px>(f: &Frame, turn: Turn, dst: &mut [P], stride: usize, w: u32, 
         Turn::None | Turn::Half => {
             let rev = turn == Turn::Half;
             let (xs, rows) = (taps(w, f.width, rev), taps(h, f.height, rev));
-            for (dy, ty) in rows.iter().enumerate() {
+            for (dy, ty) in rows[part].iter().enumerate() {
                 let line = &mut dst[dy * stride..dy * stride + w as usize];
                 for (d, tx) in line.iter_mut().zip(&xs) {
                     let (u, v) = chroma(tx, ty);
@@ -175,7 +190,7 @@ pub fn draw<P: Px>(f: &Frame, turn: Turn, dst: &mut [P], stride: usize, w: u32, 
             let mut hb = alloc::vec![0u16; fh * BAND];
             let (mut ub, mut vb) = (alloc::vec![0u8; ch * BAND], alloc::vec![0u8; ch * BAND]);
             let mut out = [0u32; BAND];
-            for (b, band) in rows.chunks(BAND).enumerate() {
+            for (b, band) in rows[part].chunks(BAND).enumerate() {
                 let n = band.len();
                 for r in 0..fh {
                     let src = &f.y[r * ys..];
@@ -419,6 +434,33 @@ mod tests {
                 draw(&f, t, &mut got, stride, w, h);
                 reference(&f, t, &mut want, stride, w, h);
                 assert!(got == want, "{pw}x{ph} -> {w}x{h} {t:?}");
+            }
+        }
+    }
+
+    /// Drawn in two parts at any row, the same bytes as drawn whole.
+    #[test]
+    fn parts_make_the_whole() {
+        let f = Frame {
+            width: 64,
+            height: 36,
+            y: (0..64 * 36).map(|i| (i * 7 % 251) as u8).collect(),
+            u: (0..32 * 18).map(|i| (i * 13 % 251) as u8).collect(),
+            v: (0..32 * 18).map(|i| (i * 29 % 251) as u8).collect(),
+            y_stride: 64,
+            uv_stride: 32,
+            pts_us: 0,
+        };
+        let (w, h, stride) = (50u32, 90u32, 53usize);
+        for t in [Turn::None, Turn::Quarter, Turn::Half, Turn::ThreeQuarters] {
+            let mut whole = vec![0u32; stride * h as usize];
+            draw(&f, t, &mut whole, stride, w, h);
+            for k in [1, 31, 32, 45, 89] {
+                let mut parts = vec![0u32; stride * h as usize];
+                let (top, bottom) = parts.split_at_mut(k as usize * stride);
+                draw_rows(&f, t, top, stride, w, h, 0..k);
+                draw_rows(&f, t, bottom, stride, w, h, k..h);
+                assert!(parts == whole, "{t:?} split at {k}");
             }
         }
     }

@@ -110,8 +110,17 @@ impl VideoDecode for H264 {
     }
 
     fn reset(&mut self) {
-        self.d = rust_h264::decoder::OrderedDecoder::new();
-        if let Ok(c) = rust_h264::nal::parse_avcc_config(&self.config) {
+        let c = rust_h264::nal::parse_avcc_config(&self.config).ok();
+        // The pictures held for display order: as many as the stream says it reorders (VUI), else the spec's worst
+        // case. 16 always held a key frame's pictures back ~800 ms, so they came out late (Pixel, 2026-11-26).
+        let depth = c
+            .as_ref()
+            .and_then(|c| c.sps_nals.first())
+            .and_then(|n| rust_h264::nal::parse_sps_info(n).ok())
+            .and_then(|i| i.max_reorder_frames)
+            .map_or(16, |r| r as usize);
+        self.d = rust_h264::decoder::OrderedDecoder::with_max_depth(depth);
+        if let Some(c) = c {
             for nal in c.sps_nals.iter().chain(&c.pps_nals) {
                 let _ = self.d.decode_nal_with_meta(nal, 0);
             }

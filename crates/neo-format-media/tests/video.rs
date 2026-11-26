@@ -54,6 +54,32 @@ fn pictures(file: &[u8]) -> Vec<video::Frame> {
     out
 }
 
+/// A picture comes out within a few packets of going in (the stream's reorder depth), not when the next key frame
+/// ends its group: held to the group's end, the Pixel showed them late.
+#[test]
+fn h264_pictures_come_out_soon() {
+    let file = data("h264-aac.mp4");
+    let mut d = av::open(&file[..]).unwrap();
+    let (v, _) = av::pick(d.tracks());
+    let v = v.unwrap();
+    let mut dec = video::decoder(&d.tracks()[v]).unwrap();
+    let (mut out, mut held, mut most) = (Vec::new(), 0, 0);
+    while let Some(p) = d.next().unwrap() {
+        if p.track == v {
+            let n = out.len();
+            dec.decode(&p, &mut out).unwrap();
+            held = if out.len() > n { 0 } else { held + 1 };
+            most = most.max(held);
+        }
+    }
+    assert!(!out.is_empty());
+    assert!(most <= 4, "{most} packets in before a picture came out");
+    assert!(
+        out.windows(2).all(|w| w[0].pts_us < w[1].pts_us),
+        "display order"
+    );
+}
+
 fn same_as_ffmpeg(name: &str, codec: Codec) {
     let file = data(name);
     let d = av::open(&file[..]).unwrap();

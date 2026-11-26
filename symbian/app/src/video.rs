@@ -81,6 +81,16 @@ const CONVERT_CPU: usize = 6;
 const CONVERT_STACK: i32 = 64 * 1024;
 /// The longest the UI waits for the converter before Slint may draw over the surface picture it is writing.
 const CONVERT_WAIT_US: i32 = 200_000;
+/// The clock is refreshed at most this often while playing.
+const TICK_US: u32 = 4_000;
+/// A small core for the converter's helper (0-5 are A55s).
+const HELPER_CPU: usize = 5;
+/// The helper's share of a big picture's rows, percent: at 30 the A55 finished 3-4 ms after the A75 (Pixel).
+const HELPER_SHARE: u32 = 25;
+/// Pictures at least this big (full-screen landscape) are split with the helper; portrait's 1080x607 is not.
+const SPLIT_PIXELS: u32 = 1_200_000;
+/// A helper this late has died.
+const HELPER_WAIT_US: i32 = 1_000_000;
 /// NeoAudio's queue standing still this long at the end of a clip: the sound is over.
 const DRAIN_STUCK_US: u32 = 500_000;
 /// A worker silent this long while playing has died.
@@ -153,6 +163,12 @@ struct Shared {
     seeks: u32,
     /// Counts the worker's turns: one that stands still has died (a panic ends the thread).
     beat: u32,
+    /// The slowest picture's decode (this window).
+    decode_max_us: u32,
+    /// The worker's slowest read, sound decode and sound write (this window).
+    slow: [u32; 3],
+    /// The least a picture was ahead of the clock when queued while playing (this window; may be negative).
+    ahead_min_us: Option<i64>,
 }
 
 pub struct Worker {
@@ -192,6 +208,8 @@ struct Done {
     us: u32,
     /// No memory for the Slint image.
     failed: bool,
+    /// With the helper: the converter's own share (0 without).
+    own_us: u32,
 }
 
 #[derive(Default)]
@@ -205,6 +223,46 @@ struct Converter {
     q: Mutex<Conv>,
     wake: Semaphore,
     done: Semaphore,
+    helper: Helper,
+}
+
+/// Rows of a big picture for the helper: the screen rows `rows` of the rectangle, `px` starting at the first of them.
+struct Part {
+    frame: *const Frame,
+    px: *mut u32,
+    len: usize,
+    stride: usize,
+    w: u32,
+    h: u32,
+    turn: Turn,
+    rows: core::ops::Range<u32>,
+}
+
+// SAFETY: the converter hands a Part over and waits for `done` before the frame or the surface rows can go away.
+unsafe impl Send for Part {}
+
+/// A second converter on a small core for the bottom rows of a full-screen picture: one A75 converts 1080x1920 in
+/// 28 ms, over the 33 ms a picture has once the DAMAGE and the waits are in (Pixel, 2026-11-26).
+struct Helper {
+    job: Mutex<Option<Part>>,
+    wake: Semaphore,
+    done: Semaphore,
+    on: core::sync::atomic::AtomicBool,
+}
+
+impl Helper {
+    fn run(&self) -> ! {
+        loop {
+            self.wake.wait();
+            let Some(p) = self.job.lock().take() else {
+                continue;
+            };
+            // SAFETY: see `Part`; the rows are the converter's but for this one picture not written by it.
+            let (f, px) = unsafe { (&*p.frame, core::slice::from_raw_parts_mut(p.px, p.len)) };
+            yuv::draw_rows(f, p.turn, px, p.stride, p.w, p.h, p.rows);
+            self.done.signal();
+        }
+    }
 }
 
 impl Converter {
@@ -214,7 +272,7 @@ impl Converter {
             let Some(j) = self.q.lock().job.take() else {
                 continue;
             };
-            let d = convert(j);
+            let d = convert(j, &self.helper);
             self.q.lock().done = Some(d);
             self.done.signal();
         }
@@ -242,12 +300,38 @@ impl Converter {
     }
 }
 
-fn convert(j: Job) -> Done {
+fn convert(j: Job, helper: &Helper) -> Done {
+    use core::sync::atomic::Ordering;
     let t0 = time::fast_counter();
+    let mut own_us = 0;
     let (surface, slint, failed) = match j.target {
         Target::Surface(mut t, turn) => {
             let (stride, r) = (t.stride, t.rect);
-            yuv::draw(&j.frame, turn, t.pixels(), stride, r.w, r.h);
+            let px = t.pixels();
+            let k = r.h * (100 - HELPER_SHARE) / 100;
+            if helper.on.load(Ordering::Relaxed) && r.w * r.h >= SPLIT_PIXELS && k > 0 {
+                let (mine, theirs) = px.split_at_mut(k as usize * stride);
+                *helper.job.lock() = Some(Part {
+                    frame: &j.frame,
+                    px: theirs.as_mut_ptr(),
+                    len: theirs.len(),
+                    stride,
+                    w: r.w,
+                    h: r.h,
+                    turn,
+                    rows: k..r.h,
+                });
+                helper.wake.signal();
+                yuv::draw_rows(&j.frame, turn, mine, stride, r.w, r.h, 0..k);
+                own_us = elapsed_us(t0);
+                if !helper.done.wait_timeout(HELPER_WAIT_US) {
+                    // shortcut: a helper this late is taken as dead; a slow one would still read this frame
+                    helper.on.store(false, Ordering::Relaxed);
+                    dprintln!("files: video helper stopped answering, the converter goes on alone");
+                }
+            } else {
+                yuv::draw(&j.frame, turn, px, stride, r.w, r.h);
+            }
             (Some(r), None, false)
         }
         Target::Slint(w, h, reuse) => {
@@ -264,6 +348,7 @@ fn convert(j: Job) -> Done {
         slint,
         count: j.count,
         us: elapsed_us(t0),
+        own_us,
         failed,
     }
 }
@@ -332,6 +417,12 @@ struct Now<'a> {
     drain: (u32, u32),
     /// NeoAudio's played-frame count when the clock was last published.
     heard: u64,
+    /// The last tick (NeoAudio asked, the clock published).
+    ticked_at: u32,
+    /// When pictures last came out of the decoder.
+    kept_at: u32,
+    /// The slowest read, sound decode and sound write since the UI last took them (µs).
+    slow: [u32; 3],
     pictures: Vec<Frame>,
 }
 
@@ -348,6 +439,12 @@ impl Worker {
                 q: Mutex::new(Conv::default())?,
                 wake: Semaphore::new(0)?,
                 done: Semaphore::new(0)?,
+                helper: Helper {
+                    job: Mutex::new(None)?,
+                    wake: Semaphore::new(0)?,
+                    done: Semaphore::new(0)?,
+                    on: core::sync::atomic::AtomicBool::new(false),
+                },
             },
         })))
     }
@@ -356,6 +453,13 @@ impl Worker {
         if core::mem::replace(&mut self.q.lock().started, true) {
             return true;
         }
+        let helper = &self.conv.helper;
+        let on = e32::thread::spawn_with_stack(CONVERT_STACK, move || {
+            pin(HELPER_CPU);
+            helper.run()
+        })
+        .is_ok();
+        helper.on.store(on, core::sync::atomic::Ordering::Relaxed);
         if !self.spawn_converter() || !self.spawn_decoder() {
             // shortcut: a converter already started stays when the decoder fails to; a second one shares its jobs
             self.q.lock().started = false;
@@ -597,6 +701,9 @@ impl Worker {
             boosted_at: 0,
             drain: (0, 0),
             heard: u64::MAX,
+            ticked_at: 0,
+            kept_at: 0,
+            slow: [0; 3],
             pictures: Vec::new(),
         };
         self.seek(&mut p, at_us);
@@ -681,7 +788,10 @@ impl Worker {
         let paused = p.state != Play::Playing && !p.still;
         if !p.input_done && (want_pictures || want_sound) && !paused && queued < AHEAD_MAX {
             worked = true;
-            match p.demux.next() {
+            let t0 = time::fast_counter();
+            let next = p.demux.next();
+            p.slow[0] = p.slow[0].max(elapsed_us(t0));
+            match next {
                 Ok(Some(pk)) if pk.track == p.vtrack => {
                     let t0 = time::fast_counter();
                     p.vdec.decode(&pk, &mut p.pictures).ok();
@@ -690,13 +800,16 @@ impl Worker {
                         let mut q = self.q.lock();
                         q.decoded += 1;
                         q.decode_us += u64::from(us);
+                        q.decode_max_us = q.decode_max_us.max(us);
                     }
                     self.keep(p);
                 }
                 Ok(Some(pk)) if Some(pk.track) == p.strack => {
                     if let Some(d) = p.sdec.as_mut() {
                         let mut s = Vec::new();
+                        let t0 = time::fast_counter();
                         d.decode(&pk, &mut s).ok();
+                        p.slow[1] = p.slow[1].max(elapsed_us(t0));
                         // drop what comes before a seek's target
                         let ch = p.channels.max(1);
                         let mut from = 0;
@@ -728,7 +841,9 @@ impl Worker {
             }
         }
         if p.state == Play::Playing {
+            let t0 = time::fast_counter();
             worked |= self.feed(p);
+            p.slow[2] = p.slow[2].max(elapsed_us(t0));
             if elapsed_us(p.boosted_at) >= BOOST_EVERY_US {
                 boost(BOOST_MS);
                 p.boosted_at = time::fast_counter();
@@ -744,9 +859,25 @@ impl Worker {
             return;
         }
         let mut q = self.q.lock();
+        let (n, gap) = (p.pictures.len(), elapsed_us(p.kept_at));
+        p.kept_at = time::fast_counter();
         for f in p.pictures.drain(..) {
             if f.pts_us >= p.skip_us - 20_000 {
                 q.buffered_us = q.buffered_us.max(f.pts_us.max(0) as u64);
+                if q.clock.running {
+                    let ahead = f.pts_us - now_us(&q.clock);
+                    q.ahead_min_us = Some(q.ahead_min_us.map_or(ahead, |a| a.min(ahead)));
+                    if ahead < -50_000 {
+                        dprintln!(
+                            "files: video late picture {} ms by {} ms: {} out together, {} ms after the last, queue {}",
+                            f.pts_us / 1000,
+                            -ahead / 1000,
+                            n,
+                            gap / 1000,
+                            q.frames.len()
+                        );
+                    }
+                }
                 q.frames.push_back(f);
                 if p.state != Play::Playing {
                     p.still = false;
@@ -784,13 +915,22 @@ impl Worker {
     /// Publishes the clock and notices the end.
     fn tick(&self, p: &mut Now<'_>) {
         let playing = p.state == Play::Playing && !p.preroll;
-        let running = self.q.lock().clock.running;
-        let clock = match p.out.as_ref() {
+        // NeoAudio is a server on another core: three or four calls a turn, ~70 turns a second, kept the decoder from
+        // its pictures (queued up to 120 ms late, Pixel 2026-11-26). One call, at most every TICK_US while playing.
+        if playing && elapsed_us(p.ticked_at) < TICK_US {
+            return;
+        }
+        p.ticked_at = time::fast_counter();
+        let info = p.out.as_ref().map(|o| o.info());
+        let mut q = self.q.lock();
+        if q.n != p.n {
+            return;
+        }
+        let clock = match &info {
             // NeoAudio's count moves in steps: republished between them, the clock stood still and then jumped, and
             // pictures came due in bursts (worst A/V ~100 ms, drops; Pixel 2026-11-26). The UI's interpolation runs on.
-            Some(o) if playing && running && o.info().frames == p.heard => None,
-            Some(o) if playing => {
-                let i = o.info();
+            Some(i) if playing && q.clock.running && i.frames == p.heard => None,
+            Some(i) if playing => {
                 p.heard = i.frames;
                 let played = i.frames.saturating_sub(p.f0);
                 let us =
@@ -811,18 +951,17 @@ impl Worker {
             _ => Some(Clock {
                 running: false,
                 speed: p.speed,
-                ..self.q.lock().clock
+                ..q.clock
             }),
         };
-        let mut q = self.q.lock();
-        if q.n != p.n {
-            return;
-        }
         if let Some(c) = clock {
             q.clock = c;
         }
         q.beat = q.beat.wrapping_add(1);
-        let queued = p.out.as_ref().map_or(0, |o| o.info().queued);
+        for (m, s) in q.slow.iter_mut().zip(core::mem::take(&mut p.slow)) {
+            *m = (*m).max(s);
+        }
+        let queued = info.map_or(0, |i| i.queued);
         if queued != p.drain.0 {
             p.drain = (queued, time::fast_counter());
         }
@@ -874,6 +1013,7 @@ pub struct Video {
     ready: Option<Done>,
     converted: u32,
     convert_us: u64,
+    convert_own_us: u64,
     /// When the picture at the converter went there.
     posted_at: u32,
     /// The Slint image's buffer and a spare for the next (reused: see `slint_buffer`); the layout the image is for.
@@ -887,6 +1027,9 @@ pub struct Video {
     stall_us: u32,
     /// The biggest step of the clock against its own interpolation (this window).
     jump_us: u32,
+    /// How late the latest picture handed to the converter already was, and the shortest queue then (this window).
+    picked_late_us: i64,
+    queue_min: usize,
     /// The worker's last turn count seen, and when it last changed.
     beat: u32,
     beat_at: u32,
@@ -984,6 +1127,7 @@ pub(crate) fn open(st: &mut State, ui: &FilesApp, o: &Open7) -> Result<&'static 
         ready: None,
         converted: 0,
         convert_us: 0,
+        convert_own_us: 0,
         posted_at: 0,
         showing: None,
         spare: None,
@@ -992,6 +1136,8 @@ pub(crate) fn open(st: &mut State, ui: &FilesApp, o: &Open7) -> Result<&'static 
         polled_at: time::fast_counter(),
         stall_us: 0,
         jump_us: 0,
+        picked_late_us: i64::MIN,
+        queue_min: usize::MAX,
         beat: 0,
         beat_at: time::fast_counter(),
     });
@@ -1173,6 +1319,7 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
         v.pending = None;
         v.converted += 1;
         v.convert_us += u64::from(d.us);
+        v.convert_own_us += u64::from(d.own_us);
         if d.failed {
             dprintln!("files: video no memory for a {}x{} picture", spec.w, spec.h);
             return fail(ui, w, v, "Files ran out of memory for this video.");
@@ -1237,11 +1384,17 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
             let (f, late) = {
                 let mut q = w.q.lock();
                 if q.seeks == epoch {
+                    if playing {
+                        v.queue_min = v.queue_min.min(q.frames.len());
+                    }
                     pick(&mut q.frames, now, v.shown_us >= 0)
                 } else {
                     (None, 0)
                 }
             };
+            if playing && let Some(f) = &f {
+                v.picked_late_us = v.picked_late_us.max(now - f.pts_us);
+            }
             v.dropped += late;
             if let Some(f) = f {
                 w.wake.signal(); // room to decode ahead again
@@ -1261,16 +1414,19 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
     // a line every 5 s while playing: what the gate measures
     if elapsed_us(v.since) >= 5_000_000 {
         let secs = elapsed_us(v.since) as u64;
-        let (decoded, decode_us) = {
+        let (decoded, decode_us, ahead, decode_max, slow) = {
             let mut q = w.q.lock();
             (
                 core::mem::take(&mut q.decoded),
                 core::mem::take(&mut q.decode_us),
+                q.ahead_min_us.take(),
+                core::mem::take(&mut q.decode_max_us),
+                core::mem::take(&mut q.slow),
             )
         };
         if v.shown > 0 {
             dprintln!(
-                "files: video {}.{} fps shown, {} dropped, worst A/V {} ms{}; decode {} at {} ms, convert {} ms, present {} ms, stall {} ms, clock jump {} ms",
+                "files: video {}.{} fps shown, {} dropped, worst A/V {} ms{}; decode {} at {} ms (max {}), convert {} ms (own {}), present {} ms, stall {} ms, clock jump {} ms",
                 u64::from(v.shown) * 1_000_000 / secs,
                 u64::from(v.shown) * 10_000_000 / secs % 10,
                 v.dropped,
@@ -1278,20 +1434,39 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
                 if v.raw { ", raw" } else { "" },
                 decoded,
                 decode_us / 1000 / u64::from(decoded.max(1)),
+                decode_max / 1000,
                 v.convert_us / 1000 / u64::from(v.converted.max(1)),
+                v.convert_own_us / 1000 / u64::from(v.converted.max(1)),
                 v.present_us / 1000 / u64::from(v.shown),
                 v.stall_us / 1000,
                 v.jump_us / 1000
             );
+            // a second line: one over 256 bytes is cut off by the debug output
+            dprintln!(
+                "files: video queued ahead min {} ms, picked late max {} ms, queue min {}; slowest read {} ms, sound decode {} ms, sound write {} ms",
+                ahead.unwrap_or(0) / 1000,
+                v.picked_late_us.max(-999_000) / 1000,
+                if v.queue_min == usize::MAX {
+                    0
+                } else {
+                    v.queue_min
+                },
+                slow[0] / 1000,
+                slow[1] / 1000,
+                slow[2] / 1000
+            );
         }
         v.present_us = 0;
         v.convert_us = 0;
+        v.convert_own_us = 0;
         v.converted = 0;
         v.shown = 0;
         v.dropped = 0;
         v.worst_us = 0;
         v.stall_us = 0;
         v.jump_us = 0;
+        v.picked_late_us = i64::MIN;
+        v.queue_min = usize::MAX;
         v.since = time::fast_counter();
         if playing && v.shown_us > 0 && (v.shown_us as u64).abs_diff(v.saved_us) > 5_000_000 {
             save_place(st);
