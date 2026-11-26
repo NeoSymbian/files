@@ -499,7 +499,7 @@ fn run() -> Result<(), i32> {
                     };
                     match rt::select(
                         next.as_mut(),
-                        rt::select(watch, time::delay(wait.max(1000))),
+                        rt::select(watch, video::delay(wait.max(1000))),
                     )
                     .await
                     {

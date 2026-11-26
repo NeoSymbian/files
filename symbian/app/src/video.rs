@@ -330,6 +330,8 @@ struct Now<'a> {
     boosted_at: u32,
     /// NeoAudio's queue (bytes) and when it last changed: one that stops draining counts as played out.
     drain: (u32, u32),
+    /// NeoAudio's played-frame count when the clock was last published.
+    heard: u64,
     pictures: Vec<Frame>,
 }
 
@@ -594,6 +596,7 @@ impl Worker {
             preroll: true,
             boosted_at: 0,
             drain: (0, 0),
+            heard: u64::MAX,
             pictures: Vec::new(),
         };
         self.seek(&mut p, at_us);
@@ -781,36 +784,43 @@ impl Worker {
     /// Publishes the clock and notices the end.
     fn tick(&self, p: &mut Now<'_>) {
         let playing = p.state == Play::Playing && !p.preroll;
+        let running = self.q.lock().clock.running;
         let clock = match p.out.as_ref() {
+            // NeoAudio's count moves in steps: republished between them, the clock stood still and then jumped, and
+            // pictures came due in bursts (worst A/V ~100 ms, drops; Pixel 2026-11-26). The UI's interpolation runs on.
+            Some(o) if playing && running && o.info().frames == p.heard => None,
             Some(o) if playing => {
                 let i = o.info();
+                p.heard = i.frames;
                 let played = i.frames.saturating_sub(p.f0);
                 let us =
                     p.base_us + (played * 1_000_000 / u64::from(p.rate.max(1))) as i64 - LATENCY_US;
-                Clock {
+                Some(Clock {
                     us: us.max(p.base_us),
                     at: time::fast_counter(),
                     running: true,
                     speed: 100,
-                }
+                })
             }
-            _ if playing => Clock {
+            _ if playing => Some(Clock {
                 us: p.base_us,
                 at: p.started_at,
                 running: true,
                 speed: p.speed,
-            },
-            _ => Clock {
+            }),
+            _ => Some(Clock {
                 running: false,
                 speed: p.speed,
                 ..self.q.lock().clock
-            },
+            }),
         };
         let mut q = self.q.lock();
         if q.n != p.n {
             return;
         }
-        q.clock = clock;
+        if let Some(c) = clock {
+            q.clock = c;
+        }
         q.beat = q.beat.wrapping_add(1);
         let queued = p.out.as_ref().map_or(0, |o| o.info().queued);
         if queued != p.drain.0 {
@@ -875,6 +885,8 @@ pub struct Video {
     /// The last poll, and the longest gap between two while playing (this window).
     polled_at: u32,
     stall_us: u32,
+    /// The biggest step of the clock against its own interpolation (this window).
+    jump_us: u32,
     /// The worker's last turn count seen, and when it last changed.
     beat: u32,
     beat_at: u32,
@@ -979,6 +991,7 @@ pub(crate) fn open(st: &mut State, ui: &FilesApp, o: &Open7) -> Result<&'static 
         failed: false,
         polled_at: time::fast_counter(),
         stall_us: 0,
+        jump_us: 0,
         beat: 0,
         beat_at: time::fast_counter(),
     });
@@ -1075,6 +1088,17 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
         if q.beat != v.beat {
             v.beat = q.beat;
             v.beat_at = v.polled_at;
+        }
+        if q.clock.running && v.clock.running && q.clock.at != v.clock.at {
+            // where the old clock said the new reading's moment was: a big difference is a jump
+            let said = v.clock.us
+                + i64::from(time::counter_us(
+                    v.clock.at,
+                    q.clock.at,
+                    time::fast_counter_hz(),
+                )) * i64::from(v.clock.speed)
+                    / 100;
+            v.jump_us = v.jump_us.max((q.clock.us - said).unsigned_abs() as u32);
         }
         v.clock = q.clock;
         v.buffered_us = q.buffered_us;
@@ -1246,7 +1270,7 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
         };
         if v.shown > 0 {
             dprintln!(
-                "files: video {}.{} fps shown, {} dropped, worst A/V {} ms{}; decode {} at {} ms, convert {} ms, present {} ms, stall {} ms",
+                "files: video {}.{} fps shown, {} dropped, worst A/V {} ms{}; decode {} at {} ms, convert {} ms, present {} ms, stall {} ms, clock jump {} ms",
                 u64::from(v.shown) * 1_000_000 / secs,
                 u64::from(v.shown) * 10_000_000 / secs % 10,
                 v.dropped,
@@ -1256,7 +1280,8 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
                 decode_us / 1000 / u64::from(decoded.max(1)),
                 v.convert_us / 1000 / u64::from(v.converted.max(1)),
                 v.present_us / 1000 / u64::from(v.shown),
-                v.stall_us / 1000
+                v.stall_us / 1000,
+                v.jump_us / 1000
             );
         }
         v.present_us = 0;
@@ -1266,9 +1291,67 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
         v.dropped = 0;
         v.worst_us = 0;
         v.stall_us = 0;
+        v.jump_us = 0;
         v.since = time::fast_counter();
         if playing && v.shown_us > 0 && (v.shown_us as u64).abs_diff(v.saved_us) > 5_000_000 {
             save_place(st);
+        }
+    }
+}
+
+/// `time::delay` at the nanokernel's 1 ms instead of the tick queue's 1/64 s: `RTimer::After` rounds every wait up to
+/// 15.6 ms on this kernel (stimer.cpp), and two such waits per picture put the player 100 ms behind the sound (Pixel,
+/// 2026-11-26). shortcut: Files' own copy of e32's `Delay`; move it into e32 (`time::delay_high_res`) with a pin bump.
+pub(crate) fn delay(micros: i32) -> Delay {
+    Delay {
+        micros,
+        timer: 0,
+        status: e32::request::TRequestStatus::pending(),
+    }
+}
+
+pub(crate) struct Delay {
+    micros: i32,
+    /// The kernel timer's handle once started (0 before).
+    timer: i32,
+    status: e32::request::TRequestStatus,
+}
+
+impl core::future::Future for Delay {
+    type Output = ();
+
+    fn poll(
+        self: core::pin::Pin<&mut Self>,
+        _: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<()> {
+        // SAFETY: nothing is moved out; `status` stays where it is while the request runs (the future is pinned).
+        let this = unsafe { self.get_unchecked_mut() };
+        if this.timer == 0 {
+            let h = e32::sys::timer_create();
+            if h < 0 {
+                e32::process::panic("FILES-TIMER", h);
+            }
+            this.timer = h;
+            // SAFETY: `status` is inside the pinned future; Drop cancels and waits before it goes away.
+            unsafe { e32::sys::timer_high_res(h, &mut this.status, this.micros.max(0)) };
+            return core::task::Poll::Pending;
+        }
+        if this.status.is_pending() {
+            core::task::Poll::Pending
+        } else {
+            core::task::Poll::Ready(())
+        }
+    }
+}
+
+impl Drop for Delay {
+    fn drop(&mut self) {
+        if self.timer != 0 {
+            if self.status.is_pending() {
+                e32::sys::timer_cancel(self.timer);
+                e32::request::wait_for_request(&self.status);
+            }
+            e32::sys::handle_close(self.timer);
         }
     }
 }
