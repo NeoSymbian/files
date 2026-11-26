@@ -60,6 +60,9 @@ const IDLE_US: i32 = 10_000;
 pub const POLL_US: i32 = 250_000;
 /// The largest picture played (level 4.1).
 const MAX_PIXELS: u32 = 1920 * 1088;
+/// The largest picture the 64 MB heap holds with the queue and the decoder's references: 1080p ran the worker out of
+/// memory (Pixel, 2026-11-26). shortcut: raise to MAX_PIXELS when e32-rs#17 (heap 256 MB) is in Files' e32 pin.
+const HEAP_PIXELS: u32 = 1280 * 736;
 const PLACES: &str = "C:\\private\\e0006001\\videos.dat";
 const PLACES_MAX: usize = 200;
 
@@ -80,6 +83,8 @@ const CONVERT_STACK: i32 = 64 * 1024;
 const CONVERT_WAIT_US: i32 = 200_000;
 /// NeoAudio's queue standing still this long at the end of a clip: the sound is over.
 const DRAIN_STUCK_US: u32 = 500_000;
+/// A worker silent this long while playing has died.
+const WORKER_DEAD_US: u32 = 2_000_000;
 /// A converter silent this long has died (a panic ends the thread): the clip stops with the error card.
 const CONVERT_DEAD_US: u32 = 2_000_000;
 
@@ -146,6 +151,8 @@ struct Shared {
     decode_us: u64,
     /// Counts the seeks: a picture taken before one is never shown after it.
     seeks: u32,
+    /// Counts the worker's turns: one that stands still has died (a panic ends the thread).
+    beat: u32,
 }
 
 pub struct Worker {
@@ -347,11 +354,16 @@ impl Worker {
         if core::mem::replace(&mut self.q.lock().started, true) {
             return true;
         }
-        if !self.spawn_converter() {
+        if !self.spawn_converter() || !self.spawn_decoder() {
+            // shortcut: a converter already started stays when the decoder fails to; a second one shares its jobs
             self.q.lock().started = false;
             return false;
         }
-        let r = e32::thread::spawn_with_stack(STACK, move || {
+        true
+    }
+
+    fn spawn_decoder(&'static self) -> bool {
+        e32::thread::spawn_with_stack(STACK, move || {
             // the decoder needs a fast core: left to the scheduler it ran on the A55s at 20 fps (Pixel, 2026-11-26)
             pin(FAST_CPU);
             let Ok(fs) = E32Fs::connect() else {
@@ -360,12 +372,8 @@ impl Worker {
             };
             self.run(&fs);
             0
-        });
-        if r.is_err() {
-            self.q.lock().started = false;
-            return false;
-        }
-        true
+        })
+        .is_ok()
     }
 
     fn spawn_converter(&'static self) -> bool {
@@ -505,6 +513,13 @@ impl Worker {
         let t = &tracks[v];
         if !t.codec.played() {
             answer(Err(format!("{} isn't supported.", t.codec.name())));
+            return None;
+        }
+        if t.width * t.height > HEAP_PIXELS && t.width * t.height <= MAX_PIXELS {
+            answer(Err(format!(
+                "Files can't play videos over 720p yet ({} × {}): they need more memory than it has for now.",
+                t.width, t.height
+            )));
             return None;
         }
         if t.width * t.height > MAX_PIXELS {
@@ -796,6 +811,7 @@ impl Worker {
             return;
         }
         q.clock = clock;
+        q.beat = q.beat.wrapping_add(1);
         let queued = p.out.as_ref().map_or(0, |o| o.info().queued);
         if queued != p.drain.0 {
             p.drain = (queued, time::fast_counter());
@@ -856,6 +872,12 @@ pub struct Video {
     slint_layout: u32,
     /// The converter failed: the error card shows.
     failed: bool,
+    /// The last poll, and the longest gap between two while playing (this window).
+    polled_at: u32,
+    stall_us: u32,
+    /// The worker's last turn count seen, and when it last changed.
+    beat: u32,
+    beat_at: u32,
 }
 
 /// Pictures straight into the surface; the picture's place in the view; landscape.
@@ -955,6 +977,10 @@ pub(crate) fn open(st: &mut State, ui: &FilesApp, o: &Open7) -> Result<&'static 
         spare: None,
         slint_layout: u32::MAX,
         failed: false,
+        polled_at: time::fast_counter(),
+        stall_us: 0,
+        beat: 0,
+        beat_at: time::fast_counter(),
     });
     ui.set_video_error("".into());
     ui.set_video_error_detail("".into());
@@ -1042,6 +1068,14 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
             return;
         }
         v.state = q.state;
+        if v.state == Play::Playing {
+            v.stall_us = v.stall_us.max(elapsed_us(v.polled_at));
+        }
+        v.polled_at = time::fast_counter();
+        if q.beat != v.beat {
+            v.beat = q.beat;
+            v.beat_at = v.polled_at;
+        }
         v.clock = q.clock;
         v.buffered_us = q.buffered_us;
         (q.clip.take(), q.seeks)
@@ -1073,6 +1107,12 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
     }
     if v.failed {
         return;
+    }
+    if v.state == Play::Playing && elapsed_us(v.beat_at) > WORKER_DEAD_US {
+        // shortcut: what the dead thread held stays allocated (no unwinding); the next clip gets a new worker
+        dprintln!("files: video worker stopped answering, started again");
+        w.spawn_decoder();
+        return fail(ui, w, v, "The player stopped (out of memory?).");
     }
     let Some(p) = v.v.as_mut() else { return };
     let playing = v.state == Play::Playing;
@@ -1119,7 +1159,7 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
         dprintln!("files: video converter stopped answering, started again");
         v.pending = None;
         w.spawn_converter();
-        return fail(ui, w, v, "Files's player stopped.");
+        return fail(ui, w, v, "The player stopped.");
     }
     if let Some(mut d) = v.ready.take_if(|d| d.epoch != epoch) {
         v.spare = v.spare.take().or(d.slint.take());
@@ -1129,6 +1169,19 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
     }
     // the picture that is due, converted for this layout
     let now = now_us(&v.clock);
+    // one a stall left behind goes when a newer one is due already, as the old present step did: shown late, it put
+    // the UI's stalls into the A/V gap (100-130 ms every window, Pixel 2026-11-26). Its pixels in the surface stay
+    // hidden until a DAMAGE.
+    if v.shown_us >= 0
+        && v.ready.as_ref().is_some_and(|d| {
+            d.count && d.layout == v.layout && d.epoch == epoch && d.frame.pts_us <= now
+        })
+        && w.q.lock().frames.front().is_some_and(|n| n.pts_us <= now)
+        && let Some(mut d) = v.ready.take()
+    {
+        v.spare = v.spare.take().or(d.slint.take());
+        v.dropped += 1;
+    }
     let due =
         |d: &Done| d.layout == v.layout && (!d.count || v.shown_us < 0 || d.frame.pts_us <= now);
     if let Some(d) = v.ready.take_if(|d| due(d)) {
@@ -1193,7 +1246,7 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
         };
         if v.shown > 0 {
             dprintln!(
-                "files: video {}.{} fps shown, {} dropped, worst A/V {} ms{}; decode {} at {} ms, convert {} ms, present {} ms",
+                "files: video {}.{} fps shown, {} dropped, worst A/V {} ms{}; decode {} at {} ms, convert {} ms, present {} ms, stall {} ms",
                 u64::from(v.shown) * 1_000_000 / secs,
                 u64::from(v.shown) * 10_000_000 / secs % 10,
                 v.dropped,
@@ -1202,7 +1255,8 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
                 decoded,
                 decode_us / 1000 / u64::from(decoded.max(1)),
                 v.convert_us / 1000 / u64::from(v.converted.max(1)),
-                v.present_us / 1000 / u64::from(v.shown)
+                v.present_us / 1000 / u64::from(v.shown),
+                v.stall_us / 1000
             );
         }
         v.present_us = 0;
@@ -1211,6 +1265,7 @@ pub(crate) fn poll(app: &App, ui: &FilesApp, st: &mut State) {
         v.shown = 0;
         v.dropped = 0;
         v.worst_us = 0;
+        v.stall_us = 0;
         v.since = time::fast_counter();
         if playing && v.shown_us > 0 && (v.shown_us as u64).abs_diff(v.saved_us) > 5_000_000 {
             save_place(st);
