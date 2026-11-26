@@ -25,7 +25,7 @@ neo-format-media = { path = "crates/neo-format-media" }
 neo-format-document = { path = "crates/neo-format-document" }
 files-ui = { path = "crates/files-ui" }
 # NeoSymbian/neoui: the kit (the shared theme, fonts and components, as a build helper); the same rev as symbian/
-neoui-kit = { git = "https://github.com/NeoSymbian/neoui", rev = "222c43f8116a6dba9ff170997ae7dc0feef055a0" }
+neoui-kit = { git = "https://github.com/NeoSymbian/neoui", rev = "4e50da2d464c4abf1cd5e6e42763671f05d0ad54" }
 # the same Slint as neoui (one copy in the ROM, no_std)
 slint = { version = "=1.18.1", default-features = false, features = ["compat-1-2", "unsafe-single-threaded", "libm", "renderer-software"] }
 png = "=0.18.1"

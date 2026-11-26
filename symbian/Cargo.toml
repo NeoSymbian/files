@@ -7,9 +7,9 @@ resolver = "3"
 members = ["app", "fs-e32", "vbench"]
 
 [workspace.dependencies]
-e32 = { git = "https://github.com/NeoSymbian/e32-rs", rev = "206b6c28cf49ef2f6e746580df97f05921500c35", features = ["critical-section"] }
-neoui-proto = { git = "https://github.com/NeoSymbian/neoui", rev = "baf5c7dcebc06c8ff36bf8f8785023472d30c889" }
-neoapp = { git = "https://github.com/NeoSymbian/neoui", rev = "baf5c7dcebc06c8ff36bf8f8785023472d30c889" }
+e32 = { git = "https://github.com/NeoSymbian/e32-rs", rev = "8084b94f9e8264384113e7ea6fa52adf70944cc5", features = ["critical-section"] }
+neoui-proto = { git = "https://github.com/NeoSymbian/neoui", rev = "4e50da2d464c4abf1cd5e6e42763671f05d0ad54" }
+neoapp = { git = "https://github.com/NeoSymbian/neoui", rev = "4e50da2d464c4abf1cd5e6e42763671f05d0ad54" }
 slint = { version = "=1.18.1", default-features = false, features = ["compat-1-2", "unsafe-single-threaded", "libm", "renderer-software"] }
 files-core = { path = "../crates/files-core" }
 neo-fs = { path = "../crates/neo-fs" }
@@ -26,7 +26,7 @@ contacts = { git = "https://github.com/NeoSymbian/phone", rev = "add6e2449050e0a
 files-ops = { path = "../crates/files-ops" }
 fs-e32 = { path = "fs-e32" }
 # NeoSymbian/neohw: the NeoAudio contract (AUDIOD.EXE plays the player's PCM; Apache-2.0), at neoui's pin
-neoaudio = { git = "https://github.com/NeoSymbian/neohw", rev = "9b3853bdc56c0bef6bcf34cbc5cf0c1f18e39fb5" }
+neoaudio = { git = "https://github.com/NeoSymbian/neohw", rev = "a11fa906f35bbd1dcec979495210dcdab3dc8651" }
 files-ui = { path = "../crates/files-ui" }
 
 [profile.release]

@@ -2933,7 +2933,7 @@ version = "0.1.0"
 [[package]]
 name = "neoui-kit"
 version = "0.1.0"
-source = "git+https://github.com/NeoSymbian/neoui?rev=222c43f8116a6dba9ff170997ae7dc0feef055a0#222c43f8116a6dba9ff170997ae7dc0feef055a0"
+source = "git+https://github.com/NeoSymbian/neoui?rev=4e50da2d464c4abf1cd5e6e42763671f05d0ad54#4e50da2d464c4abf1cd5e6e42763671f05d0ad54"
 dependencies = [
  "slint-build",
 ]
